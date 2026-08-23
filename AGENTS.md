@@ -20,7 +20,7 @@ nobody decided to take.
    and the dashboard's **START** button all spend money. Propose them; do not run them
    unless the operator says so in that session.
 3. **`data/orders.db` is the production registry.** Read it; never rewrite or delete it.
-4. **Caps:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (`core_brain/config.py`).
+4. **Caps:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (`core_brain/venue.py`).
 
 Full rules, including which commands are pre-approved: [docs/agents/safety.md](docs/agents/safety.md).
 

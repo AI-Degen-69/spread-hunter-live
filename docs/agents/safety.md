@@ -31,8 +31,13 @@ so in that session.
 
 ## 4. Limits
 
-`MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0`, both in `core_brain/config.py` and
-enforced in `core_brain/venue.py`.
+`MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` are defined in `core_brain/venue.py`,
+which reads them from the `max_order_usd` / `max_total_usd` fields of `MakerConfig` in
+`core_brain/config.py`. Grep for the lowercase field names there; the uppercase constants
+exist only in `venue.py`.
+
+They are enforced at the call sites, not in `venue.py`: `core_brain/order_manager.py`,
+`core_brain/trader_loop.py` and `core_brain/single_buy_saver.py`.
 
 Real-money checks are allowed and are often the only real proof of a change. Keep them at
 the venue minimum, inside these caps, and always pair them with the undo command.

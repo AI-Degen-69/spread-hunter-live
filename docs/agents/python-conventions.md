@@ -25,8 +25,10 @@ from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
 from core_brain.quotes import Inventory, QuoteIntent
 ```
 
-No relative imports (0 in the codebase). No wildcard imports (0 in the codebase). Modules
-open with `from __future__ import annotations` (19 of 20 in `core_brain/`).
+No relative imports (0 in the codebase). No wildcard imports in new code — the only two
+are `scripts/rank_markets.py` and `scripts/rerank_loop.py`, legacy forwarders that re-export
+their replacements. Modules open with `from __future__ import annotations` (20 of 21 in
+`core_brain/`; only `__init__.py` omits it).
 
 ## Error handling
 

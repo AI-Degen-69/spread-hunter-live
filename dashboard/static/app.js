@@ -209,9 +209,9 @@ const sseReconnect = document.getElementById('sse-reconnect');
 const EVENT_TRANSLATIONS = {
   // Filter
   'filter|rerank_done': 'Finished scanning all Polymarket markets and updated the graduated list.',
-  'filter|rerank_error': 'Market scan failed. The graduated list was not updated, so the Trader keeps quoting the previous universe.',
+  'filter|rerank_error': 'Market scan failed. The graduated list was not updated, so Decide & Execute keeps quoting the previous universe.',
   'screener|rerank_done': 'Finished scanning all Polymarket markets and updated the graduated list.',
-  'screener|rerank_error': 'Market scan failed. The graduated list was not updated, so the Trader keeps quoting the previous universe.',
+  'screener|rerank_error': 'Market scan failed. The graduated list was not updated, so Decide & Execute keeps quoting the previous universe.',
 
   // Query — reconciliation
   'query|reconcile_ok': 'Checked the venue for new fills on our orders. All synced up.',

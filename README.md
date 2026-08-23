@@ -126,9 +126,6 @@ Decide & Execute rests real maker bids: verify dashboard state before starting.
 process (with PID and module path), the Global Stop Loss watchdog, the universe feed, and checkout
 identity in one aligned, color-coded report.
 
-**Runbook** — see [RUNBOOK-STAGE-4.5.md](RUNBOOK-STAGE-4.5.md) for the supervised live
-cycle: pre-flight checks, order placement gates, settlement, and emergency sequences.
-
 ## Safety rails
 
 1. **LIVE is the default.** This is the real-money execution repo. Every subcommand reaches
@@ -145,6 +142,5 @@ cycle: pre-flight checks, order placement gates, settlement, and emergency seque
 ## Docs
 
 - [AGENTS.md](AGENTS.md) — the objective, universe rules, and design history
-- [RUNBOOK-STAGE-4.5.md](RUNBOOK-STAGE-4.5.md) — supervised live execution cycle
 - [Dashboard redesign spec](docs/superpowers/specs/2026-08-21-dashboard-redesign-design.md)
 - [Screener kanban spec](docs/superpowers/specs/2026-08-21-screener-kanban-tab.md)

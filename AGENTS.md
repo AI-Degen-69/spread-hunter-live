@@ -51,14 +51,13 @@ survivors to `run/markets.json`. The live fleet quotes **only** that list, via
   `engine/markets.py` and the `probe` latency harness. The 5-minute BTC series was
   measured dead: *"Adverse selection, not fee level, is what killed 5-min BTC."*
 
-### Why the code still says "rewards"
+### Pricing mode: spread_capture (formerly "rewards")
 
-`config.objective` defaults to the string `"rewards"` and `live_fleet._market_cfg` sets
-it on every market. **That string is a stale label for a pricing mode, not a statement
-of the objective.** It selects `quotes._decide_quotes_from_mid`, which rests both legs at
-`mid - offset`. Because `mid_UP + mid_DOWN ≈ 1.00`, that construction assembles the pair
-at `≈ 1.00 - 2*offset` — precisely how a sub-$1.00 pair gets built. The mechanism is
-correct; the name is historical.
+`config.objective` defaults to the string `"spread_capture"` (formerly `"rewards"`) and
+`main_spread_hunter_loop._market_cfg` sets it on every market. It selects
+`quotes._decide_quotes_from_mid`, which rests both legs at `mid - offset`. Because
+`mid_UP + mid_DOWN ≈ 1.00`, that construction assembles the pair at `≈ 1.00 - 2*offset` —
+precisely how a sub-$1.00 pair gets built. The mechanism is correct; "rewards" was a historical label.
 
 The alternative branch (`objective="pair"`) prices off the **ask** and was measured dead:
 it puts every quote half a spread *above* mid, so the pair costs `1.00 + spread` by

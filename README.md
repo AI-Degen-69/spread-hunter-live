@@ -32,7 +32,7 @@ merge is the exit and the P&L event.
   `run/markets.json`, and the fleet quotes *only* that list. The measured traded universe is
   tennis, baseball and esports. The 5-minute BTC series was measured dead on adverse
   selection and survives only as a legacy field.
-- **"rewards" in the code is a stale label for a pricing mode.** `objective = "rewards"`
+- **Spread capture pricing mode.** `objective = "spread_capture"` (formerly `"rewards"`)
   selects the from-mid pricing path that assembles the pair at `≈ 1.00 - 2*offset` — the
   mechanism that makes the strategy work. See [AGENTS.md](AGENTS.md) for the full statement.
 

@@ -606,8 +606,9 @@ def _fleet_state(registry, cfg) -> dict:
 def main(argv: Optional[list[str]] = None) -> int:
     """The Trader loop entry point.
 
-    Dry-run by default; `--live` places real orders. `--once` runs a single
-    rotation (the smoke-test path); without it the loop runs until interrupted.
+    LIVE by default: real orders are placed unless `--no-live` is passed.
+    `--once` runs a single rotation (the smoke-test path); without it the loop
+    runs until interrupted.
     """
     from engine.config import load
     from engine.markets import full_book

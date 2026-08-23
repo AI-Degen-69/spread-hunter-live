@@ -694,7 +694,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="python -m scripts.filter_markets",
         description=__doc__.split("\n\n")[0],
-        epilog="Writes the winners to data/markets.json, which the Trader "
+        epilog="Writes the winners to run/markets.json, which the Trader "
                "reads as its market universe.")
     p.add_argument("--top", type=_positive_int, default=20, metavar="N",
                    help="how many markets to write (default: 20)")

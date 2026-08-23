@@ -9,7 +9,7 @@ Quoting parameters (price band, offsets, balance target, fill caps) are derived
 from 56,768 of @powerwinner's BTC/ETH 5-min fills over 2026-07-14..21 (2,970
 markets). That is where the NUMBERS came from -- it is not where the bot
 trades. The live universe is the Market Filter's graduated list in
-data/markets.json.
+run/markets.json.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class MakerConfig:
     # LEGACY. The rolling 5-minute BTC series this project started on, kept only
     # because `engine/markets.py` and the `probe` latency harness still resolve a
     # live window from it. THE FLEET DOES NOT TRADE THIS. The live universe is the
-    # ranker's graduated list in run/markets.json -- liquid sports, esports, macro
+    # Market Filter's graduated list in run/markets.json -- liquid sports, esports, macro
     # and political markets under `select_max_days_to_resolve` -- and 5-min BTC was
     # measured dead on adverse selection (see the pinned-market block at the bottom
     # of this file). Do not read this field as a statement of what the bot trades.
@@ -249,7 +249,7 @@ class MakerConfig:
     # `marginal_return_floor`, `allocation_budget` and `max_market_frac` below
     # belong to the water-fill allocator in `strategy/allocate.py`, which only
     # the Market Filter's scoring uses. The trading path has no allocator: the
-    # Trader quotes whatever data/markets.json lists and sizes each couple from
+    # Trader quotes whatever run/markets.json lists and sizes each couple from
     # `couple_allocation_usd`. Grep confirms no reference to these three
     # anywhere in engine/ or dashboard/. The live capital bounds that DO bind
     # are `max_naked_usd`,

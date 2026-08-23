@@ -1,7 +1,9 @@
-"""live/engine/order_registry.py - Live order and fill registry backed by SQLite (run/live.db).
+"""Live order and fill registry backed by SQLite.
 
 Stage 2 Architecture Constraints:
-- Stored in data/orders.db, this repo's own registry.
+- Stored in data/orders.db. A legacy run/live.db is still honoured when data/orders.db
+  does not exist yet, so a host carrying both files must be migrated before the two can
+  drift; see DEFAULT_DB_PATH below for the exact precedence.
 - orders.id is a local uuid4 string written BEFORE submitting to the venue.
 - orders.order_id is the venue order id, unique and nullable, attached after POST response.
 - size_matched is strictly derived from SUM(fills.size), never stored as a mutable column in orders.

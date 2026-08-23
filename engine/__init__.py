@@ -4,7 +4,7 @@ This package is named `engine`, not `strategy`, and the name is the point.
 
 An earlier layout had a directory called `strategy/` with no `__init__.py`, so
 Python could merge it with any same-named directory on `sys.path` into one
-implicit namespace package. Live code writing `from engine.markets import ...`
+implicit namespace package. Live code writing `from strategy.markets import ...`
 could then resolve somewhere else entirely, and whether it resolved at all
 depended on the operator's working directory at the moment a real order was
 about to go out.

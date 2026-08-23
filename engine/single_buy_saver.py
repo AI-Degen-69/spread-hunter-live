@@ -1,7 +1,7 @@
 """Stage 3 — stop-loss / naked exit for a one-sided live pair.
 
-This is a port of the pairs rule already proven in the paper run at
-`strategy/sweep.py:700-830`, not a redesign of it. The trigger there fired 16
+This is the pairs rule already proven in the paper run, not a redesign of it.
+The trigger there fired 16
 times across 26,777 pairs, always on `pair_cost >= max_pair_cost`, and cost
 3.67c per exit against 3.68c gained per completed pair. Those numbers are the
 reason it is worth porting faithfully.

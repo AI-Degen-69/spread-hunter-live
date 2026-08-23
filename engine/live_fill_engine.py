@@ -208,7 +208,7 @@ class LiveFillEngine:
         book depth without a venue round-trip, and the displayed depth may be
         gone, rejected, or fill elsewhere -- so an unconfirmed quantity must not
         reach money-valued position reporting. This is a deliberate divergence
-        from `strategy/fills.py`, whose paper-run crosses are always real.
+        from the paper run, whose crosses were always real.
         """
         return sum(f.size * f.price for f in self.fills
                    if (side is None or f.side == side)

@@ -1,10 +1,10 @@
 """Re-run the Market Filter on a fixed interval, forever.
 
-Paths are relative to this repo: the log and the cycle ring live in data/, and
-the filter writes data/markets.json for the Trader to adopt. The scoring rules
-it leans on live in scoring/.
+Paths are relative to this repo: the log lands in run/rerank.log, the cycle ring
+lives in run/, and the filter writes run/markets.json for the Trader to adopt.
+The scoring rules it leans on live in scoring/.
 
-The Trader adopts data/markets.json every `rerank_interval_sec`, but
+The Trader adopts run/markets.json every `rerank_interval_sec`, but
 nothing regenerates that file -- and the U6 universe is short-dated by
 construction, so every market in it resolves within a day. Left alone, the
 fleet re-reads the same file until its whole universe has settled and then

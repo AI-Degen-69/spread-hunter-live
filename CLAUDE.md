@@ -50,5 +50,5 @@ Full set in `.claude/skills/spread-hunter-live/SKILL.md`. The short version:
 ## One name per concept
 
 Match the code and the dashboard: **single buy** (not naked leg / one-sided / unhedged),
-**pair cost**, **merge** as the exit, **graduated** for the markets in `data/markets.json`.
+**pair cost**, **merge** as the exit, **graduated** for the markets in `run/markets.json`.
 Full rename table: the Glossary section of AGENTS.md.

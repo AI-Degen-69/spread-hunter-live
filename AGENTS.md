@@ -38,7 +38,7 @@ Describe this bot as a **pair-assembly arbitrage** that earns rebates while it w
 
 The **Market Filter** (`scripts/filter_markets.py`, run continuously by
 `scripts/filter_loop.py`) funnels the venue — 24h volume, top-3 bid depth on both sides,
-book spread, horizon — and writes the survivors to `data/markets.json`. The **Trader**
+book spread, horizon — and writes the survivors to `run/markets.json`. The **Trader**
 (`engine/trader_loop.py`) quotes **only** that list, via `engine/market_feed.py`.
 
 `scripts/rank_markets.py` and `scripts/rerank_loop.py` are backward-compatible aliases
@@ -95,7 +95,7 @@ spread-hunter-live/
     live_fill_engine.py   Turns venue fills into registry rows
     markout.py            Post-fill mark-to-market used by the stop-loss
     venue.py              Venue client wiring + the MAX_ORDER_USD / MAX_TOTAL_USD caps
-    market_feed.py        Reads the market filter's graduated universe (data/markets.json)
+    market_feed.py        Reads the market filter's graduated universe (run/markets.json)
     markets.py            Venue market lookup
     cycle_stream.py       Append-only telemetry ring + cycle_intent rows
     account.py            Wallet balance & float marks
@@ -113,7 +113,8 @@ spread-hunter-live/
     spread-hunter-menu.ps1 Interactive operations menu
   data/
     orders.db             THE primary order and fill registry
-    markets.json          The filtered universe the trader quotes
+  run/
+    markets.json          The filtered universe the Trader quotes
     cycle_events.jsonl    Ring buffer of operational events
   scoring/                Scoring, allocation and selection rules the Market Filter uses
   tests/                  Full hermetic unit & integration test suite
@@ -183,7 +184,7 @@ cheapest route that actually proves the change:
 - **Live, with real money:** this repo trades for real, and a change to quoting,
   filling or merging is only proven when a real order behaves. Say so, and give the
   smallest test that settles it: one couple at the venue minimum, inside
-  `MAX_ORDER_USD` / `MAX_TOTAL_USD`, on a graduated market from `data/markets.json`.
+  `MAX_ORDER_USD` / `MAX_TOTAL_USD`, on a graduated market from `run/markets.json`.
 
 Rules for the block:
 

@@ -30,8 +30,8 @@ fleet already has.
 **The market must outlive the cycle.** The 5-minute BTC market resolved between two commands
 issued 16 seconds apart during the dry run: `merge` read `resolved no`, `redeem` read
 `resolved yes`. A market that can resolve mid-cycle turns a mechanics test into a settlement
-race. Pick one with a horizon of hours, not minutes -- the measured traded universe is tennis,
-baseball and esports, not crypto.
+race. Pick one with a horizon of hours, not minutes -- any graduated market in
+`runtime/markets.json` qualifies, whatever its category.
 
 **Size is the venue's own per-market minimum, per leg. Not a share more.**
 

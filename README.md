@@ -29,9 +29,10 @@ merge is the exit and the P&L event.
   arbitrage that happens to earn rebates while it waits, not a rebate farm.
 - **The universe is not BTC 5-minute binaries.** The ranker's funnel (24h volume, top-3 bid
   depth on both sides, book spread, horizon ≤ 30 days) writes survivors to
-  `runtime/markets.json`, and the fleet quotes *only* that list. The measured traded universe is
-  tennis, baseball and esports. The 5-minute BTC series was measured dead on adverse
-  selection and survives only as a legacy field.
+  `runtime/markets.json`, and the fleet quotes *only* that list. Whatever clears the funnel
+  is in scope; in the measured run the survivors were mostly tennis, baseball and esports,
+  but the filter decides, not the category. The 5-minute BTC series was measured dead on
+  adverse selection and survives only as a legacy field.
 - **Spread capture pricing mode.** `objective = "spread_capture"` (formerly `"rewards"`)
   selects the from-mid pricing path that assembles the pair at `≈ 1.00 - 2*offset` — the
   mechanism that makes the strategy work. See [AGENTS.md](AGENTS.md) for the full statement.

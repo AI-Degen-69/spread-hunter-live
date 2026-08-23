@@ -1,5 +1,10 @@
 # Coding Style
 
+> **Scoped in this repo.** This file is written for TypeScript. Naming, imports, error
+> handling and file size for spread-hunter-live live in `docs/agents/python-conventions.md`,
+> which wins wherever the two disagree. KISS/DRY/YAGNI and the error-handling principles
+> below still apply.
+
 ## Immutability (CRITICAL)
 
 ALWAYS create new objects, NEVER mutate existing ones:
@@ -36,7 +41,6 @@ Rationale: Immutable data prevents hidden side effects, makes debugging easier, 
 
 MANY SMALL FILES > FEW LARGE FILES:
 - High cohesion, low coupling
-- 200-400 lines typical, 800 max
 - Extract utilities from large modules
 - Organize by feature/domain, not by type
 
@@ -55,14 +59,6 @@ ALWAYS validate at system boundaries:
 - Use schema-based validation where available
 - Fail fast with clear error messages
 - Never trust external data (API responses, user input, file content)
-
-## Naming Conventions
-
-- Variables and functions: `camelCase` with descriptive names
-- Booleans: prefer `is`, `has`, `should`, or `can` prefixes
-- Interfaces, types, and components: `PascalCase`
-- Constants: `UPPER_SNAKE_CASE`
-- Custom hooks: `camelCase` with a `use` prefix
 
 ## Code Smells to Avoid
 
@@ -83,7 +79,6 @@ Split large functions into focused pieces with clear responsibilities.
 Before marking work complete:
 - [ ] Code is readable and well-named
 - [ ] Functions are small (<50 lines)
-- [ ] Files are focused (<800 lines)
 - [ ] No deep nesting (>4 levels)
 - [ ] Proper error handling
 - [ ] No hardcoded values (use constants or config)

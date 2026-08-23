@@ -1,5 +1,11 @@
 # Testing Requirements
 
+> **Superseded in this repo.** `docs/agents/verifying.md` defines the test bar for
+> spread-hunter-live: `python -m pytest -q` green plus a test that fails without the
+> change. There is no coverage gate and no coverage tooling installed, so the 80% figure
+> and the mandatory E2E tier below do not apply here. The rest of this file — TDD flow,
+> AAA structure, test naming — still stands.
+
 ## Minimum Test Coverage: 80%
 
 Test Types (ALL required):

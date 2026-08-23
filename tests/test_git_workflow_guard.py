@@ -165,8 +165,39 @@ class TestPush:
         monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "16")
         monkeypatch.setattr(guard, "_reviews", lambda pr: [
             "APPROVED", "CHANGES_REQUESTED", "CHANGES_REQUESTED",
+            "CHANGES_REQUESTED",
         ])
         assert guard.check_push()[0] == 2
+
+    def test_a_trailing_approval_does_not_hide_the_rounds(self, guard, monkeypatch):
+        """The real pattern on PR #16: every round ended in an approval.
+
+        Exempting "latest review is an approval" meant the block could never
+        fire, because the reviewer posts CHANGES_REQUESTED and then APPROVED
+        for the same commit. Five rounds ran with the guard installed.
+        """
+        monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "16")
+        monkeypatch.setattr(guard, "_reviews", lambda pr: [
+            "CHANGES_REQUESTED",
+            "CHANGES_REQUESTED", "APPROVED",
+            "CHANGES_REQUESTED", "APPROVED",
+        ])
+        code, message = guard.check_push()
+        assert code == 2
+        assert "3 rounds" in message
+
+    def test_only_the_review_bot_counts(self, guard, monkeypatch):
+        """A person requesting changes is not an automatic review round."""
+        captured: list[list[str]] = []
+
+        def fake_run(args):
+            captured.append(args)
+            return '["CHANGES_REQUESTED","CHANGES_REQUESTED"]'
+
+        monkeypatch.setattr(guard, "_run", fake_run)
+        assert guard._reviews("16") == ["CHANGES_REQUESTED"] * 2
+        jq = next(a for a in captured[0] if "select" in a)
+        assert f'.user.login == "{guard.REVIEW_BOT}"' in jq
 
     def test_unreadable_review_states_do_not_block(self, guard, monkeypatch):
         monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "16")

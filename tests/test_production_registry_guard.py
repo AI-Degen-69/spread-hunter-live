@@ -15,23 +15,19 @@ from core_brain.cycle_stream import emit
 from core_brain.order_registry import DEFAULT_DB_PATH
 
 
-def test_direct_connect_to_production_registry_is_blocked():
-    with pytest.raises(BaseException, match="production registry"):
-        sqlite3.connect(str(DEFAULT_DB_PATH))
-
-
 _ABS = str(DEFAULT_DB_PATH).replace("\\", "/")
 
-# Plain forms: stripping the `file:` scheme and the query string is enough to
-# recognise these, so they were already blocked before the URI parsing landed.
-PLAIN_URIS = [
-    "file:data/orders.db",
-    "file:data/orders.db?mode=ro",
+# Baseline: the plain path, and the two `file:` forms that stripping the scheme
+# and the query string is already enough to recognise.
+PLAIN_TARGETS = [
+    (str(DEFAULT_DB_PATH), False),
+    ("file:data/orders.db", True),
+    ("file:data/orders.db?mode=ro", True),
 ]
 
 # Bypasses: SQLite percent-decodes the path and accepts a `localhost`
 # authority, so a guard that only strips the scheme lets each of these open
-# the real registry.
+# the real registry. These four are what the URI parsing added.
 BYPASS_URIS = [
     "file:data/orders%2edb",
     "file:data%2Forders.db",
@@ -40,10 +36,10 @@ BYPASS_URIS = [
 ]
 
 
-@pytest.mark.parametrize("uri", PLAIN_URIS)
-def test_plain_uri_forms_of_the_production_registry_are_blocked(uri):
+@pytest.mark.parametrize("target,uri", PLAIN_TARGETS)
+def test_direct_connect_to_production_registry_is_blocked(target, uri):
     with pytest.raises(BaseException, match="production registry"):
-        sqlite3.connect(uri, uri=True)
+        sqlite3.connect(target, uri=uri)
 
 
 @pytest.mark.parametrize("uri", BYPASS_URIS)

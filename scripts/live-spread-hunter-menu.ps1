@@ -480,6 +480,7 @@ function Show-Status {
     Lsh-Banner -Title "SPREAD HUNTER LIVE - STATUS" -Subtitle "Execution engine: $ProjectPath"
 
     # ── 1 · DASHBOARD ──
+    Write-Host ""
     Write-ProfileRuleWithText -Text "1 · DASHBOARD" -Style Border
     $inst = Get-DashInstance
     $portUp = Test-LivePort
@@ -497,6 +498,7 @@ function Show-Status {
     Write-StatusLine -Label "PID file" -Detail "run/live-dash.pids.json" -DetailStyle Path
 
     # ── 2 · BOT STACK (dashboard API when up, live_procs.json otherwise) ──
+    Write-Host ""
     Write-ProfileRuleWithText -Text "2 · BOT STACK" -Style Border
     $status = $null
     if ($portUp) {
@@ -528,6 +530,7 @@ function Show-Status {
     }
 
     # ── 3 · GUARDRAIL WATCHDOG (API when up, heartbeat file otherwise) ──
+    Write-Host ""
     Write-ProfileRuleWithText -Text "3 · GUARDRAIL WATCHDOG" -Style Border
     $gh = $null
     if ($portUp) {
@@ -569,6 +572,7 @@ function Show-Status {
 }
 
 function Show-ScreenerAndFeed {
+    Write-Host ""
     Write-ProfileRuleWithText -Text "4 · SCREENER & UNIVERSE FEED" -Style Border
     $rerank = Join-Path $ProjectPath "scripts\rerank_loop.py"
     $ranker = Join-Path $ProjectPath "scripts\rank_markets.py"
@@ -589,9 +593,12 @@ function Show-ScreenerAndFeed {
     $ageSec = [int]((Get-Date) - (Get-Item $feed).LastWriteTime).TotalSeconds
     $count = "?"
     try { $count = @(Get-Content $feed -Raw | ConvertFrom-Json).Count } catch {}
-    if ($ageSec -gt 86400) {
-        Write-StatusLine -Label "Universe feed" -Status "STALE" -StatusStyle Warning `
-            -Detail ("{0} market(s) · {1}s old (>24h, ranker likely down) · run/markets.json" -f $count, $ageSec) -DetailStyle Path
+    if ($ageSec -gt 21600) {
+        Write-StatusLine -Label "Universe feed" -Status "STALE" -StatusStyle Error `
+            -Detail ("{0} market(s) · {1}s old (>6h, ranker down) · run/markets.json" -f $count, $ageSec) -DetailStyle Path
+    } elseif ($ageSec -gt 3600) {
+        Write-StatusLine -Label "Universe feed" -Status "AGING" -StatusStyle Warning `
+            -Detail ("{0} market(s) · {1}s old (>1h, ranker stopped) · run/markets.json" -f $count, $ageSec) -DetailStyle Path
     } else {
         Write-StatusLine -Label "Universe feed" -Status "FRESH" -StatusStyle Success `
             -Detail ("{0} market(s) · {1}s old · run/markets.json" -f $count, $ageSec) -DetailStyle Path
@@ -599,6 +606,7 @@ function Show-ScreenerAndFeed {
 }
 
 function Show-CheckoutIdentity {
+    Write-Host ""
     Write-ProfileRuleWithText -Text "5 · CHECKOUT IDENTITY" -Style Border
     # Single-line -c: robust against hosts whose $ErrorActionPreference='Stop'
     # turns native stderr into a terminating error, and against multiline

@@ -624,6 +624,11 @@ td { font-size: 13px; }
   box-shadow: 0 0 18px rgba(56, 189, 248, 0.3), 0 8px 24px rgba(0, 0, 0, 0.6);
   transform: translateY(-50%) scale(1.06);
 }
+.kanban-nav-btn:focus-visible {
+  opacity: 1;
+  border-color: rgba(56, 189, 248, 0.8);
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.6), 0 8px 24px rgba(0, 0, 0, 0.6);
+}
 .kanban-nav-btn:active {
   transform: translateY(-50%) scale(0.96);
 }
@@ -632,6 +637,15 @@ td { font-size: 13px; }
 }
 .kanban-nav-btn.next {
   right: 6px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .kanban-board { scroll-behavior: auto; }
+  .kanban-nav-btn,
+  .kanban-bucket,
+  .market-card { transition: none; }
+  .kanban-nav-btn:hover,
+  .kanban-nav-btn:active { transform: translateY(-50%); }
+  .market-card:hover { transform: none; }
 }
 .kanban-nav-btn:disabled,
 .kanban-nav-btn.disabled {
@@ -818,7 +832,7 @@ td { font-size: 13px; }
   color: var(--text-primary);
   font-size: 12px;
   line-height: 1.35;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .market-card .card-metric {
   font-family: 'JetBrains Mono', monospace;
@@ -833,7 +847,7 @@ td { font-size: 13px; }
   border-radius: 5px;
   padding: 4px 6px;
   font-family: 'JetBrains Mono', monospace;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 .market-card .card-income { color: var(--signal); font-weight: 600; }
 .market-card .card-ret { color: var(--text-primary); font-weight: 700; }

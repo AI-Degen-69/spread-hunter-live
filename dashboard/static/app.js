@@ -776,9 +776,20 @@ function categorizeGate(cause) {
   return 'identity';
 }
 
+// A gate bar the snapshot did not carry falls back to the shipped default.
+// Written long-hand rather than with `??` so it cannot be mistaken for -- or
+// grow into -- the zero-coercion the account legs are guarded against.
+function gateBar(value, fallback) {
+  return (value === null || value === undefined) ? fallback : Number(value);
+}
+
 function getStageHero(key, funnel) {
   const volGate = funnel?.volume_gate_usd || 250000;
   const depthGate = funnel?.depth_gate_usd || 1000;
+  const spreadGate = gateBar(funnel?.spread_gate, 0.06);
+  const horizonDays = gateBar(funnel?.horizon_gate_days, 30);
+  const minIncome = gateBar(funnel?.min_income_usd_day, 1.5);
+  const maxPairCost = gateBar(funnel?.max_pair_cost, 0.995);
 
   switch (key) {
     case 'raw':
@@ -804,17 +815,17 @@ function getStageHero(key, funnel) {
     case 'spread':
       return {
         param: 'TEST: MAX BOOK SPREAD',
-        value: '≤ 0.0600 (6.00%)',
+        value: `≤ ${Number(spreadGate).toFixed(4)} (${(Number(spreadGate) * 100).toFixed(2)}%)`,
       };
     case 'horizon':
       return {
         param: 'TEST: HORIZON & PAYOUT',
-        value: '≤ 30.0 days & ≥ $1.50/day',
+        value: `≤ ${Number(horizonDays).toFixed(1)} days & ≥ $${Number(minIncome).toFixed(2)}/day`,
       };
     case 'passed':
       return {
         param: 'TEST: PAIR MERGE ARBITRAGE',
-        value: 'Pair Cost ≤ $0.995 ➔ $1.00 USDC',
+        value: `Pair Cost ≤ $${Number(maxPairCost).toFixed(3)} ➔ $1.00 USDC`,
       };
     default:
       return { param: 'GATE TEST', value: '--' };
@@ -911,8 +922,12 @@ function renderScreener(kpi, scanState) {
   const eligibleList = funnel.final || [];
   stageFlow.passed = { in: currentPool, out: graduatedList.length, dropped: 0 };
 
-  // Render the 7 stages
-  board.innerHTML = '';
+  // Render the 7 stages. Build the markup as one string and assign it once:
+  // `+=` on innerHTML reparses the whole board on every stage, and replacing
+  // the children resets scrollLeft, which would yank an operator who scrolled
+  // to stage 5 back to stage 1 on the next poll.
+  const prevScrollLeft = board.scrollLeft;
+  let boardHtml = '';
   for (const def of STAGE_DEFS) {
     let cardsHtml = '';
     let footerHtml = '';
@@ -940,7 +955,7 @@ function renderScreener(kpi, scanState) {
               <span class="card-metric">$${esc(r.rate)}/d</span>
             </div>
             <div class="card-title">${esc(r.title || '--')}</div>
-            <div class="card-metric">Resolves: ${r.days !== null && r.days !== undefined ? r.days + 'd' : '--'}</div>
+            <div class="card-metric">Resolves: ${r.days !== null && r.days !== undefined ? esc(r.days) + 'd' : '--'}</div>
           </div>`;
         }
         for (const s of rawSpread) {
@@ -950,7 +965,7 @@ function renderScreener(kpi, scanState) {
               <span class="card-metric">Vol: ${fmtUSD(s.volume || 0)}</span>
             </div>
             <div class="card-title">${esc(s.title || '--')}</div>
-            <div class="card-metric">Spread: ${s.spread !== null && s.spread !== undefined ? (s.spread * 100).toFixed(1) + '%' : '--'} | ${s.days !== null && s.days !== undefined ? s.days + 'd' : '--'}</div>
+            <div class="card-metric">Spread: ${s.spread !== null && s.spread !== undefined ? (Number(s.spread) * 100).toFixed(1) + '%' : '--'} | ${s.days !== null && s.days !== undefined ? esc(s.days) + 'd' : '--'}</div>
           </div>`;
         }
       } else {
@@ -979,8 +994,8 @@ function renderScreener(kpi, scanState) {
           const income = m.pnl !== null && m.pnl !== undefined ? fmtUSD(m.pnl) : '--';
           const volStr = m.volume !== null && m.volume !== undefined ? fmtUSD(m.volume) : '--';
           const spreadStr = m.spread !== null && m.spread !== undefined ? (Number(m.spread) * 100).toFixed(2) + '%' : '--';
-          const daysStr = m.days_to_resolve !== null && m.days_to_resolve !== undefined ? m.days_to_resolve + 'd' : '--';
-          const retStr = m.return_pct_day !== null && m.return_pct_day !== undefined ? m.return_pct_day + '%/d' : (m.est_income ? '$' + Number(m.est_income).toFixed(2) + '/d' : '--');
+          const daysStr = m.days_to_resolve !== null && m.days_to_resolve !== undefined ? esc(m.days_to_resolve) + 'd' : '--';
+          const retStr = m.return_pct_day !== null && m.return_pct_day !== undefined ? esc(m.return_pct_day) + '%/d' : (m.est_income ? '$' + Number(m.est_income).toFixed(2) + '/d' : '--');
           const shortCid = m.condition_id ? (m.condition_id.slice(0, 6) + '...' + m.condition_id.slice(-4)) : '';
 
           cardsHtml += `<div class="market-card passed-card" role="listitem">
@@ -1010,7 +1025,7 @@ function renderScreener(kpi, scanState) {
               <span class="card-metric">${esc(el.source || 'spread')}</span>
             </div>
             <div class="card-title" title="${esc(el.title || '')}">${esc(el.title || '--')}</div>
-            <div class="card-metric">Est Ret: <span class="card-ret">${el.ret_day_pct !== null && el.ret_day_pct !== undefined ? el.ret_day_pct + '%/d' : '--'}</span> | Vol: ${fmtUSD(el.volume || 0)}</div>
+            <div class="card-metric">Est Ret: <span class="card-ret">${el.ret_day_pct !== null && el.ret_day_pct !== undefined ? esc(el.ret_day_pct) + '%/d' : '--'}</span> | Vol: ${fmtUSD(el.volume || 0)}</div>
           </div>`;
         }
       }
@@ -1059,7 +1074,7 @@ function renderScreener(kpi, scanState) {
       }
     }
 
-    board.innerHTML += `<div class="kanban-bucket ${def.cls}" role="list" aria-label="${def.name}">
+    boardHtml += `<div class="kanban-bucket ${def.cls}" role="list" aria-label="${esc(def.name)}">
       <div class="kanban-bucket-header">
         <div class="kanban-header-top">
           <span>${def.name}</span>
@@ -1076,6 +1091,9 @@ function renderScreener(kpi, scanState) {
     </div>`;
   }
 
+  board.innerHTML = boardHtml;
+  board.scrollLeft = prevScrollLeft;
+
   // Update navigation arrow states after rendering
   requestAnimationFrame(updateKanbanNavButtons);
 }
@@ -1086,7 +1104,12 @@ function scrollKanban(direction) {
   if (!board) return;
   const bucket = board.querySelector('.kanban-bucket');
   const step = bucket ? (bucket.offsetWidth + 14) : 334;
-  board.scrollBy({ left: direction * step, behavior: 'smooth' });
+  // An explicit `behavior` overrides the CSS scroll-behavior, so the
+  // reduced-motion request has to be honoured here as well as in the
+  // stylesheet.
+  const reduceMotion = window.matchMedia
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  board.scrollBy({ left: direction * step, behavior: reduceMotion ? 'auto' : 'smooth' });
   setTimeout(updateKanbanNavButtons, 350);
 }
 

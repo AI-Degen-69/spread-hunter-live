@@ -958,6 +958,14 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
         "volume_gate_usd": (volume_gate_usd if volume_gate_usd is not None
                             else MIN_VOLUME_24H),
         "trial_volume_usd": trial_volume_usd,
+        # The remaining gate bars, so the dashboard states the contract it is
+        # actually screening against rather than a number frozen into the
+        # markup. `max_pair_cost` is the sub-dollar rule the strategy rests
+        # on; a stale figure there is worse than no figure at all.
+        "spread_gate": MAX_BOOK_SPREAD,
+        "horizon_gate_days": MAX_DAYS_TO_RESOLVE,
+        "min_income_usd_day": MIN_PAYOUT * FLOOR_MULTIPLE,
+        "max_pair_cost": getattr(_CFG, "max_pair_cost", 0.995),
         "counts": {
             "funded": len(cands),
             "spread_universe": len(spread_cands),

@@ -261,7 +261,7 @@ def read_account(funder: str, collateral_usd: Optional[float],
     )
 
 
-# --- live balance + float mark (moved from engine.live_exec) ----------
+# --- live balance + float mark (moved from engine.order_manager) ----------
 # `fetch_live_balance` reads the CLOB client's collateral balance; the
 # poll loop and the fleet both need it, so it lives with the other
 # venue account reads instead of live_exec's CLI grab-bag.

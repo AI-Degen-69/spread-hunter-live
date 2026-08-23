@@ -578,7 +578,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         # position this subtraction exists to retire. Same encoding as
         # inventory_from_registry: up_price set => the UP leg was sold.
         for c in m_closes:
-            if c.get("method") != "naked_exit":
+            if c.get("method") not in ("single_buy_exit", "naked_exit"):
                 continue
             sh = float(c.get("shares") or 0.0)
             if c.get("up_price") is not None:
@@ -889,7 +889,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # The account, as the venue reports it. `starting_capital` above is a
     # simulation constant that nobody deposited; these fields are the balance
     # and P&L the account holder sees on Polymarket, written by
-    # `engine.live_exec account-sweep` and read here from SQLite.
+    # `engine.order_manager account-sweep` and read here from SQLite.
     # ------------------------------------------------------------------
     sorted_account_marks = sorted(
         [am for am in all_account_marks if am.get("ts") is not None],

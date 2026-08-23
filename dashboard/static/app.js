@@ -310,9 +310,9 @@ connectSSE();
 const SERVICE_DEFS = [
   { key: 'screener', name: 'Market Filter', cmd: 'python -m scripts.filter_loop',
     desc: 'Scans 500+ Polymarket binary markets and screens down to 8 graduated pairs.' },
-  { key: 'engine', name: 'Order Manager', cmd: 'python -m engine.live_exec poll --interval 0.5',
+  { key: 'engine', name: 'Order Manager', cmd: 'python -m engine.order_manager poll --interval 0.5',
     desc: 'Polls CLOB every 0.5s, reconciles fills, executes account sweeps.' },
-  { key: 'fleet', name: 'Trader (Loop)', cmd: 'python -m engine.main_spread_hunter_loop loop',
+  { key: 'fleet', name: 'Trader (Loop)', cmd: 'python -m engine.trader_loop --live --no-reconcile --no-sweep --interval 5',
     desc: 'Runs the trading loop (decide quotes -> submit maker orders) every 5s across approved markets.' },
   { key: 'guardrail', name: 'Guardrail Watchdog', cmd: 'python -m scripts.guardrail_watch',
     desc: 'Continuous risk monitor enforcing hard exposure and inventory limits.',

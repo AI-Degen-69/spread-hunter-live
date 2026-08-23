@@ -5,7 +5,7 @@ Journeys under test:
    not `config.bankroll_usd + realized_pnl`.
 2. As the Owner, an account that has never been swept shows "--", not a number.
 3. As the Owner, the tile tells me how old the reading is, because a balance is
-   only as true as its last sweep.
+   only as its last sweep.
 4. As the Owner, the dashboard still makes zero venue network calls.
 """
 from __future__ import annotations
@@ -21,14 +21,14 @@ from engine import account as acct
 from engine import kpi as kpi_mod
 from engine.kpi import report
 from engine.order_registry import SCHEMA, OrderRegistry
-from dash.live_dash import PAGE_HTML
+from dashboard.server import PAGE_HTML
 
 RUN = "run-account"
 
 # The redesigned dashboard serves a static frontend (dash/static/); the account
 # tiles are rendered by app.js from the /api/kpi payload, so page-level
 # assertions target the static bundle instead of the served HTML page.
-_STATIC_DIR = Path(__file__).resolve().parent.parent / "dash" / "static"
+_STATIC_DIR = Path(__file__).resolve().parent.parent / "dashboard" / "static"
 
 
 def _read_static(filename: str) -> str:
@@ -216,7 +216,7 @@ def test_page_still_makes_no_venue_calls():
 
 
 def test_page_shows_how_stale_the_reading_is():
-    """A balance is only as true as its last sweep: ages render via fmtAge,
+    """A balance is only as its last sweep: ages render via fmtAge,
     and the old 'registry book' footnote is gone."""
     app_js = _read_static("app.js")
     assert "fmtAge" in app_js

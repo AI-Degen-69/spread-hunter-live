@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import pytest
 
-from engine.main_spread_hunter_loop import LiveFleetResult, VenueSeam, plan_orders, run
+from engine.trader_loop import LiveFleetResult, VenueSeam, plan_orders, run
 from engine.quotes import QuoteIntent
 
 

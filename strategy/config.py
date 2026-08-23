@@ -217,7 +217,7 @@ class MakerConfig:
     allocation_budget: float = 900.0
     # Ceiling on any ONE market's share of that budget.
     #
-    # The water-fill was written as a diversifier and is not one. `marginal`
+    # The water-fill was a diversifier and is not one. `marginal`
     # is daily*T/(capital+T)^2, which is nearly FLAT in capital whenever
     # competitor depth T dominates our size -- so the argmax never changes
     # and a single market absorbs every increment. Measured 2026-08-02: one
@@ -447,7 +447,7 @@ class MakerConfig:
 
     # TOTAL COMMITTED CAPITAL (U3). Everything above bounds the UNHEDGED leg;
     # nothing bounded the hedged one. A matched pair cannot lose -- it pays
-    # exactly $1 -- so it was treated as free, and it is not: until U2 it was
+    # exactly $1 -- so it was free, and it is not: until U2 it was
     # frozen until 2027, and even with merge it is money that is committed
     # right now and cannot be committed anywhere else.
     #

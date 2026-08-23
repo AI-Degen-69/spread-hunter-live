@@ -34,7 +34,7 @@ from engine.kpi import report
 from engine.order_registry import SCHEMA, CloseRecord, MarketEventRecord, OrderRegistry
 from pathlib import Path
 
-_STATIC_DIR = Path(__file__).resolve().parent.parent / 'dash' / 'static'
+_STATIC_DIR = Path(__file__).resolve().parent.parent / 'dashboard' / 'static'
 def _read_static(filename):
     p = _STATIC_DIR / filename
     return p.read_text(encoding='utf-8') if p.exists() else ''

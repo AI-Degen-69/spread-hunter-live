@@ -26,11 +26,11 @@ import pytest
 
 LIVE_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = LIVE_ROOT.parent
-LIVE_EXEC = LIVE_ROOT / "engine" / "live_exec.py"
+LIVE_EXEC = LIVE_ROOT / "engine" / "order_manager.py"
 
 
 def _deferred_engine_imports() -> set[str]:
-    """Module names `live_exec` imports from the `engine` package."""
+    """Module names `order_manager` imports from the `engine` package."""
     src = LIVE_EXEC.read_text(encoding="utf-8")
     names = set(re.findall(r"^\s*from engine\.(\w+) import", src, re.MULTILINE))
     names |= set(re.findall(r"^\s*from engine import (\w+)", src, re.MULTILINE))
@@ -40,7 +40,7 @@ def _deferred_engine_imports() -> set[str]:
 def test_deferred_imports_are_discovered():
     """Guard the regex: if it silently matches nothing, the tests below pass vacuously."""
     names = _deferred_engine_imports()
-    assert {"order_registry", "markets", "single_side_buy_saver", "config"} <= names, names
+    assert {"order_registry", "markets", "single_buy_saver", "config"} <= names, names
 
 
 # The two ways this module is actually launched. `-m` from live/ is the
@@ -60,7 +60,7 @@ def test_live_branch_imports_resolve(cwd_name):
     prog = (
         "import sys\n"
         f"sys.path.insert(0, {str(LIVE_ROOT)!r})\n"
-        "import engine.live_exec\n"
+        "import engine.order_manager as live_exec\n"
     )
     prog += "".join(f"import engine.{n}\n" for n in names)
     prog += "print('ok')"
@@ -88,7 +88,7 @@ def test_importing_live_exec_places_project_root_on_sys_path():
     res = subprocess.run(
         [sys.executable, "-c",
          f"import sys; sys.path.insert(0, {str(LIVE_ROOT)!r}); "
-         "import engine.live_exec; "
+         "import engine.order_manager as live_exec; "
          "import pathlib; "
          "print(*[pathlib.Path(p).resolve() for p in sys.path if p], sep=chr(10))"],
         cwd=str(LIVE_ROOT), capture_output=True, text=True,

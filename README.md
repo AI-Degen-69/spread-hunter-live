@@ -41,19 +41,19 @@ merge is the exit and the P&L event.
 **Engine** (`engine/`)
 - `quotes.py` — the decision layer: where to rest both legs, and why not to
 - `risk.py` — sizing ladder, inventory skew, dollar caps, hard blocks
-- `unhedged_stop_loss.py` — per-market markout state machine + fleet posture (HALTED etc.)
-- `main_spread_hunter_loop.py` — multi-market rotation: decide → plan → submit/cancel (5s cadence)
-- `live_exec.py` — CLI: `status`, `balance`, `decide`, `quote`, `poll`, `merge`, `redeem`,
+- `unhedged_stop_loss.py` — per-market markout state machine + trader posture (HALTED etc.)
+- `trader_loop.py` — multi-market rotation: decide → plan → submit/cancel (5s cadence)
+- `order_manager.py` — CLI: `status`, `balance`, `decide`, `quote`, `poll`, `merge`, `redeem`,
   `complete`, `exit`, `cancel`, `cancel-market`, `cancel-all`, `pairs`, `kpi`, `audit`
-- `single_side_buy_saver.py` — naked-leg rescue: complete the pair, or exit the leg
+- `single_buy_saver.py` — single-buy rescue: complete the pair, or exit the buy
 - `merge_pairs.py` — gasless merge & redemption (ABI, alt-bn128, EIP-712)
-- `order_registry.py` — SQLite order/fill tracking + reconcile (`run/live.db`)
+- `order_registry.py` — SQLite order/fill tracking + reconcile (`data/orders.db`)
 - `audit.py`, `kpi.py`, `account.py`, `cycle_stream.py`, `market_feed.py`, `markets.py`
 
-**Operations dashboard** (`dash/`)
-- `live_dash.py` — ops dashboard on `:8799` with a browser SPA (`dash/static/`)
-- System start/stop endpoints drive the bot stack (screener + engine poll + fleet) through
-  the same code path as the dashboard buttons
+**Operations dashboard** (`dashboard/`)
+- `server.py` — ops dashboard on `:8799` with a browser SPA (`dashboard/static/`)
+- System start/stop endpoints drive the bot stack through
+  the same code path as the dashboard buttons (Market Filter + Order Manager + Trader)
 - Service cards, guardrail health, cycle telemetry ring, account/exposure tiles
 
 **Ops tooling** (`scripts/`)
@@ -68,10 +68,11 @@ merge is the exit and the P&L event.
 ```
 spread-hunter-live/
   engine/                 Core trading & execution engine
-  dash/                   Operations dashboard (:8799) + SPA
-  scripts/                Ranker, screener loop, watchdog, PowerShell control center
-  strategy/               Simulation-side modules (fork source for engine/config.py)
-  run/                    Runtime state (live.db registry, markets.json, logs — not committed)
+  dashboard/              Operations dashboard (:8799) + SPA
+  scripts/                Market Filter, filter loop, watchdog, PowerShell control center
+  strategy/               Scoring, allocation and selection rules the Market Filter uses
+  data/                   Order registry (orders.db — not committed)
+  run/                    Market universe, logs and cycle telemetry (not committed)
   tests/                  Full hermetic unit & integration test suite
 ```
 
@@ -87,11 +88,11 @@ cp .env.example .env
 #   POLY_PRIVATE_KEY, POLY_FUNDER, POLY_SIG_TYPE, optional RELAYER_API_KEY / POLYGON_RPC
 
 # 3. Check wallet and account status (read-only)
-python -m engine.live_exec status
-python -m engine.live_exec balance
+python -m engine.order_manager status
+python -m engine.order_manager balance
 
 # 4. Run the operations dashboard
-python -m dash.live_dash          # http://127.0.0.1:8799
+python -m dashboard.server          # http://127.0.0.1:8799
 
 # 5. Tests
 pytest -q
@@ -99,7 +100,7 @@ pytest -q
 
 ## Operating guide
 
-**CLI** — `python -m engine.live_exec <command>`. Live by default; pass `--no-live` for a
+**CLI** — `python -m engine.order_manager <command>`. Live by default; pass `--no-live` for a
 dry-run preview.
 
 | Command | Purpose |

@@ -6,7 +6,7 @@ from pathlib import Path
 
 def test_venue_sync_dedupes_by_condition_asset(tmp_path, monkeypatch):
     """Two venue_sync runs with the same closed positions should write only once."""
-    from engine import live_exec as exec_mod
+    from engine import order_manager as exec_mod
     from engine import order_registry as reg_mod
     from engine.order_registry import OrderRegistry
 
@@ -98,7 +98,7 @@ def test_venue_sync_dedupes_by_condition_asset(tmp_path, monkeypatch):
 
 def test_venue_sync_writes_float_mark(tmp_path, monkeypatch):
     """venue_sync with open positions writes a float_marks row."""
-    from engine import live_exec as exec_mod
+    from engine import order_manager as exec_mod
     from engine import order_registry as reg_mod
     from engine.order_registry import OrderRegistry
 
@@ -165,7 +165,7 @@ def test_venue_sync_writes_float_mark(tmp_path, monkeypatch):
 
 def test_venue_sync_preserves_existing_closes_adds_new(tmp_path, monkeypatch):
     """Mixed: existing closes from engine execution + new from venue."""
-    from engine import live_exec as exec_mod
+    from engine import order_manager as exec_mod
     from engine import order_registry as reg_mod
     from engine.order_registry import OrderRegistry, CloseRecord
 
@@ -268,7 +268,7 @@ def test_venue_sync_preserves_existing_closes_adds_new(tmp_path, monkeypatch):
 
 def test_venue_sync_endpoint_exists():
     """Dashboard endpoint /api/system/venue-sync is registered."""
-    from dash.live_dash import app
+    from dashboard.server import app
     from fastapi.testclient import TestClient
 
     client = TestClient(app)

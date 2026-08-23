@@ -1006,7 +1006,7 @@ def test_poll_skips_a_contended_cycle_without_arming_the_backoff(temp_db: Path, 
     for something that clears in milliseconds, degrading the poller because a
     second shell ran a one-shot reconcile.
     """
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     registry = OrderRegistry(temp_db)
     blocker = OrderRegistry(temp_db)
@@ -1048,7 +1048,7 @@ def test_poll_sweep_error_is_isolated_from_reconcile(temp_db: Path, capsys, monk
     budget as reconcile, a Data API hiccup would drive the poller's backoff
     and a --once run would exit non-zero despite having reconciled fine.
     """
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setenv("POLY_FUNDER", "0xdeadbeef")
     sweep = MagicMock(side_effect=RuntimeError("data-api down"))
@@ -1067,7 +1067,7 @@ def test_poll_sweep_error_is_isolated_from_reconcile(temp_db: Path, capsys, monk
 
 def test_poll_skips_sweep_without_a_funder(temp_db: Path, monkeypatch):
     """account_sweep raises SystemExit without POLY_FUNDER; poll must not die."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.delenv("POLY_FUNDER", raising=False)
     sweep = MagicMock()
@@ -1082,7 +1082,7 @@ def test_poll_skips_sweep_without_a_funder(temp_db: Path, monkeypatch):
 
 def test_poll_sweeps_on_its_own_cadence(temp_db: Path, monkeypatch):
     """sweep_every=2 sweeps on cycles 1 and 3, not on the skipped cycle 2."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setenv("POLY_FUNDER", "0xdeadbeef")
     sweep = MagicMock()
@@ -1099,7 +1099,7 @@ def test_poll_sweeps_on_its_own_cadence(temp_db: Path, monkeypatch):
 
 def test_sweep_due_interval_decouples_from_ticks():
     """sweep_interval (seconds) governs; the first cycle always sweeps."""
-    from engine.live_exec import _sweep_due
+    from engine.order_manager import _sweep_due
 
     assert _sweep_due(1, now=0.0, last_sweep_ts=None, sweep_interval=30.0, sweep_every=1)
     assert not _sweep_due(2, now=5.0, last_sweep_ts=0.0, sweep_interval=30.0, sweep_every=1)
@@ -1110,7 +1110,7 @@ def test_sweep_due_interval_decouples_from_ticks():
 
 def test_sweep_due_tick_cadence_is_the_fallback():
     """Without sweep_interval, the sweep follows sweep_every cycles."""
-    from engine.live_exec import _sweep_due
+    from engine.order_manager import _sweep_due
 
     assert _sweep_due(2, now=999.0, last_sweep_ts=0.0, sweep_interval=None, sweep_every=2)
     assert not _sweep_due(3, now=999.0, last_sweep_ts=0.0, sweep_interval=None, sweep_every=2)
@@ -1123,7 +1123,7 @@ def test_sweep_due_tick_cadence_is_the_fallback():
 
 def test_supervise_watcher_restarts_a_dead_child(tmp_path):
     """A watcher child that died is replaced with a fresh, running one."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
     dead = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
     dead.wait(timeout=10)   # ensure it is actually dead before supervising
     proc = None
@@ -1143,7 +1143,7 @@ def test_supervise_watcher_restarts_a_dead_child(tmp_path):
 
 def test_supervise_watcher_throttles_restart_of_a_crash_loop(tmp_path):
     """A dead child is not restarted inside the throttle window."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
     dead = subprocess.Popen([sys.executable, "-c", "raise SystemExit(3)"])
     dead.wait(timeout=10)
     now = time.time()
@@ -1154,7 +1154,7 @@ def test_supervise_watcher_throttles_restart_of_a_crash_loop(tmp_path):
 
 def test_supervise_watcher_leaves_a_live_child_alone(tmp_path):
     """A healthy child is never touched."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
     child = subprocess.Popen([sys.executable, "-c",
                               "import time; time.sleep(30)"])
     try:
@@ -1173,7 +1173,7 @@ def test_supervise_watcher_leaves_a_live_child_alone(tmp_path):
 
 def test_poll_once_does_not_spawn_the_watcher(monkeypatch, temp_db):
     """--once runs never launch the watcher child (nor do injected clients)."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
     calls = []
 
     def _fake_spawn(db_path=None):

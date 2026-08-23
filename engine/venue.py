@@ -1,7 +1,7 @@
 """The Polymarket CLOB adapter: client construction, order caps, and venue
 response plumbing.
 
-Extracted from engine.live_exec so the fleet loop can cross a public seam
+Extracted from engine.order_manager so the fleet loop can cross a public seam
 instead of importing live_exec's privates. Everything here is venue plumbing —
 no strategy, no registry. The strategy-side decision modules and the registry
 stay in their own homes.

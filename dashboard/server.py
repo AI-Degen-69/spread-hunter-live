@@ -102,7 +102,8 @@ def resolve_db_path(custom_path: str | Path | None = None) -> Path:
     env_path = os.environ.get("LIVE_DB_PATH")
     if env_path:
         return Path(env_path)
-    return LIVE_ROOT / "run" / "live.db"
+    from engine.order_registry import DEFAULT_DB_PATH
+    return DEFAULT_DB_PATH
 
 
 def resolve_sweep_interval() -> float | None:
@@ -123,9 +124,9 @@ def resolve_sweep_interval() -> float | None:
 
 
 def _env_file() -> Path | None:
-    """The .env file engine.live_exec loads, found without importing it.
+    """The .env file engine.order_manager loads, found without importing it.
 
-    Mirrors engine.live_exec._find_env_file: the nearest .env walking up from
+    Mirrors engine.order_manager._find_env_file: the nearest .env walking up from
     live/engine/, stopping at the AGENTS.md boundary. The dashboard never
     loads the whole file -- only LIVE_SWEEP_INTERVAL is read or written -- so
     the signing key and L2 credentials never enter this process.
@@ -502,7 +503,7 @@ def _capture_starting_capital() -> float | None:
     bot from launching.
     """
     try:
-        from engine.live_exec import account_sweep
+        from engine.order_manager import account_sweep
         result = account_sweep(quiet=True)
         if isinstance(result, dict) and result.get("account_value_usd") is not None:
             return float(result["account_value_usd"])
@@ -642,7 +643,7 @@ def start_bot() -> dict:
         # owns reconcile, the account sweep, and the markout sampler, and it keeps
         # the registry's open orders fresh for the fleet loop below.
         sweep_interval = resolve_sweep_interval()
-        poll_cmd = [sys.executable, "-m", "engine.live_exec", "poll", "--interval", "0.5"]
+        poll_cmd = [sys.executable, "-m", "engine.order_manager", "poll", "--interval", "0.5"]
         if sweep_interval is not None:
             poll_cmd += ["--sweep-interval", str(sweep_interval)]
         p_eng = subprocess.Popen(
@@ -659,7 +660,7 @@ def start_bot() -> dict:
         # --no-sweep: a second reconcile loop would contend on the reconcile lock
         # and double the venue reads poll already makes.
         p_fleet = subprocess.Popen(
-            [sys.executable, "-m", "engine.main_spread_hunter_loop", "--live",
+            [sys.executable, "-m", "engine.trader_loop", "--live",
              "--no-reconcile", "--no-sweep", "--interval", "5"],
             cwd=str(LIVE_ROOT),
             stdout=subprocess.DEVNULL,
@@ -902,7 +903,7 @@ def api_system_venue_sync(request: Request):
     Reads the account from Polymarket and backfills closes/float_marks.
     Read-only at the venue; no exposure is opened or increased."""
     _authorize_control(request)
-    from engine.live_exec import venue_sync
+    from engine.order_manager import venue_sync
     db_path = resolve_db_path(_ACTIVE_DB_OVERRIDE)
     return JSONResponse(venue_sync(db_path=db_path, quiet=False))
 
@@ -952,7 +953,7 @@ def api_system_cancel_all(request: Request):
     to 127.0.0.1:8799 can cancel every resting order on a live bot.
     """
     _authorize_control(request)
-    from engine.live_exec import cancel_all
+    from engine.order_manager import cancel_all
     try:
         cancel_all(live=True)
         return JSONResponse({"ok": True, "message": "All open orders cancelled on the venue."})
@@ -987,7 +988,7 @@ def api_system_reset(request: Request):
     """
     _authorize_control(request)
     import shutil
-    from engine.live_exec import cancel_all, account_sweep
+    from engine.order_manager import cancel_all, account_sweep
 
     steps = []
 

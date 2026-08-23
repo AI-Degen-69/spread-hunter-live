@@ -572,7 +572,7 @@ def _make_sweep_fn(funder: Optional[str], db_path: Path, registry):
     """Sweep the account and log a float mark, without failing the loop."""
     def sweep_fn() -> None:
         from engine.account import log_float_mark_if_measured
-        from engine.live_exec import account_sweep
+        from engine.order_manager import account_sweep
         if not funder:
             return
         mark = account_sweep(funder=funder, db_path=str(db_path), quiet=True)

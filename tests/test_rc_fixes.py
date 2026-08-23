@@ -23,14 +23,14 @@ from pathlib import Path
 
 import pytest
 
-from engine import single_side_buy_saver as lp
+from engine import single_buy_saver as lp
 from engine import risk
 from engine.config import MakerConfig
 from engine.order_registry import (
     CloseRecord, FillRecord, OrderRecord, OrderRegistry, QuoteRecord,
 )
 from engine.quotes import Inventory, decide_quotes
-from engine.single_side_buy_saver import auto_manage_pairs
+from engine.single_buy_saver import auto_manage_pairs
 
 MAX_PAIR_COST = 0.995
 TOK_UP = "tok-up"
@@ -165,7 +165,7 @@ def test_exit_writes_a_naked_exit_close(registry: OrderRegistry):
     closes = registry.get_all_closes()
     assert len(closes) == 1
     c = closes[0]
-    assert c["method"] == "naked_exit"
+    assert c["method"] == "single_buy_exit"
     assert c["condition_id"] == COND
     assert c["shares"] == pytest.approx(10.0)
     # UP leg sold: up_price carries the sale, dn_price stays None.

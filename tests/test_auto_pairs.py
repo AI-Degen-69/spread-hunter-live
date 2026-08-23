@@ -14,8 +14,8 @@ from engine.config import MakerConfig
 from engine.order_registry import (
     OrderRegistry, OrderRecord, FillRecord, CloseRecord, QuoteRecord,
 )
-from engine import single_side_buy_saver as lp
-from engine.single_side_buy_saver import auto_manage_pairs
+from engine import single_buy_saver as lp
+from engine.single_buy_saver import auto_manage_pairs
 
 
 MAX_PAIR_COST = 0.995

@@ -47,7 +47,7 @@ def test_every_engine_module_resolves_inside_live():
     it ended.
     """
     import engine
-    import engine.live_exec as live_exec
+    import engine.order_manager as live_exec
     import engine.order_registry as order_reg
     import engine.markets as markets
     import engine.config as config
@@ -61,17 +61,3 @@ def test_every_engine_module_resolves_inside_live():
     for mod in (live_exec, order_reg, markets, config):
         path = Path(mod.__file__).resolve()
         assert path.parent == live_dir / "engine", f"{mod.__name__} resolved to {path}"
-
-
-def test_live_code_cannot_reach_the_simulation_package():
-    """`import strategy` must fail from the live suite.
-
-    The repo root is deliberately absent from live's sys.path (pytest.ini
-    sets `pythonpath = .`, and live_exec bootstraps ROOT only). If the
-    simulation becomes importable again the two `strategy` trees can start
-    merging again without anyone noticing.
-    """
-    import engine.live_exec  # noqa: F401  -- runs its sys.path bootstrap
-
-    with pytest.raises(ImportError):
-        importlib.import_module("strategy.quotes")

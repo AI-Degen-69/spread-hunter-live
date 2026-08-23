@@ -13,10 +13,10 @@ and nothing that does should ever be added to it.
     POLY_FUNDER=0x...           # address actually holding the USDC
     POLY_SIG_TYPE=3             # 0 EOA | 1 magic proxy | 2 Gnosis Safe | 3 Deposit Wallet
 
-    python -m engine.live_exec status
-    python -m engine.live_exec quote <condition_id> --price 0.22 --size 20
-    python -m engine.live_exec quote <condition_id> --price 0.22 --size 20 --live
-    python -m engine.live_exec cancel-all --live
+    python -m engine.order_manager status
+    python -m engine.order_manager quote <condition_id> --price 0.22 --size 20
+    python -m engine.order_manager quote <condition_id> --price 0.22 --size 20 --live
+    python -m engine.order_manager cancel-all --live
 
 SAFETY RAILS, all on by default:
   * --live is required for anything that reaches the venue. Without it every
@@ -41,7 +41,7 @@ reports balance 0 with zero allowances. Nothing in that response says "wrong
 address", so it reads exactly like an unfunded account. Do not go hunting for
 the money -- sweep the type instead, it settles the question in seconds:
 
-    foreach ($s in 0,1,2,3) { $env:POLY_SIG_TYPE=$s; python -m engine.live_exec balance }
+    foreach ($s in 0,1,2,3) { $env:POLY_SIG_TYPE=$s; python -m engine.order_manager balance }
 
 Exactly one returns a non-zero balance. Then run `status` and confirm the
 address it prints is the one holding your money.
@@ -64,7 +64,7 @@ ROOT = Path(__file__).resolve().parent.parent
 RUN = ROOT / "run"
 
 # Put live/ on sys.path so `engine.*` resolves however this module was reached
-# -- `python -m engine.live_exec` from live/, `python live/engine/live_exec.py`
+# -- `python -m engine.order_manager` from live/, `python live/engine/live_exec.py`
 # from the repo root, or an import from a test.
 #
 # ROOT only. The repo root is deliberately NOT added: `engine` must resolve
@@ -342,7 +342,7 @@ def pairs(db_path: str | Path | None = None) -> None:
     operator skips at the moment it matters.
     """
     from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH, get_connection
-    from engine.single_side_buy_saver import load_pair, PairExitRefused
+    from engine.single_buy_saver import load_pair, PairExitRefused
 
     db = Path(db_path) if db_path else DEFAULT_DB_PATH
     registry = OrderRegistry(db_path=db)
@@ -619,9 +619,9 @@ def quote(condition_id: str, price: float, size: float, live: bool,
 
     print(f"\nlogged to {RUN / 'live_orders.json'}")
     print(f"pair_id  {pair_id}")
-    print(f"  poll:     python -m engine.live_exec poll --interval 5")
-    print(f"  exit:     python -m engine.live_exec exit {pair_id}")
-    print(f"  complete: python -m engine.live_exec complete {pair_id}")
+    print("  poll:     python -m engine.order_manager poll --interval 0.5")
+    print(f"  exit:     python -m engine.order_manager exit {pair_id}")
+    print(f"  complete: python -m engine.order_manager complete {pair_id}")
 
 
 # Provenance: matches the 598s delta measured on transaction 0x66bc709b1a1d515d813e9d191a84b8863d8f2a251e1698a85d452152c7602135, block 92098496.
@@ -2005,7 +2005,7 @@ def poll(
         # loop either.
         try:
             from engine.config import load as _load_cfg
-            from engine.single_side_buy_saver import auto_manage_pairs
+            from engine.single_buy_saver import auto_manage_pairs
             for pr in auto_manage_pairs(
                 client, registry, _load_cfg(), funder=funder,
             ):
@@ -2094,7 +2094,7 @@ def exit_pair(pair_id: str, live: bool, db_path: str | Path | None = None,
     Data API is down and the operator has decided to act anyway, and it says so
     on the record.
     """
-    from engine.single_side_buy_saver import (
+    from engine.single_buy_saver import (
         exit_naked_leg, fetch_positions, load_pair, PairExitRefused,
     )
     from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH
@@ -2183,7 +2183,7 @@ def exit_pair(pair_id: str, live: bool, db_path: str | Path | None = None,
         print(
             f"\nThe pair completed between the cancel and the sell. It is now "
             f"worth $1.00 at merge -- run:\n"
-            f"  python -m engine.live_exec merge {result['condition_id']} "
+            f"  python -m engine.order_manager merge {result['condition_id']} "
             f"--amount <shares> --live"
         )
 
@@ -2197,7 +2197,7 @@ def complete_pair_cmd(pair_id: str, live: bool, db_path: str | Path | None = Non
     cross that would push the pair to or past max_pair_cost -- that case
     belongs to `exit`, and this path must not do the stop-loss's job badly.
     """
-    from engine.single_side_buy_saver import (
+    from engine.single_buy_saver import (
         complete_pair, fetch_positions, load_pair, PairCompletionRefused,
         PairExitRefused,
     )

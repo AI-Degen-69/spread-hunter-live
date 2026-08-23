@@ -38,20 +38,20 @@ $HbFile      = Join-Path $RunDir "guardrail_watch_heartbeat.json"
 
 # Module map: each stack process -> its source file (relative to the repo root).
 $StackPaths = @{
-    supervisor = "engine/live_exec.py"   # the engine poll loop doubles as supervisor
+    supervisor = "engine/order_manager.py"   # the engine poll loop doubles as supervisor
     screener   = "scripts/filter_loop.py"
-    engine     = "engine/live_exec.py"
-    fleet      = "engine/main_spread_hunter_loop.py"
+    engine     = "engine/order_manager.py"
+    fleet      = "engine/trader_loop.py"
     guardrail  = "scripts/guardrail_watch.py"
-    dash       = "dash/live_dash.py"
+    dash       = "dashboard/server.py"
 }
 
 $StackCmds = @{
     screener   = "python -m scripts.filter_loop"
-    engine     = "python -m engine.live_exec poll --interval 0.5"
-    fleet      = "python -m engine.main_spread_hunter_loop"
+    engine     = "python -m engine.order_manager poll --interval 0.5"
+    fleet      = "python -m engine.trader_loop --live --no-reconcile --no-sweep --interval 5"
     guardrail  = "python -m scripts.guardrail_watch"
-    dash       = "python -m dash.live_dash --port 8799"
+    dash       = "python -m dashboard.server --port 8799"
 }
 
 # ── Theme system (shared profile templates, self-contained fallback) ──
@@ -242,9 +242,9 @@ function Start-Dashboard {
         Lsh-Fail "Port $LivePort is occupied by PID $portPid, which does NOT answer as a spread-hunter dashboard - refusing to act on it. Free the port manually first."
         return $false
     }
-    Lsh-Step "Launching dashboard (python -m dash.live_dash --port $LivePort)..."
+    Lsh-Step "Launching dashboard (python -m dashboard.server --port $LivePort)..."
     $dash = Start-Process -FilePath "python" `
-        -ArgumentList "-m", "dash.live_dash", "--port", "$LivePort" `
+        -ArgumentList "-m", "dashboard.server", "--port", "$LivePort" `
         -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $OutLog `
         -RedirectStandardError  $ErrLog
@@ -310,55 +310,72 @@ function Invoke-Control {
 }
 
 # ── Aligned status rows ──
-# The PCS canonical family (Write-ProfileStatus / Write-ProfileKeyValue) cannot
-# express a fixed status column next to a padded label, so the status view uses
-# these local helpers. Colors still come from Get-ProfileColor (theme rule 5).
-#
-# Column contract - every section's rows start at the same positions:
-#   col 3   label   (25 wide, Strong/white)
-#   col 29  status  (9 wide, red/green/yellow word) OR the value of a key-value row
-#   col 40  detail  (PIDs, URLs, paths; style color)
-#   col 54  path    (stack table only: source file of each process)
-function Write-StatusLine {
+# Unified 4-column template across EVERY section:
+#   col 1: Name / Label      (27 wide, Strong/white)
+#   col 2: Status Badge      (11 wide, color-coded word: ON/OFF for processes, FOUND/MISSING/STALE for files)
+#   col 3: File / Path       (35 wide, Path/green)
+#   col 4: Dynamic info      (PID if running, Run command if stopped, or file metadata)
+function Write-ProcessRow {
     param(
         [Parameter(Mandatory)][string]$Label,
-        [AllowEmptyString()][string]$Status = "",
-        [AllowEmptyString()][string]$Detail = "",
-        [string]$StatusStyle = "Info",
-        [string]$DetailStyle = "Info"
+        [Parameter(Mandatory)][bool]$Running,
+        [object]$PidVal = $null,
+        [Parameter(Mandatory)][string]$Path,
+        [string]$RunCmd = "",
+        [string]$ExtraInfo = ""
     )
-    $cLabel  = Get-ProfileColor -Name Strong
-    $cStatus = Get-ProfileColor -Name $StatusStyle
-    $cDetail = Get-ProfileColor -Name $DetailStyle
-    Write-Host ("  {0,-25}" -f $Label) -ForegroundColor $cLabel -NoNewline
-    if ($Status) {
-        Write-Host ("  {0,-9}" -f $Status) -ForegroundColor $cStatus -NoNewline
-        if ($Detail) { Write-Host ("  " + $Detail) -ForegroundColor $cDetail } else { Write-Host "" }
+
+    $statusWord = if ($Running) { "ON" } else { "OFF" }
+    $statusColor = if ($Running) { Get-ProfileColor -Name Success } else { Get-ProfileColor -Name Error }
+
+    $dynamic = if ($Running) {
+        if ($ExtraInfo) { "PID $PidVal · $ExtraInfo" }
+        elseif ($PidVal) { "PID $PidVal" }
+        else { "running" }
     } else {
-        if ($Detail) { Write-Host ("  " + $Detail) -ForegroundColor $cDetail } else { Write-Host "" }
+        if ($RunCmd) { "Run: $RunCmd" } else { "stopped" }
     }
+    $dynamicColor = if ($Running) { Get-ProfileColor -Name Value } else { Get-ProfileColor -Name Command }
+
+    Write-Host ("  {0,-27}" -f $Label) -ForegroundColor (Get-ProfileColor -Name Strong) -NoNewline
+    Write-Host ("{0,-11}" -f $statusWord) -ForegroundColor $statusColor -NoNewline
+    Write-Host ("{0,-35}" -f $Path) -ForegroundColor (Get-ProfileColor -Name Path) -NoNewline
+    Write-Host $dynamic -ForegroundColor $dynamicColor
 }
 
-function Write-StackRow {
-    <# One bot-stack row: name | status | PID | source file, all columns padded. #>
+function Write-FileRow {
     param(
-        [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][bool]$Running,
-        [object]$ProcId,
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][string]$Status,
         [Parameter(Mandatory)][string]$Path,
-        [string]$RunCmd = ""
+        [string]$Dynamic = "",
+        [string]$StatusStyle = "",
+        [string]$DynamicStyle = ""
     )
-    $word = if ($Running) { "RUNNING" } else { "STOPPED" }
-    $cStatus = Get-ProfileColor -Name $(if ($Running) { "Success" } else { "Error" })
-    $pidTxt = if ($ProcId) { "PID $ProcId" } else { "" }
-    Write-Host ("  {0,-25}" -f $Name) -ForegroundColor (Get-ProfileColor -Name Strong) -NoNewline
-    Write-Host ("  {0,-9}" -f $word) -ForegroundColor $cStatus -NoNewline
-    Write-Host ("  {0,-12}" -f $pidTxt) -ForegroundColor (Get-ProfileColor -Name Neutral) -NoNewline
-    Write-Host ("  " + $Path) -ForegroundColor (Get-ProfileColor -Name Path)
-    if (-not $Running -and $RunCmd) {
-        Write-Host "       [i] Run: " -ForegroundColor (Get-ProfileColor -Name Info) -NoNewline
-        Write-Host $RunCmd -ForegroundColor (Get-ProfileColor -Name Command)
+
+    if (-not $StatusStyle) {
+        $StatusStyle = switch -Regex ($Status.ToUpper()) {
+            '^(FOUND|OK|FRESH|ON)$'            { 'Success' }
+            '^(AGING|STALE|WARN|LISTENING)$'   { 'Warning' }
+            default                            { 'Error' }
+        }
     }
+    if (-not $DynamicStyle) {
+        $DynamicStyle = if ($Dynamic -like "Run: *" -or $Dynamic -like "*Run: *") { 'Command' }
+                        elseif ($Status -in "MISSING", "ERROR") { 'Error' }
+                        elseif ($Status -in "STALE", "AGING") { 'Warning' }
+                        else { 'Neutral' }
+    }
+
+    $cLabel   = Get-ProfileColor -Name Strong
+    $cStatus  = Get-ProfileColor -Name $StatusStyle
+    $cPath    = Get-ProfileColor -Name Path
+    $cDynamic = Get-ProfileColor -Name $DynamicStyle
+
+    Write-Host ("  {0,-27}" -f $Label) -ForegroundColor $cLabel -NoNewline
+    Write-Host ("{0,-11}" -f $Status) -ForegroundColor $cStatus -NoNewline
+    Write-Host ("{0,-35}" -f $Path) -ForegroundColor $cPath -NoNewline
+    Write-Host $Dynamic -ForegroundColor $cDynamic
 }
 
 function Write-SectionHeader {
@@ -385,7 +402,7 @@ function Write-SectionHeader {
 }
 
 function Write-StackRows {
-    <# Bot state count (X/3) in header + one aligned row per stack process. #>
+    <# Bot state count (X/3) in header + unified 4-column rows. #>
     param(
         [object[]]$Rows
     )
@@ -394,23 +411,22 @@ function Write-StackRows {
     if ($totalCount -eq 0) { $totalCount = 3 }
 
     if ($runningCount -eq $totalCount) {
-        Write-SectionHeader -Number "2" -Title "BOT STACK" -Status ("ALL RUNNING ({0}/{1})" -f $runningCount, $totalCount) -StatusStyle "Success"
+        Write-SectionHeader -Number "2" -Title "BOT STACK" -Status ("ON ({0}/{1})" -f $runningCount, $totalCount) -StatusStyle "Success"
     } elseif ($runningCount -gt 0) {
         Write-SectionHeader -Number "2" -Title "BOT STACK" -Status ("PARTIAL ({0}/{1})" -f $runningCount, $totalCount) -StatusStyle "Warning"
     } else {
-        Write-SectionHeader -Number "2" -Title "BOT STACK" -Status ("STOPPED (0/{0})" -f $totalCount) -StatusStyle "Error"
+        Write-SectionHeader -Number "2" -Title "BOT STACK" -Status ("OFF (0/{0})" -f $totalCount) -StatusStyle "Error"
     }
     foreach ($r in $Rows) {
-        Write-StackRow -Name $r.Name -Running $r.Running -ProcId $r.Pid -Path $r.Path -RunCmd $r.RunCmd
+        Write-ProcessRow -Label $r.Name -Running $r.Running -PidVal $r.Pid -Path $r.Path -RunCmd $r.RunCmd
     }
     if ($Rows.Count -gt 0 -and $runningCount -eq 0 -and (Test-Path $ProcsFile)) {
-        Write-StatusLine -Label "live_procs.json" -Status "STALE" -StatusStyle Warning -Detail "record exists but no process is alive"
+        Write-FileRow -Label "Process registry" -Status "STALE" -Path "run/live_procs.json" -Dynamic "no active PID"
     }
 }
 
 function Show-ServiceTable {
-    <# Render the /api/system/status payload: bot state count + 3 stack services
-    (dash excluded - it is reported separately in the DASHBOARD section). #>
+    <# Render the /api/system/status payload: bot state count + 3 stack services. #>
     param($Status)
     $rows = @()
     foreach ($svc in @("screener", "engine", "fleet")) {
@@ -532,22 +548,16 @@ function Show-Status {
     $portUp = Test-LivePort
     if ($inst) {
         Write-SectionHeader -Number "1" -Title "DASHBOARD" -Status "ON" -StatusStyle "Success"
-        Write-StatusLine -Label "Dashboard URL" -Detail $DashUrl -DetailStyle Link
-        Write-StatusLine -Label "Uptime" -Detail (Format-Uptime $inst.proc.StartTime) -DetailStyle Value
-        Write-StatusLine -Label "Filepath" -Detail $StackPaths["dash"] -DetailStyle Path
-        Write-StatusLine -Label "PID file" -Detail ("PID {0} · run/live-dash.pids.json" -f $inst.pid) -DetailStyle Path
+        Write-ProcessRow -Label "Dashboard" -Running $true -PidVal $inst.pid -Path $StackPaths["dash"] -ExtraInfo $DashUrl
+        Write-FileRow -Label "PID file" -Status "FOUND" -Path "run/live-dash.pids.json" -Dynamic ("PID {0} recorded" -f $inst.pid)
     } elseif ($portUp) {
         Write-SectionHeader -Number "1" -Title "DASHBOARD" -Status "LISTENING" -StatusStyle "Warning"
-        Write-StatusLine -Label "Dashboard URL" -Detail $DashUrl -DetailStyle Link
-        Write-StatusLine -Label "Filepath" -Detail $StackPaths["dash"] -DetailStyle Path
-        Write-StatusLine -Label "PID file" -Detail ("PID {0} on port {1} · not owned by this menu" -f (Get-PortPid), $LivePort) -DetailStyle Warning
+        Write-FileRow -Label "Dashboard" -Status "LISTENING" -Path $StackPaths["dash"] -Dynamic ("PID {0} on port {1} (external)" -f (Get-PortPid), $LivePort)
+        Write-FileRow -Label "PID file" -Status "MISSING" -Path "run/live-dash.pids.json" -Dynamic "not owned by menu"
     } else {
         Write-SectionHeader -Number "1" -Title "DASHBOARD" -Status "OFF" -StatusStyle "Error"
-        Write-StatusLine -Label "Dashboard URL" -Detail ("{0} · Run: python -m dash.live_dash --port {1}" -f $DashUrl, $LivePort) -DetailStyle Warning
-        Write-StatusLine -Label "Filepath" -Detail $StackPaths["dash"] -DetailStyle Path
-        Write-StatusLine -Label "PID file" -Detail "run/live-dash.pids.json" -DetailStyle Path
-        Write-Host "       [i] Run: " -ForegroundColor (Get-ProfileColor -Name Info) -NoNewline
-        Write-Host "python -m dash.live_dash --port $LivePort" -ForegroundColor (Get-ProfileColor -Name Command)
+        Write-ProcessRow -Label "Dashboard" -Running $false -Path $StackPaths["dash"] -RunCmd ("python -m dashboard.server --port {0}" -f $LivePort)
+        Write-FileRow -Label "PID file" -Status "MISSING" -Path "run/live-dash.pids.json" -Dynamic "no PID file"
     }
 
     # ── 2 · BOT STACK (dashboard API when up, live_procs.json otherwise) ──
@@ -580,8 +590,10 @@ function Show-Status {
             }
             Write-StackRows -Rows $rows
         } else {
-            Write-SectionHeader -Number "2" -Title "BOT STACK" -Status "STOPPED (0/3)" -StatusStyle "Error"
-            Write-StatusLine -Label "Bot stack" -Status "STOPPED" -StatusStyle Error -Detail "no run/live_procs.json on disk"
+            Write-SectionHeader -Number "2" -Title "BOT STACK" -Status "OFF (0/3)" -StatusStyle "Error"
+            Write-ProcessRow -Label "Market Filter (loop)" -Running $false -Path $StackPaths["screener"] -RunCmd $StackCmds["screener"]
+            Write-ProcessRow -Label "Order Manager (poll)" -Running $false -Path $StackPaths["engine"] -RunCmd $StackCmds["engine"]
+            Write-ProcessRow -Label "Trader (loop)" -Running $false -Path $StackPaths["fleet"] -RunCmd $StackCmds["fleet"]
         }
     }
 
@@ -592,43 +604,43 @@ function Show-Status {
     }
     if ($gh) {
         if ($gh.running) {
-            Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "RUNNING" -StatusStyle "Success"
-            Write-StatusLine -Label "Heartbeat" -Detail ("PID {0} · {1}s old" -f $gh.pid, [int]$gh.age_s) -DetailStyle Value
-            Write-StatusLine -Label "Alerts" -Detail ("{0} alerts total" -f $gh.alerts_total) -DetailStyle $(if ($gh.alerts_total -gt 0) { "Warning" } else { "Success" })
+            Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "ON" -StatusStyle "Success"
+            Write-ProcessRow -Label "Watchdog (guardrail)" -Running $true -PidVal $gh.pid -Path $StackPaths["guardrail"]
+            Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0}s old" -f [int]$gh.age_s)
+            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic ("{0} alert(s)" -f $gh.alerts_total)
         } else {
-            Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "DOWN" -StatusStyle "Error"
-            Write-StatusLine -Label "Heartbeat" -Detail ("heartbeat {0}s old · alerts {1}" -f [int]$gh.age_s, $gh.alerts_total) -DetailStyle Error
-            Write-Host "       [i] Run: " -ForegroundColor (Get-ProfileColor -Name Info) -NoNewline
-            Write-Host "python -m scripts.guardrail_watch" -ForegroundColor (Get-ProfileColor -Name Command)
+            Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "OFF" -StatusStyle "Error"
+            Write-ProcessRow -Label "Watchdog (guardrail)" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.guardrail_watch"
+            Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0}s old" -f [int]$gh.age_s)
+            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic ("{0} alert(s)" -f $gh.alerts_total)
         }
     } elseif (Test-Path $HbFile) {
         try {
             $hb = Get-Content $HbFile -Raw | ConvertFrom-Json
             $age = Get-HeartbeatAgeSec $hb.ts
             if ($null -ne $age -and $age -le 30) {
-                Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "RUNNING" -StatusStyle "Success"
-                Write-StatusLine -Label "Heartbeat" -Detail ("PID {0} · {1}s old" -f $hb.pid, $age) -DetailStyle Value
-                Write-StatusLine -Label "Alerts" -Detail "0 alerts" -DetailStyle Success
+                Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "ON" -StatusStyle "Success"
+                Write-ProcessRow -Label "Watchdog (guardrail)" -Running $true -PidVal $hb.pid -Path $StackPaths["guardrail"]
+                Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0}s old" -f $age)
+                Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic "0 alerts"
             } else {
-                Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "DOWN" -StatusStyle "Error"
-                Write-StatusLine -Label "Heartbeat" -Detail ("heartbeat {0}s old" -f $age) -DetailStyle Error
-                Write-Host "       [i] Run: " -ForegroundColor (Get-ProfileColor -Name Info) -NoNewline
-                Write-Host "python -m scripts.guardrail_watch" -ForegroundColor (Get-ProfileColor -Name Command)
+                Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "OFF" -StatusStyle "Error"
+                Write-ProcessRow -Label "Watchdog (guardrail)" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.guardrail_watch"
+                Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0}s old" -f $age)
+                Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic "0 alerts"
             }
         } catch {
-            Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "DOWN" -StatusStyle "Error"
-            Write-StatusLine -Label "Heartbeat" -Detail "unreadable heartbeat file" -DetailStyle Error
-            Write-Host "       [i] Run: " -ForegroundColor (Get-ProfileColor -Name Info) -NoNewline
-            Write-Host "python -m scripts.guardrail_watch" -ForegroundColor (Get-ProfileColor -Name Command)
+            Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "OFF" -StatusStyle "Error"
+            Write-ProcessRow -Label "Watchdog (guardrail)" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.guardrail_watch"
+            Write-FileRow -Label "Heartbeat file" -Status "ERROR" -Path "run/guardrail_watch_heartbeat.json" -Dynamic "unreadable"
+            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic "0 alerts"
         }
     } else {
-        Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "DOWN" -StatusStyle "Error"
-        Write-StatusLine -Label "Heartbeat" -Detail "no heartbeat file" -DetailStyle Error
-        Write-Host "       [i] Run: " -ForegroundColor (Get-ProfileColor -Name Info) -NoNewline
-        Write-Host "python -m scripts.guardrail_watch" -ForegroundColor (Get-ProfileColor -Name Command)
+        Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "OFF" -StatusStyle "Error"
+        Write-ProcessRow -Label "Watchdog (guardrail)" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.guardrail_watch"
+        Write-FileRow -Label "Heartbeat file" -Status "MISSING" -Path "run/guardrail_watch_heartbeat.json" -Dynamic "no file"
+        Write-FileRow -Label "Alerts log" -Status "MISSING" -Path "run/guardrail_alerts.log" -Dynamic "no file"
     }
-    Write-StatusLine -Label "Heartbeat file" -Detail "run/guardrail_watch_heartbeat.json" -DetailStyle Path
-    Write-StatusLine -Label "Alerts log" -Detail "run/guardrail_alerts.log" -DetailStyle Path
 
     # ── 4 · MARKET FILTER & UNIVERSE FEED (what the stack depends on) ──
     Show-ScreenerAndFeed
@@ -651,78 +663,63 @@ function Show-ScreenerAndFeed {
         try { $count = @(Get-Content $feed -Raw | ConvertFrom-Json).Count } catch {}
     }
 
-    if (-not $modulesOk) {
-        Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status "MISSING" -StatusStyle "Error"
-    } elseif (-not $feedExists) {
-        Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status "NO FEED" -StatusStyle "Error"
-    } elseif ($ageSec -gt 21600) {
-        Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status "STALE" -StatusStyle "Error"
-    } elseif ($ageSec -gt 3600) {
-        Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status "AGING" -StatusStyle "Warning"
-    } else {
-        Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status "FRESH" -StatusStyle "Success"
-    }
+    $feedStatus = "FOUND"
+    if (-not $feedExists)      { $feedStatus = "MISSING" }
+    elseif ($ageSec -gt 21600) { $feedStatus = "STALE" }
+    elseif ($ageSec -gt 3600)  { $feedStatus = "AGING" }
 
-    if ($modulesOk) {
-        Write-StatusLine -Label "Filter modules" -Status "OK" -StatusStyle Success `
-            -Detail "scripts/filter_loop.py · scripts/filter_markets.py · strategy/config.py" -DetailStyle Path
-    } else {
-        Write-StatusLine -Label "Filter modules" -Status "MISSING" -StatusStyle Error `
-            -Detail "dashboard start-bot would spawn a phantom process"
-    }
+    $hdrStatus = if (-not $modulesOk) { "MISSING" } else { $feedStatus }
+    Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status $hdrStatus
 
-    if (-not $feedExists) {
-        Write-StatusLine -Label "Universe feed" -Status "MISSING" -StatusStyle Error `
-            -Detail "run/markets.json · fleet idles with no universe (run the screener first)" -DetailStyle Path
-    } elseif ($ageSec -gt 21600) {
-        Write-StatusLine -Label "Universe feed" -Status "STALE" -StatusStyle Error `
-            -Detail ("{0} market(s) · {1}s old (>6h, ranker down) · run/markets.json" -f $count, $ageSec) -DetailStyle Path
-    } elseif ($ageSec -gt 3600) {
-        Write-StatusLine -Label "Universe feed" -Status "AGING" -StatusStyle Warning `
-            -Detail ("{0} market(s) · {1}s old (>1h, ranker stopped) · run/markets.json" -f $count, $ageSec) -DetailStyle Path
-    } else {
-        Write-StatusLine -Label "Universe feed" -Status "FRESH" -StatusStyle Success `
-            -Detail ("{0} market(s) · {1}s old · run/markets.json" -f $count, $ageSec) -DetailStyle Path
-    }
+    $stRerank = if (Test-Path $rerank) { "FOUND" } else { "MISSING" }
+    Write-FileRow -Label "Filter loop" -Status $stRerank -Path "scripts/filter_loop.py" -Dynamic "10m cadence"
+
+    $stRanker = if (Test-Path $ranker) { "FOUND" } else { "MISSING" }
+    Write-FileRow -Label "Filter engine" -Status $stRanker -Path "scripts/filter_markets.py" -Dynamic "scorer"
+
+    $feedDetail = if (-not $feedExists) { "Run: python -m scripts.filter_loop" }
+                  elseif ($feedStatus -eq "STALE") { "{0} market(s) · {1}s old · Run: python -m scripts.filter_loop" -f $count, $ageSec }
+                  else { "{0} market(s) · {1}s old" -f $count, $ageSec }
+    Write-FileRow -Label "Universe feed" -Status $feedStatus -Path "run/markets.json" -Dynamic $feedDetail
 }
 
 function Show-CheckoutIdentity {
-    $code = "import sys; sys.path.insert(0, r'$ProjectPath'); import os, dash.live_dash as d, engine.main_spread_hunter_loop as f, scripts.filter_loop as r, scripts.filter_markets as k; print('cwd=' + os.getcwd()); print(os.path.dirname(d.__file__)); print(os.path.dirname(f.__file__)); print(r.__file__); print(k.__file__)"
+    $code = "import sys; sys.path.insert(0, r'$ProjectPath'); import os, dashboard.server as d, engine.order_manager as m, engine.trader_loop as f, scripts.filter_loop as r, scripts.filter_markets as k; print('cwd=' + os.getcwd()); print(d.__file__); print(m.__file__); print(f.__file__); print(r.__file__); print(k.__file__)"
     $raw = @()
     try { $raw = @(& python -c $code 2>&1) } catch {}
-    if ($raw.Count -lt 4) {
+    if ($raw.Count -lt 5) {
         $raw = @()
         try { $raw = @(& py -3 -c $code 2>&1) } catch {}
     }
     $paths = @($raw | Where-Object { $_ -is [string] -and $_ -match '^[A-Za-z]:[\\/]' })
 
-    $allOk = ($paths.Count -ge 4)
+    $allOk = ($paths.Count -ge 5)
     if ($allOk) {
-        for ($i = 0; $i -lt 4; $i++) {
+        for ($i = 0; $i -lt 5; $i++) {
             if ($paths[$i].Trim() -notlike "$ProjectPath*") { $allOk = $false; break }
         }
     }
 
     if ($allOk) {
-        Write-SectionHeader -Number "5" -Title "CHECKOUT IDENTITY" -Status "OK" -StatusStyle "Success"
+        Write-SectionHeader -Number "5" -Title "CHECKOUT IDENTITY" -Status "FOUND" -StatusStyle "Success"
     } else {
         Write-SectionHeader -Number "5" -Title "CHECKOUT IDENTITY" -Status "CHECK" -StatusStyle "Error"
     }
 
-    if ($paths.Count -lt 4) {
-        Write-StatusLine -Label "Module resolution" -Status "FAILED" -StatusStyle Error `
-            -Detail "python missing or an import failed"
+    if ($paths.Count -lt 5) {
+        Write-FileRow -Label "Module resolution" -Status "MISSING" -Path "python" -Dynamic "import failed"
         $tail = (($raw | Select-Object -Last 2 | ForEach-Object { "$_" }) -join " ")
-        if ($tail) { Write-StatusLine -Label "Diagnostic" -Detail $tail -DetailStyle Warning }
+        if ($tail) { Write-FileRow -Label "Diagnostic" -Status "WARN" -Path "error" -Dynamic $tail }
         return
     }
-    $labels = @("dash.live_dash", "engine.main_spread_hunter_loop", "scripts.filter_loop", "scripts.filter_markets")
-    for ($i = 0; $i -lt 4; $i++) {
+    $labels = @("dashboard.server", "engine.order_manager", "engine.trader_loop", "scripts.filter_loop", "scripts.filter_markets")
+    $relPaths = @("dashboard/server.py", "engine/order_manager.py", "engine/trader_loop.py", "scripts/filter_loop.py", "scripts/filter_markets.py")
+    for ($i = 0; $i -lt 5; $i++) {
         $p = $paths[$i].Trim()
         if ($p -like "$ProjectPath*") {
-            Write-StatusLine -Label $labels[$i] -Status "OK" -StatusStyle Success -Detail $p -DetailStyle Path
+            Write-FileRow -Label $labels[$i] -Status "FOUND" -Path $relPaths[$i] -Dynamic $ProjectPath
         } else {
-            Write-StatusLine -Label $labels[$i] -Status "OUTSIDE" -StatusStyle Error -Detail ($p + "  <-- outside this repo!") -DetailStyle Path
+            Write-FileRow -Label $labels[$i] -Status "MISSING" -Path $relPaths[$i] -Dynamic ($p + " <-- outside repo!")
         }
     }
 }

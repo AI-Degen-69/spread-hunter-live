@@ -128,3 +128,17 @@ pytest -q
 2. **Closing commands are pre-approved:** `exit`, `complete`, `merge`, `redeem`, `cancel`, `cancel-all` reduce exposure.
 3. **Opening commands require explicit supervision:** `quote` and live fleet quoting rest real funds.
 4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `AI-Degen-69/spread-hunter-live`, driven via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical triage roles, each label string equal to its role name. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` and `docs/adr/` at the repo root, created lazily. See `docs/agents/domain.md`.

@@ -934,7 +934,7 @@ def test_start_bot_spawns_screener_engine_and_fleet(monkeypatch, tmp_path):
     assert result["ok"] is True
 
     cmds = [" ".join(a) for a in spawned]
-    assert any("scripts.rerank_loop" in c for c in cmds), cmds
+    assert any("scripts.filter_loop" in c or "scripts.rerank_loop" in c for c in cmds), cmds
     assert any("engine.live_exec" in c and "poll" in c for c in cmds), cmds
 
     fleet_cmd = next(c for c in cmds if "engine.main_spread_hunter_loop" in c)

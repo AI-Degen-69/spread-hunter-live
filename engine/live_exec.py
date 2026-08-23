@@ -1742,7 +1742,7 @@ def _supervise_watcher(proc, db_path, last_restart_ts, log_fn=None,
     return _spawn_guardrail_watcher(db_path), time.time()
 
 def poll(
-    interval: float = 5.0,
+    interval: float = 0.5,
     once: bool = False,
     db_path: str | Path | None = None,
     client=None,
@@ -2967,7 +2967,7 @@ def main() -> None:
     p.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
                   help="send to venue (default: True)")
     pl = sub.add_parser("poll", help="Poll CLOB and reconcile orders and fills.")
-    pl.add_argument("--interval", type=float, default=5.0, help="Cadence in seconds (default: 5.0)")
+    pl.add_argument("--interval", type=float, default=0.5, help="Cadence in seconds (default: 0.5)")
     pl.add_argument("--once", action="store_true", help="Reconcile once and exit")
     pl.add_argument("--db", default=None, help="Custom database path (default: run/live.db)")
     pl.add_argument("--sweep-every", type=int, default=1,

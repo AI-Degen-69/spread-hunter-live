@@ -308,10 +308,10 @@ connectSSE();
 
 /* ── Render: Service Cards (DT1: guardrail first, alert borders) ── */
 const SERVICE_DEFS = [
-  { key: 'screener', name: 'Screener', cmd: 'python -m scripts.rerank_loop',
+  { key: 'screener', name: 'Market Filter', cmd: 'python -m scripts.filter_loop',
     desc: 'Scans 500+ Polymarket binary markets and screens down to 8 graduated pairs.' },
-  { key: 'engine', name: 'Engine Poll Loop', cmd: 'python -m engine.live_exec poll --interval 5',
-    desc: 'Polls CLOB every 5s, reconciles fills, executes account sweeps.' },
+  { key: 'engine', name: 'Order Manager', cmd: 'python -m engine.live_exec poll --interval 0.5',
+    desc: 'Polls CLOB every 0.5s, reconciles fills, executes account sweeps.' },
   { key: 'fleet', name: 'Trader (Loop)', cmd: 'python -m engine.main_spread_hunter_loop loop',
     desc: 'Runs the trading loop (decide quotes -> submit maker orders) every 5s across approved markets.' },
   { key: 'guardrail', name: 'Guardrail Watchdog', cmd: 'python -m scripts.guardrail_watch',

@@ -42,7 +42,7 @@ $HbFile      = Join-Path $RunDir "guardrail_watch_heartbeat.json"
 # Module map: each stack process -> its source file (relative to the repo root).
 $StackPaths = @{
     supervisor = "engine/live_exec.py"   # the engine poll loop doubles as supervisor
-    screener   = "scripts/rerank_loop.py"
+    screener   = "scripts/filter_loop.py"
     engine     = "engine/live_exec.py"
     fleet      = "engine/main_spread_hunter_loop.py"
     guardrail  = "scripts/guardrail_watch.py"
@@ -50,8 +50,8 @@ $StackPaths = @{
 }
 
 $StackCmds = @{
-    screener   = "python -m scripts.rerank_loop"
-    engine     = "python -m engine.live_exec poll"
+    screener   = "python -m scripts.filter_loop"
+    engine     = "python -m engine.live_exec poll --interval 0.5"
     fleet      = "python -m engine.main_spread_hunter_loop"
     guardrail  = "python -m scripts.guardrail_watch"
     dash       = "python -m dash.live_dash --port 8799"
@@ -421,7 +421,7 @@ function Show-ServiceTable {
         if ($s) {
             $label = @{
                 screener   = "Market Filter (loop)"
-                engine     = "Order Reconciler (poll)"
+                engine     = "Order Manager (poll)"
                 fleet      = "Trader (loop)"
             }[$svc]
             if (-not $label) { $label = $s.name }
@@ -438,10 +438,10 @@ function Show-ServiceTable {
 }
 
 function Start-BotStack {
-    <# Launch screener + engine-poll + fleet via the dashboard's start endpoint. #>
-    $rerank = Join-Path $ProjectPath "scripts\rerank_loop.py"
+    <# Launch market filter + order manager poll + trader loop via the dashboard's start endpoint. #>
+    $rerank = Join-Path $ProjectPath "scripts\filter_loop.py"
     if (-not (Test-Path $rerank)) {
-        Lsh-Fail "Screener module scripts/rerank_loop.py is MISSING in this repo - the dashboard would spawn a phantom process. Add it before starting."
+        Lsh-Fail "Filter module scripts/filter_loop.py is MISSING in this repo - the dashboard would spawn a phantom process. Add it before starting."
         return
     }
     if (-not (Test-LivePort)) {
@@ -570,7 +570,7 @@ function Show-Status {
                 $running = [bool]($info -and $info.pid -and (Test-PidAlive -ProcessId $info.pid))
                 $label = @{
                     screener   = "Market Filter (loop)"
-                    engine     = "Order Reconciler (poll)"
+                    engine     = "Order Manager (poll)"
                     fleet      = "Trader (loop)"
                 }[$name]
                 $rows += [pscustomobject]@{
@@ -641,8 +641,8 @@ function Show-Status {
 }
 
 function Show-ScreenerAndFeed {
-    $rerank = Join-Path $ProjectPath "scripts\rerank_loop.py"
-    $ranker = Join-Path $ProjectPath "scripts\rank_markets.py"
+    $rerank = Join-Path $ProjectPath "scripts\filter_loop.py"
+    $ranker = Join-Path $ProjectPath "scripts\filter_markets.py"
     $strategyCfg = Join-Path $ProjectPath "strategy\config.py"
     $modulesOk = ((Test-Path $rerank) -and (Test-Path $ranker) -and (Test-Path $strategyCfg))
 
@@ -668,7 +668,7 @@ function Show-ScreenerAndFeed {
 
     if ($modulesOk) {
         Write-StatusLine -Label "Filter modules" -Status "OK" -StatusStyle Success `
-            -Detail "scripts/rerank_loop.py · scripts/rank_markets.py · strategy/config.py" -DetailStyle Path
+            -Detail "scripts/filter_loop.py · scripts/filter_markets.py · strategy/config.py" -DetailStyle Path
     } else {
         Write-StatusLine -Label "Filter modules" -Status "MISSING" -StatusStyle Error `
             -Detail "dashboard start-bot would spawn a phantom process"
@@ -690,7 +690,7 @@ function Show-ScreenerAndFeed {
 }
 
 function Show-CheckoutIdentity {
-    $code = "import sys; sys.path.insert(0, r'$ProjectPath'); import os, dash.live_dash as d, engine.main_spread_hunter_loop as f, scripts.rerank_loop as r, scripts.rank_markets as k; print('cwd=' + os.getcwd()); print(os.path.dirname(d.__file__)); print(os.path.dirname(f.__file__)); print(r.__file__); print(k.__file__)"
+    $code = "import sys; sys.path.insert(0, r'$ProjectPath'); import os, dash.live_dash as d, engine.main_spread_hunter_loop as f, scripts.filter_loop as r, scripts.filter_markets as k; print('cwd=' + os.getcwd()); print(os.path.dirname(d.__file__)); print(os.path.dirname(f.__file__)); print(r.__file__); print(k.__file__)"
     $raw = @()
     try { $raw = @(& python -c $code 2>&1) } catch {}
     if ($raw.Count -lt 4) {
@@ -719,7 +719,7 @@ function Show-CheckoutIdentity {
         if ($tail) { Write-StatusLine -Label "Diagnostic" -Detail $tail -DetailStyle Warning }
         return
     }
-    $labels = @("dash.live_dash", "engine.main_spread_hunter_loop", "scripts.rerank_loop", "scripts.rank_markets")
+    $labels = @("dash.live_dash", "engine.main_spread_hunter_loop", "scripts.filter_loop", "scripts.filter_markets")
     for ($i = 0; $i -lt 4; $i++) {
         $p = $paths[$i].Trim()
         if ($p -like "$ProjectPath*") {

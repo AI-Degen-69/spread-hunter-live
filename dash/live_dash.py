@@ -464,12 +464,12 @@ def get_system_status() -> dict:
         },
         "services": {
             "screener": {
-                "name": "Screener (rerank)",
+                "name": "Market Filter (loop)",
                 "running": scr_running,
                 "pid": scr_pid if scr_running else None,
             },
             "engine": {
-                "name": "Order Reconciler (poll)",
+                "name": "Order Manager (poll)",
                 "running": eng_running,
                 "pid": eng_pid if eng_running else None,
                 "sweep_interval_sec": configured_sweep_interval,
@@ -627,9 +627,9 @@ def start_bot() -> dict:
         from engine.order_registry import get_run_id
         child_env = {**os.environ, "SH_RUN_ID": get_run_id()}
 
-        # Launch Screener (rerank_loop)
+        # Launch Market Filter (filter_loop)
         p_scr = subprocess.Popen(
-            [sys.executable, "-m", "scripts.rerank_loop"],
+            [sys.executable, "-m", "scripts.filter_loop"],
             cwd=str(REPO_ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -637,12 +637,12 @@ def start_bot() -> dict:
         )
         launched_procs.append(p_scr)
 
-        # Launch Engine Poll loop (live_exec poll --interval 5). The account sweep
+        # Launch Order Manager Poll loop (live_exec poll --interval 0.5). The account sweep
         # follows LIVE_SWEEP_INTERVAL when set; otherwise it runs every tick. Poll
         # owns reconcile, the account sweep, and the markout sampler, and it keeps
         # the registry's open orders fresh for the fleet loop below.
         sweep_interval = resolve_sweep_interval()
-        poll_cmd = [sys.executable, "-m", "engine.live_exec", "poll", "--interval", "5"]
+        poll_cmd = [sys.executable, "-m", "engine.live_exec", "poll", "--interval", "0.5"]
         if sweep_interval is not None:
             poll_cmd += ["--sweep-interval", str(sweep_interval)]
         p_eng = subprocess.Popen(

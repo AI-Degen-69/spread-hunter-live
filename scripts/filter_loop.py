@@ -124,7 +124,7 @@ def main() -> None:
         if err:
             _emit_scan_event({
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "service": "screener", "cycle": cycle, "phase": "scanning",
+                "service": "filter", "cycle": cycle, "phase": "scanning",
                 "action": "rerank_error", "market_slug": "", "reason": err,
                 "latency_ms": round((time.time() - t0) * 1000.0, 2),
                 "pid": os.getpid(), "extra": {},
@@ -132,7 +132,7 @@ def main() -> None:
         else:
             _emit_scan_event({
                 "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                "service": "screener", "cycle": cycle, "phase": "scanning",
+                "service": "filter", "cycle": cycle, "phase": "scanning",
                 "action": "rerank_done", "market_slug": "", "reason": "",
                 "latency_ms": round((time.time() - t0) * 1000.0, 2),
                 "pid": os.getpid(),

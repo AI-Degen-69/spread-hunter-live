@@ -259,7 +259,7 @@ def _visit_one(
     try:
         market = seam.fetch_market(cid)
     except Exception as e:
-        emit_fn(service="fleet", cycle=cycle, phase="quoting",
+        emit_fn(service="decide", cycle=cycle, phase="quoting",
                 action="market_error", market_slug="",
                 reason=f"{type(e).__name__}: {e}")
         return LiveFleetResult(status="ERROR", condition_id=cid,
@@ -282,13 +282,13 @@ def _visit_one(
         open_orders = seam.open_orders_fn(market) if seam.open_orders_fn else []
         to_cancel, to_submit = plan_orders(open_orders, intents)
     except Exception as e:
-        emit_fn(service="fleet", cycle=cycle, phase="quoting",
+        emit_fn(service="decide", cycle=cycle, phase="quoting",
                 action="market_error", market_slug=title,
                 reason=f"{type(e).__name__}: {e}")
         return LiveFleetResult(status="ERROR", condition_id=cid, title=title,
                                error=f"{type(e).__name__}: {e}")
 
-    emit_fn(service="fleet", cycle=cycle, phase="quoting", action="decide",
+    emit_fn(service="decide", cycle=cycle, phase="quoting", action="decide",
             market_slug=title, reason=why,
             extra={"intent_count": len(intents), "condition_id": cid})
 
@@ -306,7 +306,7 @@ def _visit_one(
     except Exception as e:
         # A submit/cancel failure (venue rejection, a split couple rolled back)
         # must degrade this market to ERROR, never stop the rotation.
-        emit_fn(service="fleet", cycle=cycle, phase="quoting",
+        emit_fn(service="decide", cycle=cycle, phase="quoting",
                 action="market_error", market_slug=title,
                 reason=f"submit/cancel: {type(e).__name__}: {e}",
                 extra={"submitted": submitted, "cancelled": cancelled})
@@ -315,7 +315,7 @@ def _visit_one(
             intents=list(intents), submitted=submitted, cancelled=cancelled,
             error=f"submit/cancel: {type(e).__name__}: {e}")
 
-    emit_fn(service="fleet", cycle=cycle, phase="quoting", action="submit",
+    emit_fn(service="decide", cycle=cycle, phase="quoting", action="submit",
             market_slug=title,
             extra={"submitted": submitted, "cancelled": cancelled})
     return LiveFleetResult(

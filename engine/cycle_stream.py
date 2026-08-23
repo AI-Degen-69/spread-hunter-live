@@ -210,7 +210,7 @@ def emit(
     phase: str,
     action: str,
     *,
-    service: str = "engine",
+    service: str = "query",
     market_slug: str = "",
     reason: str = "",
     latency_ms: float = 0.0,
@@ -243,8 +243,8 @@ def emit(
 
         _append_line(target_ring, json.dumps(record) + "\n")
 
-        # Rotation check (default True for engine service)
-        should_rotate = (service == "engine") if can_rotate is None else can_rotate
+        # Rotation check (default True for query service)
+        should_rotate = (service in ("query", "engine")) if can_rotate is None else can_rotate
         if should_rotate:
             _rotate_ring_file(target_ring)
 

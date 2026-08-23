@@ -5,13 +5,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from engine.audit import (
+from core_brain.audit import (
     AuditResult,
     audit_three_way,
     format_audit_report,
     read_merged_amount_from_logs,
 )
-from engine.order_registry import OrderRecord, OrderRegistry, FillRecord
+from core_brain.order_registry import OrderRecord, OrderRegistry, FillRecord
 
 
 @pytest.fixture
@@ -24,7 +24,7 @@ def mock_pinned_market(monkeypatch):
     m = MagicMock()
     m.up_token = "tok_up_123"
     m.down_token = "tok_dn_456"
-    monkeypatch.setattr("engine.audit.fetch_pinned_market", lambda *args, **kwargs: m)
+    monkeypatch.setattr("core_brain.audit.fetch_pinned_market", lambda *args, **kwargs: m)
     return m
 
 
@@ -75,7 +75,7 @@ def test_audit_three_way_agree(temp_db, mock_pinned_market, monkeypatch, tmp_pat
     }[vid]
 
     # Mock chain call (0 held because 5 merged)
-    monkeypatch.setattr("engine.audit.get_onchain_erc1155_balance", lambda tok, owner: 0.0)
+    monkeypatch.setattr("core_brain.audit.get_onchain_erc1155_balance", lambda tok, owner: 0.0)
 
     # Mock merge log
     orders_json = tmp_path / "live_orders.json"
@@ -130,7 +130,7 @@ def test_audit_three_way_divergence_detected(temp_db, mock_pinned_market, monkey
         "status": "MATCHED",
     }
 
-    monkeypatch.setattr("engine.audit.get_onchain_erc1155_balance", lambda tok, owner: 5.0)
+    monkeypatch.setattr("core_brain.audit.get_onchain_erc1155_balance", lambda tok, owner: 5.0)
     orders_json = tmp_path / "live_orders.json"
     orders_json.write_text("[]")
 

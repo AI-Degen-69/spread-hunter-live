@@ -33,7 +33,7 @@ LIVE_ROOT = Path(__file__).resolve().parent.parent
 if str(LIVE_ROOT) not in sys.path:
     sys.path.insert(0, str(LIVE_ROOT))
 
-from engine.order_registry import (  # noqa: E402
+from core_brain.order_registry import (  # noqa: E402
     CloseRecord,
     FillRecord,
     MarketEventRecord,

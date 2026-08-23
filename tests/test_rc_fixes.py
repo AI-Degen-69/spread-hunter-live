@@ -23,14 +23,14 @@ from pathlib import Path
 
 import pytest
 
-from engine import single_buy_saver as lp
-from engine import risk
-from engine.config import MakerConfig
-from engine.order_registry import (
+from core_brain import single_buy_saver as lp
+from core_brain import risk
+from core_brain.config import MakerConfig
+from core_brain.order_registry import (
     CloseRecord, FillRecord, OrderRecord, OrderRegistry, QuoteRecord,
 )
-from engine.quotes import Inventory, decide_quotes
-from engine.single_buy_saver import auto_manage_pairs
+from core_brain.quotes import Inventory, decide_quotes
+from core_brain.single_buy_saver import auto_manage_pairs
 
 MAX_PAIR_COST = 0.995
 TOK_UP = "tok-up"
@@ -235,7 +235,7 @@ def test_exit_close_is_subtracted_from_inventory(registry: OrderRegistry):
     The dashboard's UP/DN SHARES and PAIR COST columns read the registry; a
     close that exists but is ignored would keep showing the phantom position.
     """
-    from engine.order_registry import inventory_from_registry
+    from core_brain.order_registry import inventory_from_registry
 
     _one_sided_pair(registry, filled_size=10.0, fill_price=0.60)
     lp.exit_naked_leg(FakeClient(best_ask=0.40), registry, "pair-1",
@@ -394,7 +394,7 @@ def test_hard_block_heavy_side_pair_cost_still_fires():
 
 def test_flat_inventory_refuses_a_lone_leg():
     """Unchanged behavior: flat book + lone intent = no quote (existing rule)."""
-    from engine.quotes import _require_two_sided
+    from core_brain.quotes import _require_two_sided
 
     cfg = MakerConfig(require_two_sided_when_flat=True)
     flat = Inventory(up_shares=0, down_shares=0, up_cost=0.0, down_cost=0.0)

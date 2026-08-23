@@ -25,7 +25,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from engine.order_registry import SCHEMA
+from core_brain.order_registry import SCHEMA
 from dashboard.server import (
     PAGE_HTML,
     _PAGE_HTML_FILE,
@@ -140,7 +140,7 @@ def test_guardrail_health_endpoint_reports_alive_watcher(client, tmp_path):
     running, with pid/cycle from the file and the alert total from the ring.
     """
     ring = tmp_path / "cycle_events.jsonl"
-    hb = tmp_path / "guardrail_watch_heartbeat.json"
+    hb = tmp_path / "global_stop_loss_heartbeat.json"
     now = datetime.datetime.now(datetime.timezone.utc)
     now_iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     hb.write_text(json.dumps([{
@@ -179,7 +179,7 @@ def test_guardrail_health_endpoint_flags_stale_watcher(client, tmp_path):
     """A heartbeat older than the stale threshold reads as DOWN -- the
     silent-failure case the chip exists to surface.
     """
-    hb = tmp_path / "guardrail_watch_heartbeat.json"
+    hb = tmp_path / "global_stop_loss_heartbeat.json"
     old = (datetime.datetime.now(datetime.timezone.utc)
            - datetime.timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
     hb.write_text(json.dumps([{
@@ -306,7 +306,7 @@ def test_dashboard_reads_exactly_where_the_registry_writes():
     extracted. Preferring it pointed this page at a dead file that never
     receives a fill, which reads identically to a healthy idle cycle.
     """
-    from engine.order_registry import DEFAULT_DB_PATH
+    from core_brain.order_registry import DEFAULT_DB_PATH
 
     assert resolve_db_path() == DEFAULT_DB_PATH
     assert "live" in resolve_db_path().parent.parent.name
@@ -336,7 +336,7 @@ def test_level1_trade_analytics_tiles_are_present():
 
 def test_api_kpi_endpoint_returns_3_levels_and_run_isolation(client, temp_db):
     """Test /api/kpi provides Level 1 (Strategy), Level 2 (Market), Level 3 (Mechanics), and run isolation."""
-    from engine.order_registry import (
+    from core_brain.order_registry import (
         OrderRegistry, OrderRecord, FillRecord, QuoteRecord,
         MarketEventRecord, MarkoutRecord, CloseRecord, FloatMarkRecord,
         VenueErrorRecord, DivergenceEventRecord
@@ -448,7 +448,7 @@ def test_kpi_endpoint_survives_launch_by_file_path(tmp_path):
     """`python live/dash/live_dash.py` must still serve /api/kpi.
 
     Launching the file by path puts live/dash/ on sys.path instead of live/, so the
-    lazy `from engine.kpi import report` inside the endpoint raised
+    lazy `from core_brain.kpi import report` inside the endpoint raised
     ModuleNotFoundError and every poll came back 500 -- invisible to this suite,
     which runs with live/ as the working directory.
     """
@@ -575,7 +575,7 @@ def test_reset_db_refuses_to_destroy_an_archived_run(tmp_path, monkeypatch):
     monkeypatch.setattr(dash_mod, "LIVE_ROOT", tmp_path)
     from dashboard.server import reset_database
 
-    archive_dir = tmp_path / "run" / "archive"
+    archive_dir = tmp_path / "runtime" / "archive"
     archive_dir.mkdir(parents=True)
     archived = archive_dir / "live_20260819_090708.db"
     con = sqlite3.connect(str(archived))
@@ -659,8 +659,8 @@ def test_restart_preserves_the_database_flag(monkeypatch):
     """A restart must come back on the same database it was reading."""
     from dashboard.server import relaunch_argv
 
-    monkeypatch.setattr(sys, "argv", ["live_dash.py", "--db", "run/archive/live_x.db"])
-    assert relaunch_argv()[2:] == ["--db", "run/archive/live_x.db"]
+    monkeypatch.setattr(sys, "argv", ["live_dash.py", "--db", "runtime/archive/live_x.db"])
+    assert relaunch_argv()[2:] == ["--db", "runtime/archive/live_x.db"]
 
 
 def test_system_reset_db_endpoint(client, temp_db, tmp_path, monkeypatch):
@@ -933,9 +933,9 @@ def test_start_bot_spawns_screener_engine_and_fleet(monkeypatch, tmp_path):
 
     cmds = [" ".join(a) for a in spawned]
     assert any("scripts.filter_loop" in c or "scripts.rerank_loop" in c for c in cmds), cmds
-    assert any("engine.order_manager" in c and "poll" in c for c in cmds), cmds
+    assert any("core_brain.order_manager" in c and "poll" in c for c in cmds), cmds
 
-    fleet_cmd = next(c for c in cmds if "engine.trader_loop" in c)
+    fleet_cmd = next(c for c in cmds if "core_brain.trader_loop" in c)
     assert "--live" in fleet_cmd
     assert "--no-reconcile" in fleet_cmd
     assert "--no-sweep" in fleet_cmd
@@ -1007,7 +1007,7 @@ def test_status_distinguishes_configured_from_running_sweep_cadence(monkeypatch,
 
     import dashboard.server as dash_mod
 
-    run_dir = tmp_path / "run"
+    run_dir = tmp_path / "runtime"
     run_dir.mkdir()
     (run_dir / "processes.json").write_text(json.dumps({
         "query": {"pid": os.getpid(), "started_at": time.time(), "sweep_interval_sec": 30.0},

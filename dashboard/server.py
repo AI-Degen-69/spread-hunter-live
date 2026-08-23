@@ -36,10 +36,23 @@ from starlette.middleware.gzip import GZipMiddleware
 # live/, one level up from live/dash/. Everything this page reads lives under it.
 LIVE_ROOT = Path(__file__).resolve().parent.parent
 # Launching this file by path (`python live/dash/live_dash.py`) puts live/dash/ on
-# sys.path, not live/, so `import engine.kpi` fails at request time with a 500 that
+# sys.path, not live/, so `import core_brain.kpi` fails at request time with a 500 that
 # the live suite never sees -- it runs with live/ as the working directory.
 if str(LIVE_ROOT) not in sys.path:
     sys.path.insert(0, str(LIVE_ROOT))
+
+# Runtime state moved run/ -> runtime/ and some of its files were renamed. The
+# page must still see a stack that was started before that move: a registry it
+# cannot find reads as STOPPED, and START would then launch a second live
+# Trader beside the running one. resolve_runtime_file falls back to the old
+# path while only the old file exists. See core_brain/runtime_paths.py.
+from core_brain.runtime_paths import (  # noqa: E402
+    legacy_runtime_file,
+    resolve_runtime_file,
+    runtime_file,
+    service_entry,
+)
+
 REPO_ROOT = LIVE_ROOT
 DEFAULT_PORT = 8799
 # The port actually bound. main() overwrites it when --port is given; the status
@@ -79,20 +92,24 @@ def set_guardrail_heartbeat_override(path: Path | str | None) -> None:
 def resolve_ring_path() -> Path:
     if _ACTIVE_RING_OVERRIDE is not None:
         return _ACTIVE_RING_OVERRIDE
-    return LIVE_ROOT / "run" / CYCLE_RING_NAME
+    return resolve_runtime_file(CYCLE_RING_NAME, root=LIVE_ROOT)
 
 
 def resolve_heartbeat_path() -> Path:
     if _ACTIVE_HEARTBEAT_OVERRIDE is not None:
         return _ACTIVE_HEARTBEAT_OVERRIDE
-    return LIVE_ROOT / "run" / "live_poll_heartbeat.json"
+    return resolve_runtime_file("live_poll_heartbeat.json", root=LIVE_ROOT)
 
 
 def resolve_guardrail_heartbeat_path() -> Path:
-    """The watcher's self-report file (live/scripts/guardrail_watch.py)."""
+    """The watcher's self-report file (live/scripts/global_stop_loss.py).
+
+    Falls back to the pre-rename guardrail_watch_heartbeat.json so a watcher
+    started before the rename does not read as a dead safety monitor.
+    """
     if _ACTIVE_GUARDRAIL_HB_OVERRIDE is not None:
         return _ACTIVE_GUARDRAIL_HB_OVERRIDE
-    return LIVE_ROOT / "run" / "guardrail_watch_heartbeat.json"
+    return resolve_runtime_file("global_stop_loss_heartbeat.json", root=LIVE_ROOT)
 
 
 def resolve_db_path(custom_path: str | Path | None = None) -> Path:
@@ -102,7 +119,7 @@ def resolve_db_path(custom_path: str | Path | None = None) -> Path:
     env_path = os.environ.get("LIVE_DB_PATH")
     if env_path:
         return Path(env_path)
-    from engine.order_registry import DEFAULT_DB_PATH
+    from core_brain.order_registry import DEFAULT_DB_PATH
     return DEFAULT_DB_PATH
 
 
@@ -124,14 +141,14 @@ def resolve_sweep_interval() -> float | None:
 
 
 def _env_file() -> Path | None:
-    """The .env file engine.order_manager loads, found without importing it.
+    """The .env file core_brain.order_manager loads, found without importing it.
 
-    Mirrors engine.order_manager._find_env_file: the nearest .env walking up from
-    live/engine/, stopping at the AGENTS.md boundary. The dashboard never
+    Mirrors core_brain.order_manager._find_env_file: the nearest .env walking up
+    from core_brain/, stopping at the AGENTS.md boundary. The dashboard never
     loads the whole file -- only LIVE_SWEEP_INTERVAL is read or written -- so
     the signing key and L2 credentials never enter this process.
     """
-    curr = LIVE_ROOT / "engine"
+    curr = LIVE_ROOT / "core_brain"
     for _ in range(4):
         if (curr / ".env").is_file():
             return curr / ".env"
@@ -288,7 +305,7 @@ def set_db_override(path: Path | str | None) -> None:
 @app.get("/api/state")
 def get_state():
     """Return JSON state snapshot for the live execution dashboard."""
-    from engine.registry_state import summarize_state
+    from core_brain.registry_state import summarize_state
     return JSONResponse(summarize_state(resolve_db_path(_ACTIVE_DB_OVERRIDE)))
 
 
@@ -424,23 +441,38 @@ def _is_pid_alive(pid: int | None, started_at: float | None = None) -> bool:
 
 def get_system_status() -> dict:
     """Return live running status for 3 sub-services (Market Filter, Query Polymarket, Decide & Execute) and Telemetry."""
-    procs_file = LIVE_ROOT / "run" / "processes.json"
+    procs_file = resolve_runtime_file("processes.json", root=LIVE_ROOT)
     saved_procs: dict[str, Any] = {}
+    # A registry we cannot read is NOT an empty registry. Reporting STOPPED for
+    # a truncated or half-written processes.json is how START gets permission to
+    # launch a second live Trader beside the running one, so this path fails
+    # closed: bot_state becomes UNKNOWN and every control that guards on
+    # "not RUNNING" refuses until the file is readable again.
+    registry_unreadable = False
     if procs_file.exists():
         try:
-            saved_procs = json.loads(procs_file.read_text(encoding="utf-8"))
-        except Exception:
-            saved_procs = {}
+            loaded = json.loads(procs_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            registry_unreadable = True
+        else:
+            if isinstance(loaded, dict):
+                saved_procs = loaded
+            else:
+                registry_unreadable = True
 
-    filter_info = saved_procs.get("filter", {})
+    # service_entry accepts the pre-rename keys (screener/engine/fleet) so a
+    # stack started before the rename is still reported as RUNNING. Without
+    # that, start_bot's "already running" guard would wave through a second
+    # live Trader.
+    filter_info = service_entry(saved_procs, "filter")
     filter_pid = filter_info.get("pid")
     filter_running = _is_pid_alive(filter_pid, filter_info.get("started_at"))
 
-    query_info = saved_procs.get("query", {})
+    query_info = service_entry(saved_procs, "query")
     query_pid = query_info.get("pid")
     query_running = _is_pid_alive(query_pid, query_info.get("started_at"))
 
-    decide_info = saved_procs.get("decide", {})
+    decide_info = service_entry(saved_procs, "decide")
     decide_pid = decide_info.get("pid")
     decide_running = _is_pid_alive(decide_pid, decide_info.get("started_at"))
 
@@ -478,7 +510,12 @@ def get_system_status() -> dict:
                 "port": _ACTIVE_PORT,
             },
         },
-        "bot_state": "RUNNING" if bot_running else "STOPPED",
+        "bot_state": (
+            "UNKNOWN" if registry_unreadable
+            else ("RUNNING" if bot_running else "STOPPED")
+        ),
+        "registry_path": str(procs_file),
+        "registry_unreadable": registry_unreadable,
         "starting_capital": get_starting_capital(),
         "timestamp": time.time(),
     }
@@ -493,7 +530,7 @@ def _capture_starting_capital() -> float | None:
     bot from launching.
     """
     try:
-        from engine.order_manager import account_sweep
+        from core_brain.order_manager import account_sweep
         result = account_sweep(quiet=True)
         if isinstance(result, dict) and result.get("account_value_usd") is not None:
             return float(result["account_value_usd"])
@@ -512,14 +549,22 @@ def get_starting_capital() -> float | None:
     Returns the account_value_usd captured at bot-start time, or None if
     no snapshot exists (bot never started, or venue was unreachable).
     """
-    procs_file = LIVE_ROOT / "run" / "processes.json"
+    procs_file = resolve_runtime_file("processes.json", root=LIVE_ROOT)
     if not procs_file.exists():
         return None
     try:
         saved = json.loads(procs_file.read_text(encoding="utf-8"))
-        val = saved.get("starting_account_value")
+    except (OSError, ValueError):
+        # Same rule as get_system_status: an unreadable registry is not an
+        # empty one. There is no number to report, and the caller renders the
+        # config bankroll label instead.
+        return None
+    if not isinstance(saved, dict):
+        return None
+    val = saved.get("starting_account_value")
+    try:
         return float(val) if val is not None else None
-    except (OSError, ValueError, TypeError):
+    except (TypeError, ValueError):
         return None
 
 
@@ -534,7 +579,7 @@ def start_bot() -> dict:
     # direct POST all bypass button state -- and live_procs.json only remembers
     # the newest PIDs, so stop_bot could never reach the first pair.
     # Interprocess lock prevents concurrent start_bot calls from racing.
-    lock_file = LIVE_ROOT / "run" / ".bot_start.lock"
+    lock_file = runtime_file(".bot_start.lock", root=LIVE_ROOT)
     lock_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Acquire exclusive lock by atomic file creation.
@@ -601,21 +646,27 @@ def start_bot() -> dict:
     try:
         # Re-check status now that we hold the lock.
         current = get_system_status()
-        if current["bot_state"] == "RUNNING":
-            return {
-                "ok": False,
-                "message": "Bot stack is already running; refusing to start a second instance.",
-                "status": current,
-            }
+        # Anything but a confirmed STOPPED refuses. UNKNOWN means the process
+        # registry could not be read, and a start on that state is exactly the
+        # duplicate-stack case this guard exists to prevent.
+        if current["bot_state"] != "STOPPED":
+            message = (
+                "Bot stack is already running; refusing to start a second instance."
+                if current["bot_state"] == "RUNNING"
+                else ("Cannot read the process file at "
+                      f"{current.get('registry_path')}; refusing to start until it is "
+                      "readable, because a second live stack cannot be ruled out.")
+            )
+            return {"ok": False, "message": message, "status": current}
 
-        procs_file = LIVE_ROOT / "run" / "processes.json"
+        procs_file = runtime_file("processes.json", root=LIVE_ROOT)
         procs_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Derive a stable run_id so fleet/exec/dash share one session id.
         # Without this, each process generates its own UUID at import time
         # and fills/orders are tagged to inconsistent run_ids, which makes
         # the dashboard default run selector show a misleading zeros grid.
-        from engine.order_registry import get_run_id
+        from core_brain.order_registry import get_run_id
         child_env = {**os.environ, "SH_RUN_ID": get_run_id()}
 
         # Launch Market Filter (filter_loop)
@@ -633,7 +684,7 @@ def start_bot() -> dict:
         # owns reconcile, the account sweep, and the markout sampler, and it keeps
         # the registry's open orders fresh for the decide loop below.
         sweep_interval = resolve_sweep_interval()
-        poll_cmd = [sys.executable, "-m", "engine.order_manager", "poll", "--interval", "0.5"]
+        poll_cmd = [sys.executable, "-m", "core_brain.order_manager", "poll", "--interval", "0.5"]
         if sweep_interval is not None:
             poll_cmd += ["--sweep-interval", str(sweep_interval)]
         p_eng = subprocess.Popen(
@@ -650,7 +701,7 @@ def start_bot() -> dict:
         # --no-sweep: a second reconcile loop would contend on the reconcile lock
         # and double the venue reads poll already makes.
         p_fleet = subprocess.Popen(
-            [sys.executable, "-m", "engine.trader_loop", "--live",
+            [sys.executable, "-m", "core_brain.trader_loop", "--live",
              "--no-reconcile", "--no-sweep", "--interval", "5"],
             cwd=str(LIVE_ROOT),
             stdout=subprocess.DEVNULL,
@@ -721,14 +772,33 @@ def start_bot() -> dict:
 
 
 def stop_bot() -> dict:
-    """Terminate background Filter, Query, and Decide loops."""
+    """Terminate background Filter, Query, and Decide loops.
+
+    Reads through resolve_runtime_file, so a stack recorded in the pre-rename
+    run/live_procs.json is still reachable. The loop below walks whatever keys
+    the file holds, which covers the old screener/engine/fleet names too.
+    """
     import subprocess
-    procs_file = LIVE_ROOT / "run" / "processes.json"
+    procs_file = resolve_runtime_file("processes.json", root=LIVE_ROOT)
     if procs_file.exists():
         try:
             saved_procs = json.loads(procs_file.read_text(encoding="utf-8"))
-        except Exception:
-            saved_procs = {}
+        except (OSError, ValueError):
+            saved_procs = None
+        # A registry we cannot read is not an empty one. Treating it as {} kills
+        # nothing, deletes the file, and reports "stopped" -- after which the
+        # reset path archives the database while the original processes are
+        # still writing to it. Keep the file and fail.
+        if not isinstance(saved_procs, dict):
+            return {
+                "ok": False,
+                "message": (
+                    f"Cannot read the process file at {procs_file}; refusing to "
+                    "report the stack stopped. No process was killed and the file "
+                    "was left in place. Fix or remove it, then stop again."
+                ),
+                "status": get_system_status(),
+            }
 
         for name, info in saved_procs.items():
             if not isinstance(info, dict):
@@ -790,7 +860,7 @@ def set_sweep_interval(raw: str | None) -> dict:
 
 def reset_database(custom_path: str | Path | None = None) -> dict:
     """Safely archive the existing orders.db and initialize a fresh, clean database."""
-    from engine.order_registry import OrderRegistry
+    from core_brain.order_registry import OrderRegistry
     import shutil
     import datetime
 
@@ -801,10 +871,20 @@ def reset_database(custom_path: str | Path | None = None) -> dict:
     # the engine and screener keep their handles on the old inode while the page
     # reads a new empty file, so the run's telemetry splits across two files and
     # the dashboard reads empty for a bot that is still trading.
-    if get_system_status()["bot_state"] == "RUNNING":
+    bot_state = get_system_status()["bot_state"]
+    if bot_state != "STOPPED":
+        # UNKNOWN gets the same refusal as RUNNING: an unreadable process file
+        # cannot rule out a live writer, and resetting under one loses every
+        # write it makes afterwards.
         return {
             "ok": False,
-            "message": "Refusing to reset while the bot stack is running. Stop the bot first.",
+            "message": (
+                "Refusing to reset while the bot stack is running. Stop the bot first."
+                if bot_state == "RUNNING"
+                else "Refusing to reset while the bot stack state is unknown: the "
+                     "process file cannot be read, so a running stack cannot be "
+                     "ruled out. Fix the process file, then stop the bot."
+            ),
             "archived_to": None,
             "db_path": str(target_db),
         }
@@ -892,7 +972,7 @@ def api_system_venue_sync(request: Request):
     Reads the account from Polymarket and backfills closes/float_marks.
     Read-only at the venue; no exposure is opened or increased."""
     _authorize_control(request)
-    from engine.order_manager import venue_sync
+    from core_brain.order_manager import venue_sync
     db_path = resolve_db_path(_ACTIVE_DB_OVERRIDE)
     return JSONResponse(venue_sync(db_path=db_path, quiet=False))
 
@@ -942,7 +1022,7 @@ def api_system_cancel_all(request: Request):
     to 127.0.0.1:8799 can cancel every resting order on a live bot.
     """
     _authorize_control(request)
-    from engine.order_manager import cancel_all
+    from core_brain.order_manager import cancel_all
     try:
         cancel_all(live=True)
         return JSONResponse({"ok": True, "message": "All open orders cancelled on the venue."})
@@ -977,13 +1057,26 @@ def api_system_reset(request: Request):
     """
     _authorize_control(request)
     import shutil
-    from engine.order_manager import cancel_all, account_sweep
+    from core_brain.order_manager import cancel_all, account_sweep
 
     steps = []
 
-    # 1. Halt the bot
+    # 1. Halt the bot. A stop that could not confirm the stack is down aborts
+    #    the whole reset: cancelling orders and archiving the database under a
+    #    live writer loses every write it makes afterwards.
     stop_result = stop_bot()
     steps.append(f"bot: {stop_result['message']}")
+    if not stop_result.get("ok"):
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": stop_result["message"],
+                "steps": steps,
+                "starting_capital": None,
+                "status": stop_result.get("status"),
+            },
+            status_code=409,
+        )
 
     # 2. Cancel all open orders on the venue (best-effort; if credentials
     #    are missing or the venue is down, the reset still proceeds)
@@ -999,15 +1092,18 @@ def api_system_reset(request: Request):
         return JSONResponse(reset_result, status_code=409)
     steps.append(f"db: {reset_result['message']}")
 
-    # 4. Clear run state files (ring buffer, heartbeats, processes)
-    run_dir = LIVE_ROOT / "run"
+    # 4. Clear runtime state files (ring buffer, heartbeats, processes).
+    #    Both the current runtime/ name and the pre-rename run/ name, or
+    #    "clean run ready" would leave state the fallback reader still finds.
     for fname in ["cycle_events.jsonl", "live_poll_heartbeat.json",
-                  "guardrail_watch_heartbeat.json", "live_orders.json",
-                  "processes.json", "live_procs.json"]:
-        try:
-            (run_dir / fname).unlink(missing_ok=True)
-        except Exception:
-            pass
+                  "global_stop_loss_heartbeat.json", "live_orders.json",
+                  "processes.json"]:
+        for target in (runtime_file(fname, root=LIVE_ROOT),
+                       legacy_runtime_file(fname, root=LIVE_ROOT)):
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
     steps.append("run: state files cleared")
 
     # 5. Snapshot the live Polymarket wallet as starting capital.
@@ -1030,7 +1126,7 @@ def api_system_reset(request: Request):
 
     # Write starting capital to processes.json so get_starting_capital() can
     # read it on the next poll — even if the bot hasn't been started yet.
-    procs_file = LIVE_ROOT / "run" / "processes.json"
+    procs_file = runtime_file("processes.json", root=LIVE_ROOT)
     procs_file.parent.mkdir(parents=True, exist_ok=True)
     procs_data = {}
     if starting_capital is not None:
@@ -1050,7 +1146,7 @@ def api_system_reset(request: Request):
 @app.get("/api/kpi")
 def get_kpi(run_id: str | None = None):
     """Return live KPI report mirroring strategy/kpi.py with Level 1/2/3 diagnostics."""
-    from engine.kpi import report as generate_kpi_report
+    from core_brain.kpi import report as generate_kpi_report
     db_path = resolve_db_path(_ACTIVE_DB_OVERRIDE)
     try:
         data = generate_kpi_report(db_path=db_path, run_id=run_id)
@@ -1109,7 +1205,7 @@ def _last_per_service(events: list[dict]) -> dict[str, tuple[str, Optional[float
 
 
 def _read_engine_heartbeat() -> dict[str, Any]:
-    """Read live/run/live_poll_heartbeat.json, returning {} when absent/invalid."""
+    """Read live/runtime/live_poll_heartbeat.json, returning {} when absent/invalid."""
     try:
         data = json.loads(resolve_heartbeat_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -1134,7 +1230,7 @@ def _read_guardrail_heartbeat() -> dict[str, Any]:
 def _guardrail_health() -> dict[str, Any]:
     """Watcher liveness (heartbeat) + alert totals (ring), one payload.
 
-    Liveness: the watcher writes guardrail_watch_heartbeat.json every check
+    Liveness: the watcher writes global_stop_loss_heartbeat.json every check
     (~5s). A heartbeat older than STALE_THRESHOLD_SEC means the watcher is
     down or dead -- the silent failure this endpoint exists to surface.
     Alerts: counted from `guardrail_alert` ring events, so the total survives
@@ -1153,7 +1249,7 @@ def _guardrail_health() -> dict[str, Any]:
 
     ring_alerts = []
     try:
-        from engine.cycle_stream import read_ring
+        from core_brain.cycle_stream import read_ring
         for ev in read_ring(resolve_ring_path(), tail=400):
             if ev.get("action") == "guardrail_alert":
                 ring_alerts.append(ev)
@@ -1209,7 +1305,7 @@ def get_scan_state():
     now = time.time()
     events = []
     try:
-        from engine.cycle_stream import read_ring
+        from core_brain.cycle_stream import read_ring
         events = read_ring(resolve_ring_path(), tail=400)
     except Exception:
         events = []
@@ -1353,7 +1449,7 @@ def pairs_activity():
     hold/balanced/error) overall and per latest cycle, plus each pair's most
     recent action with its timestamp. Read-only; the ring is the source.
     """
-    from engine.cycle_stream import read_ring
+    from core_brain.cycle_stream import read_ring
     events = read_ring(resolve_ring_path(), tail=400)
     totals: dict[str, int] = {}
     per_cycle: dict[int, dict[str, int]] = {}
@@ -1393,12 +1489,12 @@ def guardrail_alerts():
     """Active guardrail violations as a visible banner payload.
 
     Reads the cycle ring for `guardrail_alert` events (emitted by
-    live/scripts/guardrail_watch.py on a repeated pair exit or an over-cap
+    live/scripts/global_stop_loss.py on a repeated pair exit or an over-cap
     pair) and returns them newest-first. The dashboard renders the most
     recent one as a red banner so a violation is visible, not just a log
     line. Read-only; the ring is the source.
     """
-    from engine.cycle_stream import read_ring
+    from core_brain.cycle_stream import read_ring
     events = read_ring(resolve_ring_path(), tail=400)
     alerts = []
     for ev in events:
@@ -1419,7 +1515,7 @@ def guardrail_alerts():
 def guardrail_health():
     """Watcher health: running pid, restart time, alert count.
 
-    Reads the watcher's self-report heartbeat (guardrail_watch_heartbeat.json,
+    Reads the watcher's self-report heartbeat (global_stop_loss_heartbeat.json,
     written every check) for liveness and the ring for the cumulative alert
     count, so a dead watcher is visible on the dashboard instead of failing
     silently. Read-only; both files are sources of truth.
@@ -1429,7 +1525,7 @@ def guardrail_health():
 
 @app.get("/api/cycle-stream")
 def cycle_stream_events():
-    """Server-Sent-Events tail of live/run/cycle_events.jsonl."""
+    """Server-Sent-Events tail of live/runtime/cycle_events.jsonl."""
     return StreamingResponse(
         _cycle_stream_sse(resolve_ring_path()),
         media_type="text/event-stream",
@@ -1445,11 +1541,11 @@ def cycle_stream_events():
 def get_parameters():
     """Return active strategy settings, trigger thresholds, and action descriptions.
 
-    Consolidates safety limits from engine.config:MakerConfig (max_naked_usd,
+    Consolidates safety limits from core_brain.config:MakerConfig (max_naked_usd,
     min_quote_shares, max_order_usd, max_total_usd) and the sweep interval
     from the dashboard's own config. One config object, not two.
     """
-    from engine.config import load as load_cfg
+    from core_brain.config import load as load_cfg
     cfg = load_cfg()
     sweep = resolve_sweep_interval()
     params = [
@@ -1494,7 +1590,7 @@ def get_active_markets():
     Splits /api/state's market data into active-only (not resolved) for
     the Market Inspection table's ACTIVE MARKETS view.
     """
-    from engine.registry_state import summarize_state
+    from core_brain.registry_state import summarize_state
     state = summarize_state(resolve_db_path(_ACTIVE_DB_OVERRIDE))
     # Filter to markets with active orders or fills
     active = [p for p in state.get("pairs", []) if p.get("status") in ("RESTING", "NAKED", "BALANCED")]
@@ -1508,7 +1604,7 @@ def get_closed_markets():
     Reads from the KPI report's by_market dict, filtering to markets that
     have closes (realized PnL booked).
     """
-    from engine.kpi import report as generate_kpi_report
+    from core_brain.kpi import report as generate_kpi_report
     db_path = resolve_db_path(_ACTIVE_DB_OVERRIDE)
     try:
         data = generate_kpi_report(db_path=db_path)

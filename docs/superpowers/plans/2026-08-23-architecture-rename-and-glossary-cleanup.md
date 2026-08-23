@@ -38,7 +38,7 @@
 
 **Files:**
 - Create: `engine/single_buy_saver.py` (aliasing/shim from `single_side_buy_saver.py`)
-- Modify: `engine/single_side_buy_saver.py`, `engine/live_exec.py`, `engine/order_registry.py`, `scripts/guardrail_watch.py`
+- Modify: `engine/single_side_buy_saver.py`, `engine/live_exec.py`, `engine/order_registry.py`, `scripts/global_stop_loss.py`
 - Test: `tests/test_single_side_buy_saver.py`, `tests/test_rc_fixes.py`
 
 **Interfaces:**
@@ -46,7 +46,7 @@
 - Close method string: `"single_buy_exit"` (with `"naked_exit"` accepted as alias).
 
 - [ ] **Step 1: Update `single_side_buy_saver.py` to define `exit_single_buy` and alias `exit_naked_leg`**
-- [ ] **Step 2: Update callers in `engine/live_exec.py` and `scripts/guardrail_watch.py`**
+- [ ] **Step 2: Update callers in `engine/live_exec.py` and `scripts/global_stop_loss.py`**
 - [ ] **Step 3: Update unit tests in `tests/test_single_side_buy_saver.py` and `tests/test_rc_fixes.py`**
 - [ ] **Step 4: Run `pytest tests/test_single_side_buy_saver.py tests/test_rc_fixes.py -q`**
 - [ ] **Step 5: Commit `refactor(engine): rename exit_naked_leg to exit_single_buy`**
@@ -61,13 +61,13 @@
 - Test: `tests/test_live_exec.py`, `tests/test_live_exec_decide.py`, `tests/test_live_exec_merge.py`
 
 **Interfaces:**
-- `python -m engine.order_manager poll --interval 0.5`
-- `python -m engine.order_manager status`
-- `python -m engine.order_manager exit <pair_id>`
-- `python -m engine.order_manager merge <condition_id>`
+- `python -m core_brain.order_manager poll --interval 0.5`
+- `python -m core_brain.order_manager status`
+- `python -m core_brain.order_manager exit <pair_id>`
+- `python -m core_brain.order_manager merge <condition_id>`
 
 - [ ] **Step 1: Move implementation to `engine/order_manager.py` and create forwarding shim in `engine/live_exec.py`**
-- [ ] **Step 2: Update dashboard and menu references to invoke `python -m engine.order_manager`**
+- [ ] **Step 2: Update dashboard and menu references to invoke `python -m core_brain.order_manager`**
 - [ ] **Step 3: Run full `pytest tests/test_live_exec*.py -q`**
 - [ ] **Step 4: Commit `feat(engine): rename live_exec.py to order_manager.py`**
 
@@ -81,8 +81,8 @@
 - Test: `tests/test_main_spread_hunter_loop.py`, `tests/test_main_spread_hunter_loop_state.py`
 
 **Interfaces:**
-- `python -m engine.trader_loop loop`
-- `python -m engine.trader_loop decide`
+- `python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5`
+- `python -m core_brain.order_manager decide --all --no-live`
 
 - [ ] **Step 1: Create `engine/trader_loop.py` and shim `engine/main_spread_hunter_loop.py`**
 - [ ] **Step 2: Update dashboard supervisor commands and menu stack map**
@@ -129,7 +129,7 @@
 
 ### Automated Tests
 - Run the complete test suite: `python -m pytest -q` (every test passes).
-- Test CLI verbs: `python -m engine.order_manager status`.
+- Test CLI verbs: `python -m core_brain.order_manager status`.
 - Test dashboard server: `python -m dashboard.server --port 8799`.
 - Test interactive menu: `pwsh -File .\scripts\spread-hunter-menu.ps1 status`.
 

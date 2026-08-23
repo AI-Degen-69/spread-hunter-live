@@ -44,18 +44,18 @@ def test_every_engine_module_resolves_inside_live():
     module resolved from depended on the operator's working directory. The
     rename ended that. This test is what keeps it ended.
     """
-    import engine
-    import engine.order_manager as live_exec
-    import engine.order_registry as order_reg
-    import engine.markets as markets
-    import engine.config as config
+    import core_brain
+    import core_brain.order_manager as live_exec
+    import core_brain.order_registry as order_reg
+    import core_brain.markets as markets
+    import core_brain.config as config
 
     live_dir = Path(__file__).resolve().parent.parent
 
     # A regular package, so __path__ is exactly one directory -- not a namespace
     # package that can silently pick up a same-named directory elsewhere.
-    assert list(engine.__path__) == [str(live_dir / "engine")], list(engine.__path__)
+    assert list(core_brain.__path__) == [str(live_dir / "core_brain")], list(core_brain.__path__)
 
     for mod in (live_exec, order_reg, markets, config):
         path = Path(mod.__file__).resolve()
-        assert path.parent == live_dir / "engine", f"{mod.__name__} resolved to {path}"
+        assert path.parent == live_dir / "core_brain", f"{mod.__name__} resolved to {path}"

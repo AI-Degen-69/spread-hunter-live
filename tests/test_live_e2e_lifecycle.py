@@ -21,10 +21,10 @@ from dataclasses import replace
 
 import pytest
 
-from engine.config import load
-from engine.trader_loop import _submit_intents
-from engine.order_registry import OrderRegistry, reconcile_orders
-from engine.quotes import Inventory, decide_quotes
+from core_brain.config import load
+from core_brain.trader_loop import _submit_intents
+from core_brain.order_registry import OrderRegistry, reconcile_orders
+from core_brain.quotes import Inventory, decide_quotes
 
 
 class FakeVenue:

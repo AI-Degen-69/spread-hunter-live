@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from engine.cycle_stream import emit, read_ring
+from core_brain.cycle_stream import emit, read_ring
 
 REQUIRED_FIELDS = {
     "ts", "service", "cycle", "phase", "action",

@@ -9,8 +9,8 @@ The step owns failure *detection*; each caller owns failure *presentation*.
 """
 import pytest
 
-from engine.config import load
-from engine.quotes import (
+from core_brain.config import load
+from core_brain.quotes import (
     Inventory,
     MarketEval,
     MarketQuoteError,

@@ -3,14 +3,14 @@
 The live Level 2 funnel must reuse the ranker's own gate names and counts so a
 refusal compares 1:1 with the paper-run scan (server/fleet_dash.py). These tests pin
 that mapping against a hermetic fixture rather than the repo's live
-run/pipeline.json.
+runtime/pipeline.json.
 """
 
 from __future__ import annotations
 
 import json
 
-from engine.kpi import _funnel_from_pipeline
+from core_brain.kpi import _funnel_from_pipeline
 
 
 def _write(path, obj):
@@ -68,16 +68,16 @@ def test_funnel_from_pipeline_returns_none_on_malformed(tmp_path):
 
 
 def test_funnel_from_pipeline_defaults_to_repo_run_dir(monkeypatch, tmp_path):
-    """With no explicit path the helper reads the repo's run/pipeline.json."""
-    import engine.kpi as kpi_mod
+    """With no explicit path the helper reads the repo's runtime/pipeline.json."""
+    import core_brain.kpi as kpi_mod
 
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    _write(run_dir / "pipeline.json", {
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    _write(runtime_dir / "pipeline.json", {
         "counts": {"funded": 10, "spread_universe": 5, "eligible": 2},
         "rejections": [{"cause": "volume", "n": 1, "examples": []}],
     })
-    _write(run_dir / "markets.json", [{"cid": "0x1", "slug": "m", "title": "T"}])
+    _write(runtime_dir / "markets.json", [{"cid": "0x1", "slug": "m", "title": "T"}])
     monkeypatch.setattr(kpi_mod, "REPO_ROOT", tmp_path)
 
     f = _funnel_from_pipeline({})

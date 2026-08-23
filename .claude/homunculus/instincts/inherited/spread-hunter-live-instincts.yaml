@@ -78,11 +78,11 @@ source_repo: https://github.com/AI-Degen-69/spread-hunter-live
 
 ## Action
 
-Use absolute package imports rooted at the repo, e.g. `from engine.order_registry import OrderRegistry`
+Use absolute package imports rooted at the repo, e.g. `from core_brain.order_registry import OrderRegistry`
 
 ## Evidence
 
-- 21 absolute package imports, 0 relative imports across engine/, dash/, strategy/, scripts/
+- 21 absolute package imports, 0 relative imports across core_brain/, dashboard/, scoring/, scripts/
 - pytest.ini sets `pythonpath = .`, making the repo root the import root
 - Corrected 2026-08-23: generator emitted the opposite of actual practice
 

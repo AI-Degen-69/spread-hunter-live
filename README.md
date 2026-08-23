@@ -27,18 +27,19 @@ merge is the exit and the P&L event.
 - **Maker rebates are extra, not the income.** Over the same run they accrued about
   $0.22/day against $566 committed — four hundredths of a percent. This is a pair-assembly
   arbitrage that happens to earn rebates while it waits, not a rebate farm.
-- **The universe is not BTC 5-minute binaries.** The ranker's funnel (24h volume, top-3 bid
-  depth on both sides, book spread, horizon ≤ 30 days) writes survivors to
-  `run/markets.json`, and the fleet quotes *only* that list. The measured traded universe is
-  tennis, baseball and esports. The 5-minute BTC series was measured dead on adverse
-  selection and survives only as a legacy field.
+- **The universe is not BTC 5-minute binaries.** The Market Filter's funnel (24h volume,
+  top-3 bid depth on both sides, book spread, horizon ≤ 30 days) writes survivors to
+  `runtime/markets.json`, and the Trader quotes *only* that list. Whatever clears the funnel
+  is in scope; in the measured run the survivors were mostly tennis, baseball and esports,
+  but the filter decides, not the category. The 5-minute BTC series was measured dead on
+  adverse selection and survives only as a legacy field.
 - **Spread capture pricing mode.** `objective = "spread_capture"` (formerly `"rewards"`)
   selects the from-mid pricing path that assembles the pair at `≈ 1.00 - 2*offset` — the
   mechanism that makes the strategy work. See [AGENTS.md](AGENTS.md) for the full statement.
 
 ## Features
 
-**Engine** (`engine/`)
+**Core brain** (`core_brain/`)
 - `quotes.py` — the decision layer: where to rest both legs, and why not to
 - `risk.py` — sizing ladder, inventory skew, dollar caps, hard blocks
 - `unhedged_stop_loss.py` — per-market markout state machine + trader posture (HALTED etc.)
@@ -58,21 +59,22 @@ merge is the exit and the P&L event.
 
 **Ops tooling** (`scripts/`)
 - `filter_markets.py` — the filter funnel that graduates the universe
-- `filter_loop.py` — continuous market filter loop feeding `run/markets.json`
-- `guardrail_watch.py` — watchdog: over-cap pairs & repeat naked-leg exits
+- `filter_loop.py` — continuous market filter loop feeding `runtime/markets.json`
+- `global_stop_loss.py` — watchdog: over-cap pairs & repeat single-buy exits
 - `spread-hunter-menu.ps1` — PowerShell control center: start/stop/status for the
   dashboard + bot stack, with a themed, color-coded status view
 
 ## Repository layout
 
-```
+```text
 spread-hunter-live/
-  engine/                 Core trading & execution engine
+  core_brain/             Core trading & execution engine
   dashboard/              Operations dashboard (:8799) + SPA
   scripts/                Market Filter, filter loop, watchdog, PowerShell control center
   scoring/                Scoring, allocation and selection rules the Market Filter uses
+  strategy/               Signal and sizing logic
   data/                   Order registry (orders.db — not committed)
-  run/                    Market universe, logs and cycle telemetry (not committed)
+  runtime/                Market universe, process file, logs and cycle telemetry (not committed)
   tests/                  Full hermetic unit & integration test suite
 ```
 
@@ -88,8 +90,8 @@ cp .env.example .env
 #   POLY_PRIVATE_KEY, POLY_FUNDER, POLY_SIG_TYPE, optional RELAYER_API_KEY / POLYGON_RPC
 
 # 3. Check wallet and account status (read-only)
-python -m engine.order_manager status
-python -m engine.order_manager balance
+python -m core_brain.order_manager status
+python -m core_brain.order_manager balance
 
 # 4. Run the operations dashboard
 python -m dashboard.server          # http://127.0.0.1:8799
@@ -100,7 +102,7 @@ pytest -q
 
 ## Operating guide
 
-**CLI** — `python -m engine.order_manager <command>`. Live by default; pass `--no-live` for a
+**CLI** — `python -m core_brain.order_manager <command>`. Live by default; pass `--no-live` for a
 dry-run preview.
 
 | Command | Purpose |
@@ -111,35 +113,35 @@ dry-run preview.
 | `poll --interval 0.5` | Reconcile fills from the venue into `data/orders.db` |
 | `merge <condition_id> --amount N` | Merge UP+DOWN pairs back to USDC (the exit) |
 | `redeem <condition_id>` | Gasless redemption of resolved positions |
-| `complete <pair_id>` | Cross the book to complete a one-sided pair |
-| `exit <pair_id>` | Stop-loss exit of a naked leg |
+| `complete <pair_id>` | Cross the book to complete a one-sided pair (spends -- opening command) |
+| `exit <pair_id>` | Stop-loss exit of a single buy |
 | `cancel` / `cancel-market` / `cancel-all` | Pull resting orders |
 
-**Bot stack** — the dashboard's START/STOP buttons (or the PowerShell menu) launch the
-screener loop, the engine poll loop, and the quoting fleet. The fleet rests real maker
-bids: verify dashboard state before starting.
+**Bot stack** — the dashboard's START/STOP buttons (or the PowerShell menu) control the
+Market Filter (`filter`), Query Polymarket (`query`) and Decide & Execute (`decide`).
+START launches all three; STOP stops them. Decide & Execute rests real maker bids: verify
+dashboard state before starting.
 
-**PowerShell control center** — `.\scripts\live-spread-hunter-menu.ps1` offers
+**PowerShell control center** — `.\scripts\spread-hunter-menu.ps1` offers
 `start` / `stop` / `status` / `open`. The `status` view shows the dashboard, every stack
-process (with PID and module path), the guardrail watchdog, the universe feed, and checkout
+process (with PID and module path), the Global Stop Loss watchdog, the universe feed, and checkout
 identity in one aligned, color-coded report.
-
-**Runbook** — see [RUNBOOK-STAGE-4.5.md](RUNBOOK-STAGE-4.5.md) for the supervised live
-cycle: pre-flight checks, order placement gates, settlement, and emergency sequences.
 
 ## Safety rails
 
 1. **LIVE is the default.** This is the real-money execution repo. Every subcommand reaches
    the venue by default. Use `--no-live` for dry-run preview.
-2. **Closing commands are pre-approved:** `exit`, `complete`, `merge`, `redeem`, `cancel`,
-   `cancel-all` reduce exposure.
-3. **Opening commands require explicit supervision:** `quote` and live fleet quoting rest
-   real funds.
-4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (in `engine/config.py`).
+2. **Closing commands are pre-approved:** `exit`, `merge`, `redeem`, `cancel`,
+   `cancel-market`, `cancel-all` reduce exposure. Cancelling pulls resting orders only --
+   a leg that already filled is still open exposure.
+3. **Opening commands require explicit supervision:** `quote`, `complete`, the Trader loop
+   and the dashboard's START button all rest or spend real funds. `complete` buys the
+   missing side: it removes the risk of a single buy, but it does so by spending, so it is
+   an opening command and not a closing one.
+4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (in `core_brain/venue.py`).
 
 ## Docs
 
 - [AGENTS.md](AGENTS.md) — the objective, universe rules, and design history
-- [RUNBOOK-STAGE-4.5.md](RUNBOOK-STAGE-4.5.md) — supervised live execution cycle
 - [Dashboard redesign spec](docs/superpowers/specs/2026-08-21-dashboard-redesign-design.md)
 - [Screener kanban spec](docs/superpowers/specs/2026-08-21-screener-kanban-tab.md)

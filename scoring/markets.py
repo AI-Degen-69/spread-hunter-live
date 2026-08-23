@@ -135,7 +135,7 @@ def fetch_pinned_market(condition_id: str,
     actually trade, and refusing them here made them unloadable, unsampled and
     therefore unfundable however well the allocator sized them. Whether a
     market is worth funding is the allocator's decision and it is made from
-    `run/markets.json`; this function's job is only to say whether the market
+    `runtime/markets.json`; this function's job is only to say whether the market
     can be quoted at all.
     """
     r = _SESSION.get(f"https://clob.polymarket.com/markets/{condition_id}",

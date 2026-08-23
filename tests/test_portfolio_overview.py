@@ -29,9 +29,9 @@ import time
 
 import pytest
 
-from engine import kpi as kpi_mod
-from engine.kpi import report
-from engine.order_registry import SCHEMA, CloseRecord, MarketEventRecord, OrderRegistry
+from core_brain import kpi as kpi_mod
+from core_brain.kpi import report
+from core_brain.order_registry import SCHEMA, CloseRecord, MarketEventRecord, OrderRegistry
 from pathlib import Path
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / 'dashboard' / 'static'
@@ -58,7 +58,7 @@ def seeded_db(temp_db, tmp_path, monkeypatch):
     """Two markets, two closes, two float marks -- a run, not a single pair.
 
     REPO_ROOT is redirected even when no feed is written, so metadata never
-    resolves against the developer's live run/markets.json.
+    resolves against the developer's live runtime/markets.json.
     """
     monkeypatch.setattr(kpi_mod, "REPO_ROOT", tmp_path)
     reg = OrderRegistry(temp_db)
@@ -83,8 +83,8 @@ def seeded_db(temp_db, tmp_path, monkeypatch):
 
 @pytest.fixture
 def markets_feed(tmp_path, monkeypatch):
-    """Point the ranker feed at a temp repo root so category resolution is hermetic."""
-    run_dir = tmp_path / "run"
+    """Hermetic runtime/markets.json snapshot matching the seeded DB."""
+    run_dir = tmp_path / "runtime"
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "markets.json").write_text(json.dumps([
         {
@@ -199,7 +199,7 @@ def test_float_mark_older_than_the_last_close_is_not_counted(temp_db):
 
 def test_markets_only_refused_are_not_counted_as_traded(seeded_db):
     """A market blocked at the gate was never traded and must not inflate the count."""
-    from engine.order_registry import MarketEventRecord
+    from core_brain.order_registry import MarketEventRecord
 
     reg = OrderRegistry(seeded_db)
     reg.log_market_event(MarketEventRecord(
@@ -266,10 +266,10 @@ def test_blank_category_falls_back_to_series_title(seeded_db, markets_feed):
     assert data["by_market"]["0xmarket_b"]["category"] == "Dota 2"
 
 
-def test_unknown_market_category_is_labelled_not_blank(seeded_db, tmp_path, monkeypatch):
-    """A market absent from the feed is 'Uncategorized', not None."""
-    (tmp_path / "run").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "run" / "markets.json").write_text("[]", encoding="utf-8")
+def test_empty_feed_leaves_category_as_uncategorized(seeded_db, tmp_path, monkeypatch):
+    """When the feed is empty, category falls back to 'Uncategorized'."""
+    (tmp_path / "runtime").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "runtime" / "markets.json").write_text("[]", encoding="utf-8")
     monkeypatch.setattr(kpi_mod, "REPO_ROOT", tmp_path)
     data = report(db_path=seeded_db, run_id=RUN)
     assert data["by_market"]["0xmarket_a"]["category"] == "Uncategorized"
@@ -341,12 +341,12 @@ def test_resolved_market_drops_from_by_market_via_venue_sync_close(temp_db, tmp_
 
 
 def test_resolved_market_drops_when_ranker_records_negative_days_to_resolve(temp_db, tmp_path, monkeypatch):
-    """A market whose end date passed (days_to_resolve < 0 in run/markets.json)
+    """A market whose end date passed (days_to_resolve < 0 in runtime/markets.json)
     leaves "MARKETS IN RUN" even without a closes row yet.
     """
-    run_dir = tmp_path / "run"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "markets.json").write_text(json.dumps([
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    (runtime_dir / "markets.json").write_text(json.dumps([
         {"cid": "0xexpired", "slug": "expired", "title": "Expired",
          "days_to_resolve": -0.5, "source": "spread", "eligible": True},
         {"cid": "0xlive", "slug": "live", "title": "Live",

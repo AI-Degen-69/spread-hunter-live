@@ -14,8 +14,8 @@ import time
 
 import pytest
 
-from engine.order_registry import SCHEMA
-from engine.registry_state import summarize_state
+from core_brain.order_registry import SCHEMA
+from core_brain.registry_state import summarize_state
 
 
 @pytest.fixture
@@ -218,7 +218,7 @@ def test_reconcile_lock_status(temp_db):
 
 def test_read_only_enforcement(temp_db):
     """Verifies that the registry read connection is strictly read-only and cannot write."""
-    from engine.registry_state import get_readonly_connection
+    from core_brain.registry_state import get_readonly_connection
     con = get_readonly_connection(temp_db)
     assert con is not None, "Failed to get readonly connection"
     cur = con.cursor()

@@ -10,12 +10,12 @@ import uuid
 from pathlib import Path
 import pytest
 
-from engine.config import MakerConfig
-from engine.order_registry import (
+from core_brain.config import MakerConfig
+from core_brain.order_registry import (
     OrderRegistry, OrderRecord, FillRecord, CloseRecord, QuoteRecord,
 )
-from engine import single_buy_saver as lp
-from engine.single_buy_saver import auto_manage_pairs
+from core_brain import single_buy_saver as lp
+from core_brain.single_buy_saver import auto_manage_pairs
 
 
 MAX_PAIR_COST = 0.995

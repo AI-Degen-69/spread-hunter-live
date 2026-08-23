@@ -10,7 +10,7 @@ The operator has no visibility into:
 - Which markets are currently "graduated" (being quoted by the bot)
 - The real-time flow of markets through screening phases
 
-The spread-hunter repo (`C:\Users\Tiger\Agents\Projects\AI Trading\spread-hunter`) already has this data in `run/pipeline.json` (written by `scripts/rank_markets.py`), and its `:8801` dashboard renders it as a funnel view. The live repo's `engine/kpi.py` already has `_funnel_from_pipeline()` that reads `run/pipeline.json` and returns structured funnel data via `/api/kpi`'s `funnel` field — but the frontend doesn't render it.
+The spread-hunter repo (`C:\Users\Tiger\Agents\Projects\AI Trading\spread-hunter`) already has this data in `runtime/pipeline.json` (written by `scripts/rank_markets.py`), and its `:8801` dashboard renders it as a funnel view. The live repo's `engine/kpi.py` already has `_funnel_from_pipeline()` that reads `runtime/pipeline.json` and returns structured funnel data via `/api/kpi`'s `funnel` field — but the frontend doesn't render it.
 
 ## Solution
 
@@ -137,14 +137,14 @@ The existing `pollStatus()` function already fetches `/api/kpi` and `/api/scan-s
 
 ## What already exists
 
-1. `engine/kpi.py:_funnel_from_pipeline()` — reads `run/pipeline.json`, returns structured funnel
+1. `engine/kpi.py:_funnel_from_pipeline()` — reads `runtime/pipeline.json`, returns structured funnel
 2. `/api/kpi` endpoint — includes `funnel` in its JSON response
 3. `/api/scan-state` endpoint — returns SCANNING/IDLE/STALLED
 4. `dash/static/app.js` — already polls both endpoints every 2s
 5. `dash/static/styles.css` — existing card, pill, empty-state, and table styles to extend
 6. `dash/static/index.html` — existing two-tab structure to extend to three
 7. Spread-hunter `:8801` dashboard — reference implementation for pipeline visualization
-8. `scripts/rank_markets.py` — the screener that writes `run/pipeline.json`
+8. `scripts/rank_markets.py` — the screener that writes `runtime/pipeline.json`
 
 ## Failure modes
 

@@ -11,7 +11,7 @@ from eth_account import Account
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import engine.order_manager as le
+import core_brain.order_manager as le
 
 
 # Response shape MEASURED against live relayer 2026-08-16:
@@ -362,7 +362,7 @@ def test_get_payout_denominator_empty_result_raises():
 
 
 def test_dry_run_probe():
-    with patch("engine.markets.fetch_live_market") as mock_fetch:
+    with patch("core_brain.markets.fetch_live_market") as mock_fetch:
         mock_fetch.return_value = MagicMock(
             market_slug="btc-updown-5m-12345",
             t_remaining=lambda: 180.0,
@@ -750,7 +750,7 @@ def test_quote_passes_post_only_default_true(tmp_path):
     mock_client.get_order.side_effect = lambda vid: {"asset_id": "tok_up"} if vid == "venue-up" else {"asset_id": "tok_dn"}
     db_path = tmp_path / "live.db"
 
-    with patch("engine.markets.fetch_pinned_market", return_value=dummy_market), \
+    with patch("core_brain.markets.fetch_pinned_market", return_value=dummy_market), \
          patch.object(le, "client", return_value=mock_client), \
          patch.object(le, "open_notional", return_value=0.0), \
          patch.object(le, "RUN", tmp_path):
@@ -790,7 +790,7 @@ def test_quote_does_not_require_maker_rewards(tmp_path):
         lambda vid: {"asset_id": "tok_up"} if vid == "venue-up" else {"asset_id": "tok_dn"}
     )
 
-    with patch("engine.markets.fetch_pinned_market", side_effect=_fetch),          patch.object(le, "client", return_value=mock_client),          patch.object(le, "open_notional", return_value=0.0),          patch.object(le, "RUN", tmp_path):
+    with patch("core_brain.markets.fetch_pinned_market", side_effect=_fetch),          patch.object(le, "client", return_value=mock_client),          patch.object(le, "open_notional", return_value=0.0),          patch.object(le, "RUN", tmp_path):
         le.quote(cond_id, price=0.50, size=5.0, live=True,
                  db_path=tmp_path / "live.db")
 
@@ -811,7 +811,7 @@ def test_quote_allows_explicit_no_post_only(tmp_path):
     mock_client.get_order.side_effect = lambda vid: {"asset_id": "tok_up"} if vid == "venue-up" else {"asset_id": "tok_dn"}
     db_path = tmp_path / "live.db"
 
-    with patch("engine.markets.fetch_pinned_market", return_value=dummy_market), \
+    with patch("core_brain.markets.fetch_pinned_market", return_value=dummy_market), \
          patch.object(le, "client", return_value=mock_client), \
          patch.object(le, "open_notional", return_value=0.0), \
          patch.object(le, "RUN", tmp_path):
@@ -835,7 +835,7 @@ def test_quote_tif_gtd_with_expiration(tmp_path):
     mock_client.get_order.side_effect = lambda vid: {"asset_id": "tok_up"} if vid == "venue-up" else {"asset_id": "tok_dn"}
     db_path = tmp_path / "live.db"
 
-    with patch("engine.markets.fetch_pinned_market", return_value=dummy_market), \
+    with patch("core_brain.markets.fetch_pinned_market", return_value=dummy_market), \
          patch.object(le, "client", return_value=mock_client), \
          patch.object(le, "open_notional", return_value=0.0), \
          patch.object(le, "RUN", tmp_path):
@@ -856,7 +856,7 @@ def test_quote_tif_gtd_with_expiration(tmp_path):
 
 def test_batch_quote_happy_path_both_succeed(tmp_path):
     """Batch quote places both legs, verifies asset_id on both, and attaches venue IDs as open."""
-    from engine.order_registry import OrderRegistry
+    from core_brain.order_registry import OrderRegistry
     cond_id = "0x26b64228a9fb13e5c2221cd5879fa0f235cee8ab254c0f094977cc86beeb6a2f"
     dummy_market = MagicMock(
         up_token="tok_up_111", down_token="tok_dn_222",
@@ -867,7 +867,7 @@ def test_batch_quote_happy_path_both_succeed(tmp_path):
     mock_client.get_order.side_effect = lambda vid: {"asset_id": "tok_up_111"} if vid == "v-up-1" else {"asset_id": "tok_dn_222"}
     db_path = tmp_path / "live.db"
 
-    with patch("engine.markets.fetch_pinned_market", return_value=dummy_market), \
+    with patch("core_brain.markets.fetch_pinned_market", return_value=dummy_market), \
          patch.object(le, "client", return_value=mock_client), \
          patch.object(le, "open_notional", return_value=0.0), \
          patch.object(le, "RUN", tmp_path):
@@ -887,7 +887,7 @@ def test_batch_quote_happy_path_both_succeed(tmp_path):
 
 def test_batch_quote_partial_failure_auto_cancels_naked_leg(tmp_path, capsys):
     """If one leg succeeds and one fails, immediately auto-cancel the resting leg to prevent naked exposure."""
-    from engine.order_registry import OrderRegistry
+    from core_brain.order_registry import OrderRegistry
     cond_id = "0x26b64228a9fb13e5c2221cd5879fa0f235cee8ab254c0f094977cc86beeb6a2f"
     dummy_market = MagicMock(
         up_token="tok_up_111", down_token="tok_dn_222",
@@ -899,7 +899,7 @@ def test_batch_quote_partial_failure_auto_cancels_naked_leg(tmp_path, capsys):
     mock_client.cancel_order.return_value = {"canceled": ["v-up-survivor"]}
     db_path = tmp_path / "live.db"
 
-    with patch("engine.markets.fetch_pinned_market", return_value=dummy_market), \
+    with patch("core_brain.markets.fetch_pinned_market", return_value=dummy_market), \
          patch.object(le, "client", return_value=mock_client), \
          patch.object(le, "open_notional", return_value=0.0), \
          patch.object(le, "RUN", tmp_path):
@@ -927,7 +927,7 @@ def test_batch_quote_partial_failure_auto_cancels_naked_leg(tmp_path, capsys):
 
 def test_batch_quote_reverse_response_attribution_and_half_price(tmp_path):
     """At price=0.50 (identical amounts), reversed response array is caught by get_order verification and fails closed."""
-    from engine.order_registry import OrderRegistry
+    from core_brain.order_registry import OrderRegistry
     cond_id = "0x26b64228a9fb13e5c2221cd5879fa0f235cee8ab254c0f094977cc86beeb6a2f"
     dummy_market = MagicMock(
         up_token="tok_up_111", down_token="tok_dn_222",
@@ -940,7 +940,7 @@ def test_batch_quote_reverse_response_attribution_and_half_price(tmp_path):
     mock_client.cancel_order.return_value = {}
     db_path = tmp_path / "live.db"
 
-    with patch("engine.markets.fetch_pinned_market", return_value=dummy_market), \
+    with patch("core_brain.markets.fetch_pinned_market", return_value=dummy_market), \
          patch.object(le, "client", return_value=mock_client), \
          patch.object(le, "open_notional", return_value=0.0), \
          patch.object(le, "RUN", tmp_path):
@@ -965,7 +965,7 @@ def test_batch_quote_reverse_response_attribution_and_half_price(tmp_path):
 
 def test_batch_quote_verification_mismatch_fails_closed(tmp_path):
     """Venue returning mismatched asset_id triggers fail-closed cancellation of all batch orders."""
-    from engine.order_registry import OrderRegistry
+    from core_brain.order_registry import OrderRegistry
     cond_id = "0x26b64228a9fb13e5c2221cd5879fa0f235cee8ab254c0f094977cc86beeb6a2f"
     dummy_market = MagicMock(
         up_token="tok_up_111", down_token="tok_dn_222",
@@ -978,7 +978,7 @@ def test_batch_quote_verification_mismatch_fails_closed(tmp_path):
     mock_client.cancel_order.return_value = {}
     db_path = tmp_path / "live.db"
 
-    with patch("engine.markets.fetch_pinned_market", return_value=dummy_market), \
+    with patch("core_brain.markets.fetch_pinned_market", return_value=dummy_market), \
          patch.object(le, "client", return_value=mock_client), \
          patch.object(le, "open_notional", return_value=0.0), \
          patch.object(le, "RUN", tmp_path):
@@ -998,7 +998,7 @@ def test_batch_quote_verification_mismatch_fails_closed(tmp_path):
 
 def test_batch_quote_both_fail(tmp_path, capsys):
     """If both legs return no order ID at the venue, both rows stay pending for orphan adoption with zero cancel calls."""
-    from engine.order_registry import OrderRegistry
+    from core_brain.order_registry import OrderRegistry
     cond_id = "0x26b64228a9fb13e5c2221cd5879fa0f235cee8ab254c0f094977cc86beeb6a2f"
     dummy_market = MagicMock(
         up_token="tok_up_111", down_token="tok_dn_222",
@@ -1008,7 +1008,7 @@ def test_batch_quote_both_fail(tmp_path, capsys):
     mock_client.post_orders.return_value = [{"errorMsg": "err1"}, {"errorMsg": "err2"}]
     db_path = tmp_path / "live.db"
 
-    with patch("engine.markets.fetch_pinned_market", return_value=dummy_market), \
+    with patch("core_brain.markets.fetch_pinned_market", return_value=dummy_market), \
          patch.object(le, "client", return_value=mock_client), \
          patch.object(le, "open_notional", return_value=0.0), \
          patch.object(le, "RUN", tmp_path):
@@ -1051,7 +1051,7 @@ def test_quote_rejects_gtd_without_expiration():
 
 def test_cancel_single_order_dry_run_and_live(tmp_path, capsys):
     """cancel_single_order prints dry-run message when live=False, calls SDK and updates DB when live=True."""
-    from engine.order_registry import OrderRegistry, OrderRecord
+    from core_brain.order_registry import OrderRegistry, OrderRecord
     db_path = tmp_path / "live.db"
     registry = OrderRegistry(db_path=db_path)
     now_ms = 1_000_000
@@ -1096,7 +1096,7 @@ def test_cancel_single_order_handles_venue_rejection(tmp_path):
 
 def test_cancel_market_dry_run_and_live(tmp_path, capsys):
     """cancel_market prints dry-run message when live=False, calls SDK and cancels active orders when live=True."""
-    from engine.order_registry import OrderRegistry, OrderRecord
+    from core_brain.order_registry import OrderRegistry, OrderRecord
     db_path = tmp_path / "live.db"
     registry = OrderRegistry(db_path=db_path)
     now_ms = 1_000_000
@@ -1205,7 +1205,7 @@ def test_balance_cmd_queries_funder_and_collateral(capsys):
 
 def test_pairs_cmd_lists_registry_records(tmp_path, capsys):
     """pairs() outputs table of all registered pairs and held sizes."""
-    from engine.order_registry import OrderRegistry, OrderRecord
+    from core_brain.order_registry import OrderRegistry, OrderRecord
     db_path = tmp_path / "live.db"
     registry = OrderRegistry(db_path=db_path)
     now_ms = 1_000_000
@@ -1233,7 +1233,7 @@ def test_quote_rejects_unknown_tif(tmp_path):
     mock_client = MagicMock()
     db_path = tmp_path / "live.db"
 
-    with patch("engine.markets.fetch_pinned_market", return_value=dummy_market), \
+    with patch("core_brain.markets.fetch_pinned_market", return_value=dummy_market), \
          patch.object(le, "client", return_value=mock_client), \
          patch.object(le, "open_notional", return_value=0.0), \
          patch.object(le, "RUN", tmp_path):

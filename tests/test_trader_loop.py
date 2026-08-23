@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import pytest
 
-from engine.trader_loop import LiveFleetResult, VenueSeam, plan_orders, run
-from engine.quotes import QuoteIntent
+from core_brain.trader_loop import LiveFleetResult, VenueSeam, plan_orders, run
+from core_brain.quotes import QuoteIntent
 
 
 def _intent(side="UP", token="tok-up", price=0.60, size=5):

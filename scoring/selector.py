@@ -3,7 +3,7 @@
 The selector is deliberately pure. It does not fetch markets or write state; it
 only answers whether metadata and a pair of order books satisfy the strategy's
 entry contract. Keeping the rule here prevents the ranker and the fleet from
-drifting apart when a stale ``run/markets.json`` is still on disk.
+drifting apart when a stale ``runtime/markets.json`` is still on disk.
 """
 from __future__ import annotations
 
@@ -65,7 +65,7 @@ def identity_allowed(title: object = "", slug: object = "",
 
     `require_primary=False` keeps every REJECTION arm and drops only the
     positive confirmation the matchup shape has to earn. It exists for one
-    caller: a `run/markets.json` written before this module did, whose entries
+    caller: a `runtime/markets.json` written before this module did, whose entries
     carry a title and a slug and none of the five metadata fields the sports
     and macro keywords are read from. Judged normally, every such entry fails
     -- "Yankees vs Red Sox" has no league word in its own title -- so the live

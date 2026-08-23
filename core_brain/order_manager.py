@@ -81,6 +81,11 @@ RUN = ROOT / "runtime"
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# The pre-rename run/ path, for readers that must not miss state written before
+# the rename. Imported below the sys.path bootstrap, like every other
+# core_brain import here. See core_brain/runtime_paths.py.
+from core_brain.runtime_paths import legacy_runtime_file  # noqa: E402
+
 
 # Settlement primitives (ABI encoding, id derivation, EIP-712 signing) live in
 # core_brain.settlement; the relayer/RPC submit path stays here with the CLI verbs.
@@ -237,13 +242,34 @@ def _update_order_log(entry_id: str, updates: dict) -> bool:
     return False
 
 
+def _idempotency_log_paths() -> list[Path]:
+    """Every order log that can still hold an in-flight row for this condition.
+
+    Both the current runtime/live_orders.json and the pre-rename
+    run/live_orders.json, because a settlement submitted before the rename was
+    recorded only in the old file. Missing that row lets a second on-chain
+    merge, redeem, exit or complete go out for a condition already in flight.
+    New rows are still written to runtime/ only.
+    """
+    paths = [RUN / "live_orders.json"]
+    legacy = legacy_runtime_file("live_orders.json", root=ROOT)
+    if legacy != paths[0]:
+        paths.append(legacy)
+    return paths
+
+
 def _check_idempotency_guard(condition_id: str, force: bool = False) -> None:
-    """Scan runtime/live_orders.json for prior pending/submitted/interrupted orders matching condition_id.
-    Refuses execution unless force is True.
+    """Scan the order logs for prior pending/submitted/interrupted orders
+    matching condition_id. Refuses execution unless force is True.
     """
     if force:
         return
-    f = RUN / "live_orders.json"
+    for f in _idempotency_log_paths():
+        _scan_one_order_log(f, condition_id)
+
+
+def _scan_one_order_log(f: Path, condition_id: str) -> None:
+    """Raise SystemExit if `f` records an in-flight order for condition_id."""
     if not f.exists():
         return
     # Only the read and the parse belong inside the guard. Keeping the scan loop

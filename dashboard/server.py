@@ -783,8 +783,22 @@ def stop_bot() -> dict:
     if procs_file.exists():
         try:
             saved_procs = json.loads(procs_file.read_text(encoding="utf-8"))
-        except Exception:
-            saved_procs = {}
+        except (OSError, ValueError):
+            saved_procs = None
+        # A registry we cannot read is not an empty one. Treating it as {} kills
+        # nothing, deletes the file, and reports "stopped" -- after which the
+        # reset path archives the database while the original processes are
+        # still writing to it. Keep the file and fail.
+        if not isinstance(saved_procs, dict):
+            return {
+                "ok": False,
+                "message": (
+                    f"Cannot read the process file at {procs_file}; refusing to "
+                    "report the stack stopped. No process was killed and the file "
+                    "was left in place. Fix or remove it, then stop again."
+                ),
+                "status": get_system_status(),
+            }
 
         for name, info in saved_procs.items():
             if not isinstance(info, dict):
@@ -1047,9 +1061,22 @@ def api_system_reset(request: Request):
 
     steps = []
 
-    # 1. Halt the bot
+    # 1. Halt the bot. A stop that could not confirm the stack is down aborts
+    #    the whole reset: cancelling orders and archiving the database under a
+    #    live writer loses every write it makes afterwards.
     stop_result = stop_bot()
     steps.append(f"bot: {stop_result['message']}")
+    if not stop_result.get("ok"):
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": stop_result["message"],
+                "steps": steps,
+                "starting_capital": None,
+                "status": stop_result.get("status"),
+            },
+            status_code=409,
+        )
 
     # 2. Cancel all open orders on the venue (best-effort; if credentials
     #    are missing or the venue is down, the reset still proceeds)

@@ -256,3 +256,75 @@ def test_reset_refuses_while_the_registry_is_unreadable(tmp_path, monkeypatch):
 
     assert result["ok"] is False
     assert "state is unknown" in result["message"]
+
+
+# ── STOP and reset must not report a stack down that they never reached ──
+
+def test_stop_refuses_on_an_unreadable_registry(tmp_path, monkeypatch):
+    """Reporting 'stopped' here lets the reset archive the DB under a live writer."""
+    from dashboard import server
+
+    _write_registry(tmp_path, '{"decide": {"pid": 4242')
+    procs_file = tmp_path / "runtime" / "processes.json"
+    monkeypatch.setattr(server, "LIVE_ROOT", tmp_path)
+
+    result = server.stop_bot()
+
+    assert result["ok"] is False
+    assert "cannot read the process file" in result["message"].lower()
+    # The record survives: it is the only way back to the running PIDs.
+    assert procs_file.exists()
+
+
+def test_stop_clears_a_readable_registry(tmp_path, monkeypatch):
+    """The normal path is unchanged: readable registry, record removed."""
+    from dashboard import server
+
+    _write_registry(tmp_path, '{"decide": {"pid": 999999999, "started_at": 1.0}}')
+    procs_file = tmp_path / "runtime" / "processes.json"
+    monkeypatch.setattr(server, "LIVE_ROOT", tmp_path)
+
+    result = server.stop_bot()
+
+    assert result["ok"] is True
+    assert not procs_file.exists()
+
+
+def test_idempotency_guard_reads_the_pre_rename_order_log(tmp_path, monkeypatch):
+    """A merge recorded before the rename must still block a second one.
+
+    Missing that row is a duplicate on-chain settlement for a condition that
+    is already in flight.
+    """
+    from core_brain import order_manager
+
+    (tmp_path / "runtime").mkdir()
+    legacy_dir = tmp_path / "run"
+    legacy_dir.mkdir()
+    (legacy_dir / "live_orders.json").write_text(
+        json.dumps([{"id": "merge-1", "condition_id": "0xABC", "status": "submitted"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(order_manager, "ROOT", tmp_path)
+    monkeypatch.setattr(order_manager, "RUN", tmp_path / "runtime")
+
+    with pytest.raises(SystemExit) as excinfo:
+        order_manager._check_idempotency_guard("0xabc")
+
+    assert "merge-1" in str(excinfo.value)
+
+
+def test_idempotency_guard_still_allows_an_unseen_condition(tmp_path, monkeypatch):
+    from core_brain import order_manager
+
+    (tmp_path / "runtime").mkdir()
+    legacy_dir = tmp_path / "run"
+    legacy_dir.mkdir()
+    (legacy_dir / "live_orders.json").write_text(
+        json.dumps([{"id": "merge-1", "condition_id": "0xABC", "status": "confirmed"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(order_manager, "ROOT", tmp_path)
+    monkeypatch.setattr(order_manager, "RUN", tmp_path / "runtime")
+
+    order_manager._check_idempotency_guard("0xabc")  # must not raise

@@ -29,7 +29,7 @@ merge is the exit and the P&L event.
   arbitrage that happens to earn rebates while it waits, not a rebate farm.
 - **The universe is not BTC 5-minute binaries.** The ranker's funnel (24h volume, top-3 bid
   depth on both sides, book spread, horizon ≤ 30 days) writes survivors to
-  `runtime/markets.json`, and the fleet quotes *only* that list. The measured traded universe is
+  `runtime/markets.json`, and the Trader quotes *only* that list. The measured traded universe is
   tennis, baseball and esports. The 5-minute BTC series was measured dead on adverse
   selection and survives only as a legacy field.
 - **Spread capture pricing mode.** `objective = "spread_capture"` (formerly `"rewards"`)
@@ -38,7 +38,7 @@ merge is the exit and the P&L event.
 
 ## Features
 
-**Engine** (`engine/`)
+**Core brain** (`core_brain/`)
 - `quotes.py` — the decision layer: where to rest both legs, and why not to
 - `risk.py` — sizing ladder, inventory skew, dollar caps, hard blocks
 - `unhedged_stop_loss.py` — per-market markout state machine + trader posture (HALTED etc.)
@@ -59,7 +59,7 @@ merge is the exit and the P&L event.
 **Ops tooling** (`scripts/`)
 - `filter_markets.py` — the filter funnel that graduates the universe
 - `filter_loop.py` — continuous market filter loop feeding `runtime/markets.json`
-- `global_stop_loss.py` — watchdog: over-cap pairs & repeat naked-leg exits
+- `global_stop_loss.py` — watchdog: over-cap pairs & repeat single-buy exits
 - `spread-hunter-menu.ps1` — PowerShell control center: start/stop/status for the
   dashboard + bot stack, with a themed, color-coded status view
 
@@ -67,12 +67,12 @@ merge is the exit and the P&L event.
 
 ```
 spread-hunter-live/
-  engine/                 Core trading & execution engine
+  core_brain/             Core trading & execution engine
   dashboard/              Operations dashboard (:8799) + SPA
   scripts/                Market Filter, filter loop, watchdog, PowerShell control center
   scoring/                Scoring, allocation and selection rules the Market Filter uses
   data/                   Order registry (orders.db — not committed)
-  run/                    Market universe, logs and cycle telemetry (not committed)
+  runtime/                Market universe, process file, logs and cycle telemetry (not committed)
   tests/                  Full hermetic unit & integration test suite
 ```
 
@@ -112,14 +112,14 @@ dry-run preview.
 | `merge <condition_id> --amount N` | Merge UP+DOWN pairs back to USDC (the exit) |
 | `redeem <condition_id>` | Gasless redemption of resolved positions |
 | `complete <pair_id>` | Cross the book to complete a one-sided pair (spends -- opening command) |
-| `exit <pair_id>` | Stop-loss exit of a naked leg |
+| `exit <pair_id>` | Stop-loss exit of a single buy |
 | `cancel` / `cancel-market` / `cancel-all` | Pull resting orders |
 
 **Bot stack** — the dashboard's START/STOP buttons (or the PowerShell menu) launch the
-screener loop, the engine poll loop, and the quoting fleet. The fleet rests real maker
-bids: verify dashboard state before starting.
+Market Filter (`filter`), Query Polymarket (`query`) and Decide & Execute (`decide`).
+Decide & Execute rests real maker bids: verify dashboard state before starting.
 
-**PowerShell control center** — `.\scripts\live-spread-hunter-menu.ps1` offers
+**PowerShell control center** — `.\scripts\spread-hunter-menu.ps1` offers
 `start` / `stop` / `status` / `open`. The `status` view shows the dashboard, every stack
 process (with PID and module path), the guardrail watchdog, the universe feed, and checkout
 identity in one aligned, color-coded report.
@@ -138,7 +138,7 @@ cycle: pre-flight checks, order placement gates, settlement, and emergency seque
    and the dashboard's START button all rest or spend real funds. `complete` buys the
    missing side: it removes the risk of a single buy, but it does so by spending, so it is
    an opening command and not a closing one.
-4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (in `engine/config.py`).
+4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (in `core_brain/config.py`).
 
 ## Docs
 

@@ -53,7 +53,7 @@ class TestRingFile:
     def test_rotation_at_500(self, tmp_path):
         ring = tmp_path / "cycle_events.jsonl"
         for i in range(1, 511):
-            emit(i, "reconciling", "reconcile_ok", service="engine",
+            emit(i, "reconciling", "reconcile_ok", service="query",
                  ring_path=ring)
         # Algorithm: append, then if lines > 500 keep the last 400. The 501st
         # append triggers one rotation (keeps events 102..501 = 400 lines);
@@ -67,19 +67,19 @@ class TestRingFile:
     def test_rotation_preserves_valid_json(self, tmp_path):
         ring = tmp_path / "cycle_events.jsonl"
         for i in range(1, 601):
-            emit(i, "scanning", "rerank_done", service="engine", ring_path=ring)
+            emit(i, "scanning", "rerank_done", service="query", ring_path=ring)
         events = _parse_lines(ring)
         assert len(events) == 499  # rotated once at 501, then 502..600 appended
         for e in events:
             assert REQUIRED_FIELDS <= set(e)
             assert e["cycle"] >= 102
 
-    def test_fleet_service_never_rotates(self, tmp_path):
-        # Q3: only the engine process owns rotation. Fleet appends must never
-        # trigger a rewrite, so a concurrent engine rotation cannot lose them.
+    def test_decide_service_never_rotates(self, tmp_path):
+        # Q3: only the query process owns rotation. Decide appends must never
+        # trigger a rewrite, so a concurrent query rotation cannot lose them.
         ring = tmp_path / "cycle_events.jsonl"
         for i in range(1, 511):
-            emit(i, "quoting", "decide", service="fleet", ring_path=ring)
+            emit(i, "quoting", "decide", service="decide", ring_path=ring)
         assert len(_parse_lines(ring)) == 510
 
     def test_emit_never_raises(self, tmp_path, capsys):

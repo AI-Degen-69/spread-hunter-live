@@ -1903,7 +1903,7 @@ def poll(
                 else "sweep_error"
             )
             _emit_cycle_event(
-                service="engine", cycle=cycle, phase="settling",
+                service="query", cycle=cycle, phase="settling",
                 action=sweep_action,
             )
 
@@ -1929,7 +1929,7 @@ def poll(
                 f"cycle={elapsed:.2f}s | errors=0"
             )
             _emit_cycle_event(
-                service="engine", cycle=cycle, phase="reconciling",
+                service="query", cycle=cycle, phase="reconciling",
                 action="reconcile_ok", latency_ms=elapsed * 1000.0,
                 extra={
                     "fills": summary.fills_recorded,
@@ -1964,7 +1964,7 @@ def poll(
             print(skip_msg, file=sys.stderr)
             _log_event(skip_msg)
             _emit_cycle_event(
-                service="engine", cycle=cycle, phase="waiting",
+                service="query", cycle=cycle, phase="waiting",
                 action="reconcile_contended",
             )
             if once:
@@ -1986,7 +1986,7 @@ def poll(
             print(err_msg, file=sys.stderr)
             _log_event(err_msg)
             _emit_cycle_event(
-                service="engine", cycle=cycle, phase="reconciling",
+                service="query", cycle=cycle, phase="reconciling",
                 action="reconcile_error", reason=str(exc),
             )
             if not once and not stop_requested:
@@ -2022,7 +2022,7 @@ def poll(
                         print(line)
                     _log_event(line)
                 _emit_cycle_event(
-                    service="engine", cycle=cycle, phase="settling",
+                    service="query", cycle=cycle, phase="settling",
                     action="pairs_" + action,
                     extra={"pair_id": pr.get("pair_id")},
                 )

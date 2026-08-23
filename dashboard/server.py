@@ -423,8 +423,8 @@ def _is_pid_alive(pid: int | None, started_at: float | None = None) -> bool:
 
 
 def get_system_status() -> dict:
-    """Return live running status for Supervisor and 4 sub-services (Screener, Engine, Fleet, Telemetry)."""
-    procs_file = LIVE_ROOT / "run" / "live_procs.json"
+    """Return live running status for 3 sub-services (Market Filter, Query Polymarket, Decide & Execute) and Telemetry."""
+    procs_file = LIVE_ROOT / "run" / "processes.json"
     saved_procs: dict[str, Any] = {}
     if procs_file.exists():
         try:
@@ -432,54 +432,44 @@ def get_system_status() -> dict:
         except Exception:
             saved_procs = {}
 
-    sup_info = saved_procs.get("supervisor", {})
-    sup_pid = sup_info.get("pid")
-    sup_running = _is_pid_alive(sup_pid, sup_info.get("started_at"))
+    filter_info = saved_procs.get("filter", {})
+    filter_pid = filter_info.get("pid")
+    filter_running = _is_pid_alive(filter_pid, filter_info.get("started_at"))
 
-    scr_info = saved_procs.get("screener", {})
-    scr_pid = scr_info.get("pid")
-    scr_running = _is_pid_alive(scr_pid, scr_info.get("started_at"))
+    query_info = saved_procs.get("query", {})
+    query_pid = query_info.get("pid")
+    query_running = _is_pid_alive(query_pid, query_info.get("started_at"))
 
-    eng_info = saved_procs.get("engine", {})
-    eng_pid = eng_info.get("pid")
-    eng_running = _is_pid_alive(eng_pid, eng_info.get("started_at"))
-
-    fleet_info = saved_procs.get("fleet", {})
-    fleet_pid = fleet_info.get("pid")
-    fleet_running = _is_pid_alive(fleet_pid, fleet_info.get("started_at"))
+    decide_info = saved_procs.get("decide", {})
+    decide_pid = decide_info.get("pid")
+    decide_running = _is_pid_alive(decide_pid, decide_info.get("started_at"))
 
     configured_sweep_interval = resolve_sweep_interval()
-    running_sweep_interval = eng_info.get("sweep_interval_sec") if eng_running else None
+    running_sweep_interval = query_info.get("sweep_interval_sec") if query_running else None
 
     dash_running = True
     dash_pid = os.getpid()
 
-    bot_running = bool(sup_running or scr_running or eng_running or fleet_running)
+    bot_running = bool(filter_running or query_running or decide_running)
 
     return {
-        "supervisor": {
-            "name": "Supervisor",
-            "running": sup_running,
-            "pid": sup_pid if sup_running else None,
-            "started_at": sup_info.get("started_at") if sup_running else None,
-        },
         "services": {
-            "screener": {
-                "name": "Market Filter (loop)",
-                "running": scr_running,
-                "pid": scr_pid if scr_running else None,
+            "filter": {
+                "name": "Market Filter",
+                "running": filter_running,
+                "pid": filter_pid if filter_running else None,
             },
-            "engine": {
-                "name": "Order Manager (poll)",
-                "running": eng_running,
-                "pid": eng_pid if eng_running else None,
+            "query": {
+                "name": "Query Polymarket",
+                "running": query_running,
+                "pid": query_pid if query_running else None,
                 "sweep_interval_sec": configured_sweep_interval,
                 "running_sweep_interval_sec": running_sweep_interval,
             },
-            "fleet": {
-                "name": "Trader (loop)",
-                "running": fleet_running,
-                "pid": fleet_pid if fleet_running else None,
+            "decide": {
+                "name": "Decide & Execute",
+                "running": decide_running,
+                "pid": decide_pid if decide_running else None,
             },
             "dash": {
                 "name": "Telemetry (dash)",
@@ -517,12 +507,12 @@ def _capture_starting_capital() -> float | None:
 
 
 def get_starting_capital() -> float | None:
-    """Read the starting capital snapshot from live_procs.json.
+    """Read the starting capital snapshot from processes.json.
 
     Returns the account_value_usd captured at bot-start time, or None if
     no snapshot exists (bot never started, or venue was unreachable).
     """
-    procs_file = LIVE_ROOT / "run" / "live_procs.json"
+    procs_file = LIVE_ROOT / "run" / "processes.json"
     if not procs_file.exists():
         return None
     try:
@@ -618,7 +608,7 @@ def start_bot() -> dict:
                 "status": current,
             }
 
-        procs_file = LIVE_ROOT / "run" / "live_procs.json"
+        procs_file = LIVE_ROOT / "run" / "processes.json"
         procs_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Derive a stable run_id so fleet/exec/dash share one session id.
@@ -638,10 +628,10 @@ def start_bot() -> dict:
         )
         launched_procs.append(p_scr)
 
-        # Launch Order Manager Poll loop (live_exec poll --interval 0.5). The account sweep
-        # follows LIVE_SWEEP_INTERVAL when set; otherwise it runs every tick. Poll
+        # Launch Query Polymarket loop (live_exec poll --interval 0.5). The account sweep
+        # follows LIVE_SWEEP_INTERVAL when set; otherwise it runs every tick. Query
         # owns reconcile, the account sweep, and the markout sampler, and it keeps
-        # the registry's open orders fresh for the fleet loop below.
+        # the registry's open orders fresh for the decide loop below.
         sweep_interval = resolve_sweep_interval()
         poll_cmd = [sys.executable, "-m", "engine.order_manager", "poll", "--interval", "0.5"]
         if sweep_interval is not None:
@@ -655,7 +645,7 @@ def start_bot() -> dict:
         )
         launched_procs.append(p_eng)
 
-        # Launch the Fleet loop (decide -> submit). It reads open orders from the
+        # Launch the Decide & Execute loop (decide -> submit). It reads open orders from the
         # registry rather than re-reconciling, so it runs with --no-reconcile and
         # --no-sweep: a second reconcile loop would contend on the reconcile lock
         # and double the venue reads poll already makes.
@@ -679,11 +669,10 @@ def start_bot() -> dict:
                 pass
 
         saved_procs = {
-            "supervisor": {"pid": p_eng.pid, "started_at": time.time()},
-            "screener": {"pid": p_scr.pid, "started_at": time.time()},
-            "engine": {"pid": p_eng.pid, "started_at": time.time(),
-                       "sweep_interval_sec": sweep_interval},
-            "fleet": {"pid": p_fleet.pid, "started_at": time.time()},
+            "filter": {"pid": p_scr.pid, "started_at": time.time()},
+            "query": {"pid": p_eng.pid, "started_at": time.time(),
+                      "sweep_interval_sec": sweep_interval},
+            "decide": {"pid": p_fleet.pid, "started_at": time.time()},
         }
         # Capture starting capital: a real snapshot of account equity at the
         # moment the bot is toggled ON. The kpi.py report uses
@@ -732,9 +721,9 @@ def start_bot() -> dict:
 
 
 def stop_bot() -> dict:
-    """Terminate background Screener and Reconcile loop."""
+    """Terminate background Filter, Query, and Decide loops."""
     import subprocess
-    procs_file = LIVE_ROOT / "run" / "live_procs.json"
+    procs_file = LIVE_ROOT / "run" / "processes.json"
     if procs_file.exists():
         try:
             saved_procs = json.loads(procs_file.read_text(encoding="utf-8"))
@@ -865,7 +854,7 @@ def reset_database(custom_path: str | Path | None = None) -> dict:
 
 @app.get("/api/system/status")
 def api_system_status():
-    """Return process states for supervisor and 3 sub-services."""
+    """Return process states for 3 sub-services."""
     return JSONResponse(get_system_status())
 
 
@@ -1010,11 +999,11 @@ def api_system_reset(request: Request):
         return JSONResponse(reset_result, status_code=409)
     steps.append(f"db: {reset_result['message']}")
 
-    # 4. Clear run state files (ring buffer, heartbeats, live_procs)
+    # 4. Clear run state files (ring buffer, heartbeats, processes)
     run_dir = LIVE_ROOT / "run"
     for fname in ["cycle_events.jsonl", "live_poll_heartbeat.json",
                   "guardrail_watch_heartbeat.json", "live_orders.json",
-                  "live_procs.json"]:
+                  "processes.json", "live_procs.json"]:
         try:
             (run_dir / fname).unlink(missing_ok=True)
         except Exception:
@@ -1039,9 +1028,9 @@ def api_system_reset(request: Request):
     except Exception as e:
         steps.append(f"wallet: snapshot failed ({e})")
 
-    # Write starting capital to live_procs.json so get_starting_capital() can
+    # Write starting capital to processes.json so get_starting_capital() can
     # read it on the next poll — even if the bot hasn't been started yet.
-    procs_file = LIVE_ROOT / "run" / "live_procs.json"
+    procs_file = LIVE_ROOT / "run" / "processes.json"
     procs_file.parent.mkdir(parents=True, exist_ok=True)
     procs_data = {}
     if starting_capital is not None:
@@ -1110,7 +1099,7 @@ def _last_per_service(events: list[dict]) -> dict[str, tuple[str, Optional[float
     """Latest (phase, unix ts) per service from ring events."""
     out: dict[str, tuple[str, Optional[float]]] = {}
     for ev in events:
-        svc = str(ev.get("service") or "engine")
+        svc = str(ev.get("service") or "query")
         ts = _parse_event_ts(ev.get("ts"))
         if svc not in out or (
             ts is not None and (out[svc][1] is None or ts > out[svc][1])
@@ -1240,7 +1229,7 @@ def get_scan_state():
             last_event_ts = ts
         if ts >= window:
             active_phases.add(str(ev.get("phase") or ""))
-        if str(ev.get("service") or "") == "screener" and (
+        if str(ev.get("service") or "") in ("filter", "screener") and (
             last_scan_ts is None or ts > last_scan_ts
         ):
             last_scan_ts = ts

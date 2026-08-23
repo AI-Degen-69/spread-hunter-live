@@ -87,15 +87,15 @@ def test_system_status_ignores_a_stale_procs_file(tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     stale = time.time() - 86400
-    (run_dir / "live_procs.json").write_text(json.dumps({
-        "supervisor": {"pid": os.getpid(), "started_at": stale},
-        "screener": {"pid": os.getpid(), "started_at": stale},
-        "engine": {"pid": os.getpid(), "started_at": stale},
+    (run_dir / "processes.json").write_text(json.dumps({
+        "filter": {"pid": os.getpid(), "started_at": stale},
+        "query": {"pid": os.getpid(), "started_at": stale},
+        "decide": {"pid": os.getpid(), "started_at": stale},
     }), encoding="utf-8")
 
     monkeypatch.setattr(dash_mod, "LIVE_ROOT", tmp_path)
     status = dash_mod.get_system_status()
-    assert status["supervisor"]["running"] is False
+    assert status["services"]["query"]["running"] is False
     assert status["bot_state"] == "STOPPED"
 
 
@@ -106,14 +106,14 @@ def test_system_status_reports_a_genuinely_running_process(tmp_path, monkeypatch
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / "live_procs.json").write_text(json.dumps({
-        "supervisor": {"pid": os.getpid(),
-                       "started_at": _process_start_time(os.getpid())},
+    (run_dir / "processes.json").write_text(json.dumps({
+        "query": {"pid": os.getpid(),
+                  "started_at": _process_start_time(os.getpid())},
     }), encoding="utf-8")
 
     monkeypatch.setattr(dash_mod, "LIVE_ROOT", tmp_path)
     status = dash_mod.get_system_status()
-    assert status["supervisor"]["running"] is True
+    assert status["services"]["query"]["running"] is True
     assert status["bot_state"] == "RUNNING"
 
 

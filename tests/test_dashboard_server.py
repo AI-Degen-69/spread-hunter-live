@@ -493,16 +493,14 @@ def test_page_html_contains_status_bar_and_bot_buttons():
 
 
 def test_system_status_endpoint(client):
-    """GET /api/system/status returns supervisor, 4 sub-services (screener, engine, fleet, dash), and bot state."""
+    """GET /api/system/status returns 4 sub-services (filter, query, decide, dash), and bot state."""
     res = client.get("/api/system/status")
     assert res.status_code == 200
     data = res.json()
-    assert "supervisor" in data
-    assert "running" in data["supervisor"]
     assert "services" in data
-    assert "screener" in data["services"]
-    assert "engine" in data["services"]
-    assert "fleet" in data["services"]
+    assert "filter" in data["services"]
+    assert "query" in data["services"]
+    assert "decide" in data["services"]
     assert "dash" in data["services"]
     assert data["services"]["dash"]["running"] is True
     assert "bot_state" in data
@@ -871,15 +869,15 @@ def test_sweep_interval_is_configurable_from_env(monkeypatch):
 
 
 def test_status_surfaces_engine_sweep_cadence(monkeypatch, tmp_path):
-    """The system-status payload reports how often the engine sweeps."""
+    """The system-status payload reports how often query sweeps."""
     import dashboard.server as dash_mod
 
     monkeypatch.setattr(dash_mod, "LIVE_ROOT", tmp_path)
     monkeypatch.setenv("LIVE_SWEEP_INTERVAL", "30")
-    assert dash_mod.get_system_status()["services"]["engine"]["sweep_interval_sec"] == 30.0
+    assert dash_mod.get_system_status()["services"]["query"]["sweep_interval_sec"] == 30.0
 
     monkeypatch.delenv("LIVE_SWEEP_INTERVAL")
-    assert dash_mod.get_system_status()["services"]["engine"]["sweep_interval_sec"] is None
+    assert dash_mod.get_system_status()["services"]["query"]["sweep_interval_sec"] is None
 
 
 def test_start_bot_passes_sweep_interval_to_poll(monkeypatch, tmp_path):
@@ -964,7 +962,7 @@ def test_set_sweep_interval_persists_and_applies(monkeypatch, tmp_path):
     # Everything else in the file survives, credentials included.
     assert "POLY_PRIVATE_KEY=do-not-load" in saved
     assert "OTHER=1" in saved
-    assert result["status"]["services"]["engine"]["sweep_interval_sec"] == 45.0
+    assert result["status"]["services"]["query"]["sweep_interval_sec"] == 45.0
 
 
 def test_set_sweep_interval_rejects_bad_values(monkeypatch, tmp_path):
@@ -1011,17 +1009,17 @@ def test_status_distinguishes_configured_from_running_sweep_cadence(monkeypatch,
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    (run_dir / "live_procs.json").write_text(json.dumps({
-        "engine": {"pid": os.getpid(), "started_at": time.time(), "sweep_interval_sec": 30.0},
+    (run_dir / "processes.json").write_text(json.dumps({
+        "query": {"pid": os.getpid(), "started_at": time.time(), "sweep_interval_sec": 30.0},
     }), encoding="utf-8")
 
     monkeypatch.setattr(dash_mod, "LIVE_ROOT", tmp_path)
     monkeypatch.setattr(dash_mod, "_is_pid_alive", lambda pid, started_at=None: pid is not None)
     monkeypatch.setenv("LIVE_SWEEP_INTERVAL", "60")
 
-    engine = dash_mod.get_system_status()["services"]["engine"]
-    assert engine["sweep_interval_sec"] == 60.0           # configured
-    assert engine["running_sweep_interval_sec"] == 30.0   # running process's launch value
+    query = dash_mod.get_system_status()["services"]["query"]
+    assert query["sweep_interval_sec"] == 60.0           # configured
+    assert query["running_sweep_interval_sec"] == 30.0   # running process's launch value
 
 
 def test_cycle_stream_route_registered():

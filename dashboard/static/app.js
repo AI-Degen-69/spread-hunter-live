@@ -207,20 +207,35 @@ const sseReconnect = document.getElementById('sse-reconnect');
 
 /* ── Event translation: plain English for every cycle event ── */
 const EVENT_TRANSLATIONS = {
-  // Screener
+  // Filter
+  'filter|rerank_done': 'Finished scanning all Polymarket markets and updated the graduated list.',
   'screener|rerank_done': 'Finished scanning all Polymarket markets and updated the graduated list.',
 
-  // Engine — reconciliation
+  // Query — reconciliation
+  'query|reconcile_ok': 'Checked the venue for new fills on our orders. All synced up.',
+  'query|reconcile_error': 'Failed to sync fills from the venue. Orders may be stale until the next query.',
+  'query|reconcile_contended': 'Another process is reconciling fills right now. Waiting in line to avoid double-counting.',
   'engine|reconcile_ok': 'Checked the venue for new fills on our orders. All synced up.',
   'engine|reconcile_error': 'Failed to sync fills from the venue. Orders may be stale until the next poll.',
   'engine|reconcile_contended': 'Another process is reconciling fills right now. Waiting in line to avoid double-counting.',
 
-  // Engine — account sweep
+  // Query — account sweep
+  'query|sweep_done': 'Read the live wallet balance and open positions from Polymarket. Dashboard tiles are now fresh.',
+  'query|sweep_skipped': 'Skipped the wallet sweep this cycle (not due yet or rate-limited).',
+  'query|sweep_error': 'Failed to read the wallet from Polymarket. Balance and exposure tiles may be stale.',
   'engine|sweep_done': 'Read the live wallet balance and open positions from Polymarket. Dashboard tiles are now fresh.',
   'engine|sweep_skipped': 'Skipped the wallet sweep this cycle (not due yet or rate-limited).',
   'engine|sweep_error': 'Failed to read the wallet from Polymarket. Balance and exposure tiles may be stale.',
 
-  // Engine — pairs management
+  // Query — pairs management
+  'query|pairs_balanced': 'Checked a market pair: both YES and NO sides are matched. No action needed.',
+  'query|pairs_hold': 'Holding a market pair open. The position is healthy and waiting for the market to resolve.',
+  'query|pairs_would_exit': 'Considering closing a one-sided position to limit naked exposure. Pre-check passed, may exit soon.',
+  'query|pairs_route_to_merge': 'A position has shares on both outcomes that can be merged back into collateral. Routing to merge.',
+  'query|pairs_exited': 'Closed a position on this market. Shares sold or merged, exposure reduced.',
+  'query|pairs_would_complete': 'Considering redeeming a resolved position for collateral. Pre-check passed, may redeem soon.',
+  'query|pairs_completed': 'Redeemed a resolved market. Shares converted back to USDC, position closed.',
+  'query|pairs_error': 'Error managing a market pair. The position may need manual attention.',
   'engine|pairs_balanced': 'Checked a market pair: both YES and NO sides are matched. No action needed.',
   'engine|pairs_hold': 'Holding a market pair open. The position is healthy and waiting for the market to resolve.',
   'engine|pairs_would_exit': 'Considering closing a one-sided position to limit naked exposure. Pre-check passed, may exit soon.',
@@ -230,7 +245,10 @@ const EVENT_TRANSLATIONS = {
   'engine|pairs_completed': 'Redeemed a resolved market. Shares converted back to USDC, position closed.',
   'engine|pairs_error': 'Error managing a market pair. The position may need manual attention.',
 
-  // Fleet — quoting
+  // Decide & Execute — quoting
+  'decide|decide': 'Evaluated pricing for a market. Decided what orders to rest and at what price.',
+  'decide|submit': 'Submitted maker orders to Polymarket for this market. Bids are now resting on the book.',
+  'decide|market_error': 'Error quoting this market. The bot skipped it this cycle and will retry next time.',
   'fleet|decide': 'Evaluated pricing for a market. Decided what orders to rest and at what price.',
   'fleet|submit': 'Submitted maker orders to Polymarket for this market. Bids are now resting on the book.',
   'fleet|market_error': 'Error quoting this market. The bot skipped it this cycle and will retry next time.',
@@ -250,7 +268,7 @@ function translateEvent(ev) {
 
   // If no exact match, try prefix match for dynamic actions (pairs_*)
   if (!translation && action.startsWith('pairs_')) {
-    translation = EVENT_TRANSLATIONS['engine|' + action] || null;
+    translation = EVENT_TRANSLATIONS['query|' + action] || EVENT_TRANSLATIONS['engine|' + action] || null;
   }
 
   // Build context suffix from market slug only (reason is in the raw line)
@@ -308,11 +326,11 @@ connectSSE();
 
 /* ── Render: Service Cards (DT1: guardrail first, alert borders) ── */
 const SERVICE_DEFS = [
-  { key: 'screener', name: 'Market Filter', cmd: 'python -m scripts.filter_loop',
+  { key: 'filter', name: 'Market Filter', cmd: 'python -m scripts.filter_loop',
     desc: 'Scans 500+ Polymarket binary markets and screens down to 8 graduated pairs.' },
-  { key: 'engine', name: 'Order Manager', cmd: 'python -m engine.order_manager poll --interval 0.5',
-    desc: 'Polls CLOB every 0.5s, reconciles fills, executes account sweeps.' },
-  { key: 'fleet', name: 'Trader (Loop)', cmd: 'python -m engine.trader_loop --live --no-reconcile --no-sweep --interval 5',
+  { key: 'query', name: 'Query Polymarket', cmd: 'python -m engine.order_manager poll --interval 0.5',
+    desc: 'Queries CLOB every 0.5s, reconciles fills, executes account sweeps.' },
+  { key: 'decide', name: 'Decide & Execute', cmd: 'python -m engine.trader_loop --live --no-reconcile --no-sweep --interval 5',
     desc: 'Runs the trading loop (decide quotes -> submit maker orders) every 5s across approved markets.' },
   { key: 'guardrail', name: 'Guardrail Watchdog', cmd: 'python -m scripts.guardrail_watch',
     desc: 'Continuous risk monitor enforcing hard exposure and inventory limits.',
@@ -383,9 +401,9 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
         // Individual stop - uses per-service control
         await controlFetch('/api/system/stop');
       } else {
-        // Starting live fleet quoting requires explicit typed confirmation
-        if (svc === 'fleet') {
-          const confirmed = prompt('Type START to confirm starting the live quoting fleet:');
+        // Starting live trading requires explicit typed confirmation
+        if (svc === 'decide' || svc === 'fleet') {
+          const confirmed = prompt('Type START to confirm starting live Decide & Execute:');
           if (confirmed !== 'START') {
             return;
           }

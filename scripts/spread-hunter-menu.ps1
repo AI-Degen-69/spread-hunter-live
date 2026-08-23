@@ -31,25 +31,24 @@ $LivePort    = 8799
 $DashUrl     = "http://127.0.0.1:$LivePort"
 $RunDir      = Join-Path $ProjectPath "run"
 $DashPidFile = Join-Path $RunDir "live-dash.pids.json"
-$ProcsFile   = Join-Path $RunDir "live_procs.json"
+$ProcsFile   = Join-Path $RunDir "processes.json"
 $OutLog      = Join-Path $RunDir "live_dash.out.log"
 $ErrLog      = Join-Path $RunDir "live_dash.err.log"
 $HbFile      = Join-Path $RunDir "guardrail_watch_heartbeat.json"
 
 # Module map: each stack process -> its source file (relative to the repo root).
 $StackPaths = @{
-    supervisor = "engine/order_manager.py"   # the engine poll loop doubles as supervisor
-    screener   = "scripts/filter_loop.py"
-    engine     = "engine/order_manager.py"
-    fleet      = "engine/trader_loop.py"
+    filter     = "scripts/filter_loop.py"
+    query      = "engine/order_manager.py"
+    decide     = "engine/trader_loop.py"
     guardrail  = "scripts/guardrail_watch.py"
     dash       = "dashboard/server.py"
 }
 
 $StackCmds = @{
-    screener   = "python -m scripts.filter_loop"
-    engine     = "python -m engine.order_manager poll --interval 0.5"
-    fleet      = "python -m engine.trader_loop --live --no-reconcile --no-sweep --interval 5"
+    filter     = "python -m scripts.filter_loop"
+    query      = "python -m engine.order_manager poll --interval 0.5"
+    decide     = "python -m engine.trader_loop --live --no-reconcile --no-sweep --interval 5"
     guardrail  = "python -m scripts.guardrail_watch"
     dash       = "python -m dashboard.server --port 8799"
 }
@@ -444,7 +443,7 @@ function Write-StackRows {
         Write-ProcessRow -Label $r.Name -Running $r.Running -PidVal $r.Pid -Path $r.Path -RunCmd $r.RunCmd
     }
     if ($Rows.Count -gt 0 -and $runningCount -eq 0 -and (Test-Path $ProcsFile)) {
-        Write-FileRow -Label "Process registry" -Status "STALE" -Path "run/live_procs.json" -Dynamic "no active PID"
+        Write-FileRow -Label "Process file" -Status "STALE" -Path "run/processes.json" -Dynamic "no active PID"
     }
 }
 
@@ -452,13 +451,13 @@ function Show-ServiceTable {
     <# Render the /api/system/status payload: bot state count + 3 stack services. #>
     param($Status)
     $rows = @()
-    foreach ($svc in @("screener", "engine", "fleet")) {
+    foreach ($svc in @("filter", "query", "decide")) {
         $s = $Status.services.$svc
         if ($s) {
             $label = @{
-                screener   = "Market Filter (loop)"
-                engine     = "Order Manager (poll)"
-                fleet      = "Trader (loop)"
+                filter     = "Market Filter"
+                query      = "Query Polymarket"
+                decide     = "Decide & Execute"
             }[$svc]
             if (-not $label) { $label = $s.name }
             $rows += [pscustomobject]@{
@@ -491,8 +490,8 @@ function Start-BotStack {
         Show-ServiceTable $status
         return
     }
-    Lsh-Step "Requesting bot stack start (screener + engine poll + fleet)..."
-    Lsh-Warn "The fleet rests REAL maker bids. Verify the dashboard shows a clean state before proceeding."
+    Lsh-Step "Requesting bot stack start (Market Filter + Query Polymarket + Decide & Execute)..."
+    Lsh-Warn "Decide & Execute rests REAL maker bids. Verify the dashboard shows a clean state before proceeding."
     $res = Invoke-Control -Endpoint "/api/system/start"
     if (-not $res) { return }
     if ($res.ok) { Lsh-Ok "Bot stack started: $($res.message)." }
@@ -513,7 +512,7 @@ function Stop-BotStack {
     if (Test-Path $ProcsFile) {
         try { $saved = Get-Content $ProcsFile -Raw | ConvertFrom-Json } catch { $saved = $null }
         $killed = $false
-        foreach ($name in @("supervisor", "screener", "engine", "fleet")) {
+        foreach ($name in @("filter", "query", "decide")) {
             $info = if ($saved) { $saved.$name } else { $null }
             if ($info -and $info.pid -and (Test-PidAlive -ProcessId $info.pid)) {
                 # Validate started_at before killing
@@ -546,9 +545,9 @@ function Stop-BotStack {
         }
         Remove-Item $ProcsFile -ErrorAction SilentlyContinue
         if ($killed) { Lsh-Ok "Bot stack processes killed from recorded PIDs." }
-        else         { Lsh-Warn "live_procs.json exists but no process is alive (stale record cleared)." }
+        else         { Lsh-Warn "processes.json exists but no process is alive (stale record cleared)." }
     } else {
-        Lsh-Warn "No bot stack is running (no live_procs.json)."
+        Lsh-Warn "No bot stack is running (no processes.json)."
     }
 }
 
@@ -583,7 +582,7 @@ function Show-Status {
         Write-FileRow -Label "PID file" -Status "MISSING" -Path "run/live-dash.pids.json" -Dynamic "no PID file"
     }
 
-    # ── 2 · BOT STACK (dashboard API when up, live_procs.json otherwise) ──
+    # ── 2 · BOT STACK (dashboard API when up, processes.json otherwise) ──
     $status = $null
     if ($portUp) {
         try { $status = Invoke-RestMethod -Uri "$DashUrl/api/system/status" -UseBasicParsing -TimeoutSec 5 } catch {}
@@ -595,13 +594,13 @@ function Show-Status {
         if (Test-Path $ProcsFile) { try { $saved = Get-Content $ProcsFile -Raw | ConvertFrom-Json } catch {} }
         $rows = @()
         if ($saved) {
-            foreach ($name in @("screener", "engine", "fleet")) {
+            foreach ($name in @("filter", "query", "decide")) {
                 $info = $saved.$name
                 $running = [bool]($info -and $info.pid -and (Test-PidAlive -ProcessId $info.pid))
                 $label = @{
-                    screener   = "Market Filter (loop)"
-                    engine     = "Order Manager (poll)"
-                    fleet      = "Trader (loop)"
+                    filter     = "Market Filter"
+                    query      = "Query Polymarket"
+                    decide     = "Decide & Execute"
                 }[$name]
                 $rows += [pscustomobject]@{
                     Name = $label
@@ -614,9 +613,9 @@ function Show-Status {
             Write-StackRows -Rows $rows
         } else {
             Write-SectionHeader -Number "2" -Title "BOT STACK" -Status "OFF (0/3)" -StatusStyle "Error"
-            Write-ProcessRow -Label "Market Filter (loop)" -Running $false -Path $StackPaths["screener"] -RunCmd $StackCmds["screener"]
-            Write-ProcessRow -Label "Order Manager (poll)" -Running $false -Path $StackPaths["engine"] -RunCmd $StackCmds["engine"]
-            Write-ProcessRow -Label "Trader (loop)" -Running $false -Path $StackPaths["fleet"] -RunCmd $StackCmds["fleet"]
+            Write-ProcessRow -Label "Market Filter" -Running $false -Path $StackPaths["filter"] -RunCmd $StackCmds["filter"]
+            Write-ProcessRow -Label "Query Polymarket" -Running $false -Path $StackPaths["query"] -RunCmd $StackCmds["query"]
+            Write-ProcessRow -Label "Decide & Execute" -Running $false -Path $StackPaths["decide"] -RunCmd $StackCmds["decide"]
         }
     }
 

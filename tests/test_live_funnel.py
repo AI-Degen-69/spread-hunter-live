@@ -55,6 +55,10 @@ def test_funnel_from_pipeline_reuses_screener_gate_names(tmp_path):
     assert f["graduated"][0]["fills"] == 2
     assert f["graduated"][0]["pnl"] == 0.5
     assert f["graduated"][1]["fills"] == 0
+    assert f["counts"]["funded"] == 999
+    assert "raw" in f
+    assert "final" in f
+    assert "picked" in f
 
 
 def test_funnel_from_pipeline_returns_none_when_absent(tmp_path):

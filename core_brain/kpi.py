@@ -373,8 +373,15 @@ def _funnel_from_pipeline(
         m = by_mkt.get(cid, {})
         graduated.append({
             "condition_id": cid,
-            "slug": s.get("slug") or "",
+            "slug": s.get("slug") or s.get("market_slug") or "",
             "title": s.get("title") or s.get("question") or "",
+            "volume": s.get("volume_24h") or s.get("volume"),
+            "spread": s.get("spread"),
+            "days_to_resolve": s.get("days_to_resolve"),
+            "source": s.get("source") or "spread",
+            "est_income": s.get("est_income"),
+            "est_capital": s.get("est_capital"),
+            "return_pct_day": s.get("return_pct_day"),
             "fills": m.get("fills_count", 0),
             "pnl": m.get("realized_pnl", 0.0),
         })
@@ -386,13 +393,21 @@ def _funnel_from_pipeline(
 
     return {
         "raw_count": raw_count,
+        "counts": counts,
         "filters": filters,
         "final_count": int(counts.get("eligible") or 0),
         "graduated": graduated,
+        "raw": snap.get("raw"),
+        "final": snap.get("final") or [],
+        "picked": snap.get("picked") or [],
         "source": "screener",
         "snapshot_age": snapshot_age,
         "census": snap.get("census") or "",
         "gates": snap.get("gates") or "",
+        "depth_gate_usd": snap.get("depth_gate_usd"),
+        "volume_gate_usd": snap.get("volume_gate_usd"),
+        "trial_depth_usd": snap.get("trial_depth_usd"),
+        "trial_volume_usd": snap.get("trial_volume_usd"),
     }
 
 
@@ -890,7 +905,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # The account, as the venue reports it. `starting_capital` above is a
     # paper-run constant that nobody deposited; these fields are the balance
     # and P&L the account holder sees on Polymarket, written by
-    # `engine.order_manager account-sweep` and read here from SQLite.
+    # `core_brain.order_manager account-sweep` and read here from SQLite.
     # ------------------------------------------------------------------
     sorted_account_marks = sorted(
         [am for am in all_account_marks if am.get("ts") is not None],

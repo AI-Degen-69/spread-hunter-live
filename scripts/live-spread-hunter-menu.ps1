@@ -518,7 +518,7 @@ function Show-Status {
                     supervisor = "Supervisor"
                     screener   = "Screener (rerank)"
                     engine     = "Engine (sweep/poll)"
-                    fleet      = "Fleet (decide/submit)"
+                    fleet      = "Trader (decide/submit)"
                 }[$name]
                 $rows += [pscustomobject]@{ Name = $label; Running = $running; Pid = $info.pid; Path = $StackPaths[$name] }
             }

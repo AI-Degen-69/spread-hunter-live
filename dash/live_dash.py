@@ -476,7 +476,7 @@ def get_system_status() -> dict:
                 "running_sweep_interval_sec": running_sweep_interval,
             },
             "fleet": {
-                "name": "Fleet (decide/submit)",
+                "name": "Trader (decide/submit)",
                 "running": fleet_running,
                 "pid": fleet_pid if fleet_running else None,
             },

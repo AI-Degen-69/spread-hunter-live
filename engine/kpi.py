@@ -104,7 +104,7 @@ def compute_trade_analytics(
     if mean_return_pct is not None and stdev_return_pct is not None and len(return_pcts) > 1:
         se = stdev_return_pct / math.sqrt(len(return_pcts))
         # One-sided 90% lower bound (the "is expectancy positive?" gate the
-        # the paper run uses), plus a 95% two-sided band for context.
+        # paper run uses), plus a 95% two-sided band for context.
         ci90_lower_pct = mean_return_pct - 1.645 * se
         ci95_return_pct = {
             "lower": mean_return_pct - 1.96 * se,

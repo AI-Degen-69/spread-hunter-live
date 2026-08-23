@@ -247,7 +247,7 @@ class MakerConfig:
     widen_offset: float = 0.035
     # ALLOCATOR KNOBS -- READ BY NO LIVE CODE.
     # `marginal_return_floor`, `allocation_budget` and `max_market_frac` below
-    # belong to the water-fill allocator in `strategy/allocate.py`, which only
+    # belong to the water-fill allocator in `scoring/allocate.py`, which only
     # the Market Filter's scoring uses. The trading path has no allocator: the
     # Trader quotes whatever run/markets.json lists and sizes each couple from
     # `couple_allocation_usd`. Grep confirms no reference to these three

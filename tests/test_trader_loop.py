@@ -1,6 +1,7 @@
 """The live fleet loop: decide -> submit -> reconcile, reusing the risk gates.
 
-`engine.trader_loop` runs the live rotation. The strategy that
+`engine.trader_loop` runs the live rotation through
+`engine.quotes.evaluate_market_quote`, which wraps `decide_quotes`. The strategy that
 trades is `engine.quotes.decide_quotes` -- already proven in the paper run and
 already wired to the live risk gates -- so this module must add NOTHING new to
 the decision. Its only new jobs are:

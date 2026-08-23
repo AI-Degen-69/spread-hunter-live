@@ -1,7 +1,9 @@
 """LIVE order execution against Polymarket CLOB. Real money.
 
-This is the one file that can lose actual funds, so it is deliberately small,
-deliberately manual, and refuses to do anything by default.
+This is the one file that can lose actual funds, so it is deliberately small
+and deliberately manual: importing it does nothing, and every action is an
+explicit subcommand. Those subcommands are LIVE by default -- `--no-live` is
+the dry-run switch, not the other way round.
 
 CREDENTIALS NEVER APPEAR HERE. They are read from the environment and handed
 straight to the client. Nothing in this module prints, logs, or writes a key,

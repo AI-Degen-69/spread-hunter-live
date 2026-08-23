@@ -1,6 +1,7 @@
 """Live fill engine interface implementation for live trading execution.
 
-Backed by OrderRegistry and venue client. Wireable to nothing in test or paper mode.
+Backed by OrderRegistry and a venue client. The paper-run path never used this
+engine; tests construct it directly with a stub client.
 
 CRITICAL INVARIANT:
 on_book() MUST NEVER infer a fill from book deltas, price changes, or trade tape.

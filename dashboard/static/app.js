@@ -209,7 +209,9 @@ const sseReconnect = document.getElementById('sse-reconnect');
 const EVENT_TRANSLATIONS = {
   // Filter
   'filter|rerank_done': 'Finished scanning all Polymarket markets and updated the graduated list.',
+  'filter|rerank_error': 'Market scan failed. The graduated list was not updated, so the Trader keeps quoting the previous universe.',
   'screener|rerank_done': 'Finished scanning all Polymarket markets and updated the graduated list.',
+  'screener|rerank_error': 'Market scan failed. The graduated list was not updated, so the Trader keeps quoting the previous universe.',
 
   // Query — reconciliation
   'query|reconcile_ok': 'Checked the venue for new fills on our orders. All synced up.',
@@ -401,14 +403,14 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
         // Individual stop - uses per-service control
         await controlFetch('/api/system/stop');
       } else {
-        // Starting live trading requires explicit typed confirmation
-        if (svc === 'decide' || svc === 'fleet') {
-          const confirmed = prompt('Type START to confirm starting live Decide & Execute:');
-          if (confirmed !== 'START') {
-            return;
-          }
+        // /api/system/start is atomic: it launches Filter, Query AND the live
+        // Decide & Execute loop together. Every toggle therefore starts live
+        // trading, whichever card was clicked, so the typed confirmation sits
+        // outside the service check rather than only on the decide card.
+        const confirmed = prompt('This starts the whole stack, including live Decide & Execute, which rests REAL maker bids. Type START to confirm:');
+        if (confirmed !== 'START') {
+          return;
         }
-        // Atomic start
         await controlFetch('/api/system/start');
       }
       pollStatus();

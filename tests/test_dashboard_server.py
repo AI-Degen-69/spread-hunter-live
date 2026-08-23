@@ -1382,3 +1382,38 @@ def test_reset_endpoint_exists():
     from dashboard.server import app
     routes = [r.path for r in app.routes if hasattr(r, 'path')]
     assert '/api/system/reset' in routes
+
+
+def test_app_js_translates_a_failed_market_scan():
+    """A failed scan leaves the Trader on a stale universe -- say so in words.
+
+    scripts/filter_loop.py emits `filter|rerank_error`. Without a translation
+    the ticker shows only the raw JSON line, which is the one event an
+    operator most needs to read at a glance.
+    """
+    app_js = (Path(__file__).resolve().parent.parent
+              / "dashboard" / "static" / "app.js").read_text(encoding="utf-8")
+
+    assert "'filter|rerank_error'" in app_js
+    # The pre-rename tag is still accepted while an old ring is being read.
+    assert "'screener|rerank_error'" in app_js
+
+
+def test_every_toggle_start_asks_for_typed_confirmation():
+    """/api/system/start is atomic: any toggle starts the live Trader.
+
+    Gating the typed START prompt on the decide card alone let a click on the
+    Market Filter or Query Polymarket card rest real maker bids with no
+    confirmation at all.
+    """
+    app_js = (Path(__file__).resolve().parent.parent
+              / "dashboard" / "static" / "app.js").read_text(encoding="utf-8")
+
+    start_block = app_js.split("'/api/system/start'")[0]
+    tail = start_block[start_block.rindex("const isOn"):]
+
+    assert "prompt(" in tail, "the start path must ask for confirmation"
+    assert "confirmed !== 'START'" in tail
+    assert "svc === 'decide'" not in tail, (
+        "the confirmation must not be gated on which service card was clicked"
+    )

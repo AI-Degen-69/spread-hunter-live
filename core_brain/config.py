@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 @dataclass(frozen=True)
 class MakerConfig:
     # LEGACY. The rolling 5-minute BTC series this project started on, kept only
-    # because `engine/markets.py` and the `probe` latency harness still resolve a
+    # because `core_brain/markets.py` and the `probe` latency harness still resolve a
     # live window from it. THE FLEET DOES NOT TRADE THIS. The live universe is the
     # Market Filter's graduated list in runtime/markets.json -- liquid sports, esports, macro
     # and political markets under `select_max_days_to_resolve` -- and 5-min BTC was
@@ -132,7 +132,7 @@ class MakerConfig:
     enable_hard_blocks: bool = True
 
     # HARD CEILINGS on order and total notional. These are the same values
-    # previously hardcoded as module constants in engine/venue.py
+    # previously hardcoded as module constants in core_brain/venue.py
     # (MAX_ORDER_USD=25.0, MAX_TOTAL_USD=100.0). Consolidated into MakerConfig
     # so the dashboard's /api/parameters endpoint reads one config object,
     # not two. 0 disables the rule, same as max_naked_usd above.
@@ -251,7 +251,7 @@ class MakerConfig:
     # the Market Filter's scoring uses. The trading path has no allocator: the
     # Trader quotes whatever runtime/markets.json lists and sizes each couple from
     # `couple_allocation_usd`. Grep confirms no reference to these three
-    # anywhere in engine/ or dashboard/. The live capital bounds that DO bind
+    # anywhere in core_brain/ or dashboard/. The live capital bounds that DO bind
     # are `max_naked_usd`,
     # `max_fleet_naked_usd` and `max_committed_usd`.
     #

@@ -18,7 +18,7 @@ exactly $1.00; and keep quotes inside the 4.5c reward window (>= min size) so th
 rebate accrues while we wait.
 
 The universe is NOT the BTC 5-minute series. The fleet quotes the ranker's
-graduated list (runtime/markets.json, via engine/market_feed.py) -- liquid sports,
+graduated list (runtime/markets.json, via core_brain/market_feed.py) -- liquid sports,
 esports, macro and political markets inside a 30-day horizon. `config.series_slug`
 is a legacy field; see AGENTS.md.
 """
@@ -591,7 +591,7 @@ def evaluate_market_quote(
 
     The sequence live_exec.decide and the fleet's per-market visit used to run
     in two copies; this is the single copy. Both callers are adapters over the
-    four ports: the CLI wires engine.markets + inventory_from_registry +
+    four ports: the CLI wires core_brain.markets + inventory_from_registry +
     decide_quotes, the fleet wires its VenueSeam slots. The step is pure of
     venue imports -- it owns failure *detection* (MarketUnavailable when the
     market is missing, MarketQuoteError when a book read fails) and the caller

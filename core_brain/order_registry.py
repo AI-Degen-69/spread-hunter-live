@@ -74,15 +74,22 @@ def _resolve_run_id() -> str:
         return env_id
 
     read_lock = resolve_runtime_file(".current_run_id", root=LIVE_ROOT)
-    try:
-        if read_lock.exists():
+    if read_lock.exists():
+        # A lock that exists but cannot be read is not the same as no lock.
+        # Swallowing the error here publishes a fresh id while a live process
+        # keeps writing under the old one, which splits one session across two
+        # run filters on the dashboard. Fail loudly instead.
+        try:
             mtime = read_lock.stat().st_mtime
-            if time.time() - mtime < 43200:  # 12h
-                content = read_lock.read_text().strip()
-                if content:  # Validate non-empty before trusting
-                    return content
-    except Exception:
-        pass
+            content = read_lock.read_text().strip()
+        except OSError as exc:
+            raise RuntimeError(
+                f"run id lock at {read_lock} exists but cannot be read: {exc}. "
+                "Fix the file (or remove it while the stack is stopped) before "
+                "starting -- a fresh run id here would split the live session."
+            ) from exc
+        if content and time.time() - mtime < 43200:  # 12h
+            return content
 
     # A new id is always published to the current path, never the legacy one.
     lock_file = runtime_file(".current_run_id", root=LIVE_ROOT)
@@ -325,7 +332,7 @@ CREATE TABLE IF NOT EXISTS reconcile_lock (
 );
 
 -- Per-cycle fleet decisions, one row per market visit, pruned to the last 200.
--- Written by engine.cycle_stream (decide event inserts, submit event updates
+-- Written by core_brain.cycle_stream (decide event inserts, submit event updates
 -- the submitted/cancelled counts). Telemetry only; the ring file is for
 -- streaming, this table is for SQL queries.
 CREATE TABLE IF NOT EXISTS cycle_intent (
@@ -1109,7 +1116,7 @@ class OrderRegistry:
     ) -> None:
         """Record what the venue said the account was worth.
 
-        `mark` is the dict returned by engine.account.compose_account_mark.
+        `mark` is the dict returned by core_brain.account.compose_account_mark.
         Absent keys are stored as NULL rather than 0.0: the dashboard reads
         these rows and must be able to tell "not measured" from "measured flat".
         """

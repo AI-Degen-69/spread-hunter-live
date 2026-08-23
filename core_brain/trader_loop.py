@@ -1,6 +1,6 @@
 """Live fleet loop: decide -> submit -> reconcile, reusing the risk gates.
 
-The decision is `engine.quotes.decide_quotes`
+The decision is `core_brain.quotes.decide_quotes`
 -- already proven in the paper run and already wired to the live risk gates -- so
 this module adds NOTHING new to the decision. Its only jobs are:
 
@@ -192,7 +192,7 @@ def run(
     if missing:
         raise TypeError(f"VenueSeam missing required ports: {', '.join(missing)}")
 
-    # Telemetry is opt-in: main() wires engine.cycle_stream.emit; tests drive
+    # Telemetry is opt-in: main() wires core_brain.cycle_stream.emit; tests drive
     # the loop without it so no test ever writes into live/run/.
     emit_fn = seam.emit_fn or (lambda *a, **k: None)
 

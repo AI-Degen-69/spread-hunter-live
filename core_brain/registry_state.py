@@ -7,7 +7,7 @@ summary the live dashboard renders — orders, fills, capital commitment, poll
 staleness, hedge-state classification (RESTING / BALANCED / NAKED / SETTLED /
 REFUSED), and the naked-leg exposure math.
 
-Extracted verbatim from live/dash/live_dash.py (query_db_state + _market_identity)
+Extracted verbatim from dashboard/server.py (query_db_state + _market_identity)
 so the dashboard becomes a thin consumer. The payload shape is unchanged: this is
 relocation for locality, not a redesign.
 
@@ -28,8 +28,8 @@ from typing import Any
 
 from core_brain.runtime_paths import resolve_runtime_file
 
-# live/, one level up from live/engine/. Same tree-boundary rule as live_exec:
-# `engine` must resolve inside live/ and nowhere else.
+# The repo root, one level up from core_brain/. Same tree-boundary rule as the
+# order manager: `core_brain` must resolve inside this repo and nowhere else.
 LIVE_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = LIVE_ROOT
 

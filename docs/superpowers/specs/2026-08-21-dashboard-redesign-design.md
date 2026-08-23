@@ -48,11 +48,11 @@ Four independent cards represent the background architecture:
    - *Status Display:* PID, Uptime, Venue Latency (ms), Fills Reconciled, DB Sync Status.
    - *Info Bubble (?):* Explains functionality + raw CLI command: `python -m core_brain.order_manager poll --interval 0.5`.
 
-3. **Quoting Fleet (`engine.live_fleet loop`)**
+3. **Decide & Execute (`core_brain.trader_loop`)**
    - *Purpose:* Evaluates two-sided pricing, computes size ladders ($3/leg budget), and submits maker bids to Polymarket.
    - *Controls:* Independent `[ START ]` / `[ STOP ]` toggle switch.
    - *Status Display:* PID, Active Quoting Markets Count, Resting Notional ($), Total Orders Resting.
-   - *Info Bubble (?):* Explains functionality + raw CLI command: `python -m core_brain.live_fleet loop`.
+   - *Info Bubble (?):* Explains functionality + raw CLI command: `python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5`.
    - *Expandable Rotation Queue:* Shows the sequential rotation order of active markets and quoting calculations.
 
 4. **Guardrail Watchdog (`scripts.global_stop_loss`)**

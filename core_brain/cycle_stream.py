@@ -32,6 +32,7 @@ DEFAULT_RING_PATH = LIVE_ROOT / "runtime" / "cycle_events.jsonl"
 # other caller resolved data/orders.db through order_registry, so cycle_intent
 # rows landed in a database the dashboard never read.
 from core_brain.order_registry import DEFAULT_DB_PATH  # noqa: E402
+from core_brain.runtime_paths import resolve_runtime_file  # noqa: E402
 
 MAX_LINES = 500
 KEEP_LINES = 400
@@ -281,8 +282,15 @@ def emit(
 
 
 def read_ring(ring_path: Path | None = None, tail: int = 100) -> list[dict]:
-    """Read the last `tail` parsed JSON events from the ring file."""
-    p = Path(ring_path) if ring_path else DEFAULT_RING_PATH
+    """Read the last `tail` parsed JSON events from the ring file.
+
+    `emit()` always writes `runtime/`, but a reader with no explicit path
+    resolves the pre-rename `run/cycle_events.jsonl` while only that one
+    exists -- otherwise the guardrail watcher reads an empty ring right
+    after the rename and misses a repeat-exit alert.
+    """
+    p = Path(ring_path) if ring_path else resolve_runtime_file(
+        DEFAULT_RING_PATH.name, root=LIVE_ROOT)
     if not p.exists():
         return []
     try:

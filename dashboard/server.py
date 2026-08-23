@@ -443,11 +443,22 @@ def get_system_status() -> dict:
     """Return live running status for 3 sub-services (Market Filter, Query Polymarket, Decide & Execute) and Telemetry."""
     procs_file = resolve_runtime_file("processes.json", root=LIVE_ROOT)
     saved_procs: dict[str, Any] = {}
+    # A registry we cannot read is NOT an empty registry. Reporting STOPPED for
+    # a truncated or half-written processes.json is how START gets permission to
+    # launch a second live Trader beside the running one, so this path fails
+    # closed: bot_state becomes UNKNOWN and every control that guards on
+    # "not RUNNING" refuses until the file is readable again.
+    registry_unreadable = False
     if procs_file.exists():
         try:
-            saved_procs = json.loads(procs_file.read_text(encoding="utf-8"))
-        except Exception:
-            saved_procs = {}
+            loaded = json.loads(procs_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            registry_unreadable = True
+        else:
+            if isinstance(loaded, dict):
+                saved_procs = loaded
+            else:
+                registry_unreadable = True
 
     # service_entry accepts the pre-rename keys (screener/engine/fleet) so a
     # stack started before the rename is still reported as RUNNING. Without
@@ -499,7 +510,12 @@ def get_system_status() -> dict:
                 "port": _ACTIVE_PORT,
             },
         },
-        "bot_state": "RUNNING" if bot_running else "STOPPED",
+        "bot_state": (
+            "UNKNOWN" if registry_unreadable
+            else ("RUNNING" if bot_running else "STOPPED")
+        ),
+        "registry_path": str(procs_file),
+        "registry_unreadable": registry_unreadable,
         "starting_capital": get_starting_capital(),
         "timestamp": time.time(),
     }
@@ -538,9 +554,17 @@ def get_starting_capital() -> float | None:
         return None
     try:
         saved = json.loads(procs_file.read_text(encoding="utf-8"))
-        val = saved.get("starting_account_value")
+    except (OSError, ValueError):
+        # Same rule as get_system_status: an unreadable registry is not an
+        # empty one. There is no number to report, and the caller renders the
+        # config bankroll label instead.
+        return None
+    if not isinstance(saved, dict):
+        return None
+    val = saved.get("starting_account_value")
+    try:
         return float(val) if val is not None else None
-    except (OSError, ValueError, TypeError):
+    except (TypeError, ValueError):
         return None
 
 
@@ -622,12 +646,18 @@ def start_bot() -> dict:
     try:
         # Re-check status now that we hold the lock.
         current = get_system_status()
-        if current["bot_state"] == "RUNNING":
-            return {
-                "ok": False,
-                "message": "Bot stack is already running; refusing to start a second instance.",
-                "status": current,
-            }
+        # Anything but a confirmed STOPPED refuses. UNKNOWN means the process
+        # registry could not be read, and a start on that state is exactly the
+        # duplicate-stack case this guard exists to prevent.
+        if current["bot_state"] != "STOPPED":
+            message = (
+                "Bot stack is already running; refusing to start a second instance."
+                if current["bot_state"] == "RUNNING"
+                else ("Cannot read the process file at "
+                      f"{current.get('registry_path')}; refusing to start until it is "
+                      "readable, because a second live stack cannot be ruled out.")
+            )
+            return {"ok": False, "message": message, "status": current}
 
         procs_file = runtime_file("processes.json", root=LIVE_ROOT)
         procs_file.parent.mkdir(parents=True, exist_ok=True)
@@ -827,10 +857,20 @@ def reset_database(custom_path: str | Path | None = None) -> dict:
     # the engine and screener keep their handles on the old inode while the page
     # reads a new empty file, so the run's telemetry splits across two files and
     # the dashboard reads empty for a bot that is still trading.
-    if get_system_status()["bot_state"] == "RUNNING":
+    bot_state = get_system_status()["bot_state"]
+    if bot_state != "STOPPED":
+        # UNKNOWN gets the same refusal as RUNNING: an unreadable process file
+        # cannot rule out a live writer, and resetting under one loses every
+        # write it makes afterwards.
         return {
             "ok": False,
-            "message": "Refusing to reset while the bot stack is running. Stop the bot first.",
+            "message": (
+                "Refusing to reset while the bot stack is running. Stop the bot first."
+                if bot_state == "RUNNING"
+                else "Refusing to reset while the bot stack state is unknown: the "
+                     "process file cannot be read, so a running stack cannot be "
+                     "ruled out. Fix the process file, then stop the bot."
+            ),
             "archived_to": None,
             "db_path": str(target_db),
         }

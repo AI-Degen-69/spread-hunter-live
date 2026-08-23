@@ -20,14 +20,15 @@ and nothing that does should ever be added to it.
     python -m core_brain.order_manager cancel-all --live
 
 SAFETY RAILS, all on by default:
-  * --live is required for anything that reaches the venue. Without it every
-    command prints what it WOULD send and exits.
+  * LIVE IS THE DEFAULT. Every subcommand reaches the venue unless you pass
+    `--no-live`, which prints what it WOULD send and exits. Omitting `--live`
+    does NOT give you a dry run.
   * MAX_ORDER_USD caps one order; MAX_TOTAL_USD caps everything open at once.
   * Each leg is written to runtime/live_orders.json as it is sent, so a crash
     mid-flight still leaves a record of what went out.
   * cancel-all is its own command, because the thing you want at 3am is a way
     to pull every quote without reading code first.
-  * Nothing here is imported by fleet.py. The automated bot cannot reach this
+  * Nothing here is imported by trader_loop.py. The automated bot cannot reach this
     module, so it cannot place a real order by accident.
 
 SIGNATURE TYPE IS THE USUAL FOOTGUN. An account funded through the Polymarket
@@ -64,25 +65,25 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 RUN = ROOT / "runtime"
 
-# Put live/ on sys.path so `engine.*` resolves however this module was reached
-# -- `python -m core_brain.order_manager` from live/, `python live/engine/live_exec.py`
-# from the repo root, or an import from a test.
+# Put the repo on sys.path so `core_brain.*` resolves however this module was
+# reached -- `python -m core_brain.order_manager` from the repo root,
+# `python core_brain/order_manager.py` by path, or an import from a test.
 #
-# ROOT only. The repo root is deliberately NOT added: `engine` must resolve
-# inside this repo and nowhere else. Adding the repo root here would let a
+# ROOT only. The parent directory is deliberately NOT added: `core_brain` must
+# resolve inside this repo and nowhere else. Adding the parent here would let a
 # same-named package elsewhere on sys.path merge with it again.
 #
-# A dry run does not prove this works. `quote` imports engine.markets ABOVE the
-# dry-run return and engine.order_registry BELOW it, so a half-resolved path
-# prints a clean dry run and then dies on the `--live` call -- after the
+# A dry run does not prove this works. `quote` imports core_brain.markets ABOVE
+# the dry-run return and core_brain.order_registry BELOW it, so a half-resolved
+# path prints a clean dry run and then dies on the `--live` call -- after the
 # operator has committed to sending. That happened on 2026-08-18; the guard is
-# tests/test_live_exec_import_paths.py.
+# tests/test_core_brain_import_paths.py.
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
 # Settlement primitives (ABI encoding, id derivation, EIP-712 signing) live in
-# engine.settlement; the relayer/RPC submit path stays here with the CLI verbs.
+# core_brain.settlement; the relayer/RPC submit path stays here with the CLI verbs.
 from core_brain.merge_pairs import (
     CTF_CONTRACT,
     USDC_E_CONTRACT,

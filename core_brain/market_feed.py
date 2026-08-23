@@ -1,4 +1,4 @@
-"""live/engine/market_feed.py - Market feed reading graduated markets from runtime/markets.json.
+"""core_brain/market_feed.py - Market feed reading graduated markets from runtime/markets.json.
 
 Reads the ranker's output (8 graduated markets) directly from disk without
 re-deriving the funnel and without importing across a package boundary.

@@ -35,8 +35,12 @@ if str(LIVE_ROOT) not in sys.path:
     sys.path.insert(0, str(LIVE_ROOT))
 
 from core_brain.order_registry import DEFAULT_DB_PATH as DEFAULT_DB  # noqa: E402
+from core_brain.runtime_paths import resolve_runtime_file  # noqa: E402
 
-DEFAULT_RING = LIVE_ROOT / "runtime" / "cycle_events.jsonl"
+# Read side: a pre-rename process can still be filling run/cycle_events.jsonl,
+# and a watcher reading an empty runtime/ ring would miss the repeat-exit
+# signature it exists to catch. Alerts and the heartbeat stay on runtime/.
+DEFAULT_RING = resolve_runtime_file("cycle_events.jsonl", root=LIVE_ROOT)
 DEFAULT_ALERTS_LOG = LIVE_ROOT / "runtime" / "global_stop_loss_alerts.log"
 DEFAULT_HEARTBEAT = LIVE_ROOT / "runtime" / "global_stop_loss_heartbeat.json"
 

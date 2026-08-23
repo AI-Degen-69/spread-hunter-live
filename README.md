@@ -111,7 +111,7 @@ dry-run preview.
 | `poll --interval 0.5` | Reconcile fills from the venue into `data/orders.db` |
 | `merge <condition_id> --amount N` | Merge UP+DOWN pairs back to USDC (the exit) |
 | `redeem <condition_id>` | Gasless redemption of resolved positions |
-| `complete <pair_id>` | Cross the book to complete a one-sided pair |
+| `complete <pair_id>` | Cross the book to complete a one-sided pair (spends -- opening command) |
 | `exit <pair_id>` | Stop-loss exit of a naked leg |
 | `cancel` / `cancel-market` / `cancel-all` | Pull resting orders |
 
@@ -131,10 +131,13 @@ cycle: pre-flight checks, order placement gates, settlement, and emergency seque
 
 1. **LIVE is the default.** This is the real-money execution repo. Every subcommand reaches
    the venue by default. Use `--no-live` for dry-run preview.
-2. **Closing commands are pre-approved:** `exit`, `complete`, `merge`, `redeem`, `cancel`,
-   `cancel-all` reduce exposure.
-3. **Opening commands require explicit supervision:** `quote` and live fleet quoting rest
-   real funds.
+2. **Closing commands are pre-approved:** `exit`, `merge`, `redeem`, `cancel`,
+   `cancel-market`, `cancel-all` reduce exposure. Cancelling pulls resting orders only --
+   a leg that already filled is still open exposure.
+3. **Opening commands require explicit supervision:** `quote`, `complete`, the Trader loop
+   and the dashboard's START button all rest or spend real funds. `complete` buys the
+   missing side: it removes the risk of a single buy, but it does so by spending, so it is
+   an opening command and not a closing one.
 4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (in `engine/config.py`).
 
 ## Docs

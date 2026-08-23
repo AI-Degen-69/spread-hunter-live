@@ -184,3 +184,75 @@ def test_dashboard_sees_a_stack_started_before_the_rename(tmp_path, monkeypatch)
     assert status["bot_state"] == "RUNNING"
     assert status["services"]["decide"]["running"] is True
     assert status["services"]["decide"]["pid"] == os.getpid()
+
+
+# ── fail closed on an unreadable process registry ──
+
+def _write_registry(tmp_path, text: str):
+    (tmp_path / "runtime").mkdir(exist_ok=True)
+    (tmp_path / "run").mkdir(exist_ok=True)
+    (tmp_path / "runtime" / "processes.json").write_text(text, encoding="utf-8")
+
+
+def test_unreadable_registry_reports_unknown_not_stopped(tmp_path, monkeypatch):
+    """A half-written registry must never read as 'nothing is running'."""
+    from dashboard import server
+
+    _write_registry(tmp_path, '{"decide": {"pid": 4242')  # truncated mid-write
+    monkeypatch.setattr(server, "LIVE_ROOT", tmp_path)
+
+    status = server.get_system_status()
+
+    assert status["bot_state"] == "UNKNOWN"
+    assert status["registry_unreadable"] is True
+
+
+def test_registry_holding_a_list_reports_unknown(tmp_path, monkeypatch):
+    """`saved_procs.get(...)` would explode on a list; treat it as unreadable."""
+    from dashboard import server
+
+    _write_registry(tmp_path, "[]")
+    monkeypatch.setattr(server, "LIVE_ROOT", tmp_path)
+
+    assert server.get_system_status()["bot_state"] == "UNKNOWN"
+
+
+def test_readable_empty_registry_is_stopped(tmp_path, monkeypatch):
+    """An empty object is a real answer: nothing recorded, nothing running."""
+    from dashboard import server
+
+    _write_registry(tmp_path, "{}")
+    monkeypatch.setattr(server, "LIVE_ROOT", tmp_path)
+
+    status = server.get_system_status()
+
+    assert status["bot_state"] == "STOPPED"
+    assert status["registry_unreadable"] is False
+
+
+def test_start_refuses_while_the_registry_is_unreadable(tmp_path, monkeypatch):
+    """The money case: UNKNOWN must not be treated as permission to start."""
+    from dashboard import server
+
+    monkeypatch.setattr(
+        server, "get_system_status",
+        lambda: {"bot_state": "UNKNOWN", "registry_path": "runtime/processes.json"},
+    )
+
+    result = server.start_bot()
+
+    assert result["ok"] is False
+    assert "refusing to start" in result["message"].lower()
+    assert "runtime/processes.json" in result["message"]
+
+
+def test_reset_refuses_while_the_registry_is_unreadable(tmp_path, monkeypatch):
+    """Unlinking the registry DB under a live writer loses every later write."""
+    from dashboard import server
+
+    monkeypatch.setattr(server, "get_system_status", lambda: {"bot_state": "UNKNOWN"})
+
+    result = server.reset_database(custom_path=tmp_path / "orders.db")
+
+    assert result["ok"] is False
+    assert "state is unknown" in result["message"]

@@ -12,7 +12,7 @@ description: Development conventions and patterns for spread-hunter-live. Python
 ## Tech Stack
 
 - **Language**: Python 3.12
-- **Framework**: FastAPI (`dash/live_dash.py`) + uvicorn
+- **Framework**: FastAPI (`dashboard/server.py`) + uvicorn
 - **Venue client**: `py-clob-client-v2`, `eth-account` (Polymarket CLOB)
 - **Tests**: pytest (`pytest.ini`: `testpaths = tests`, `pythonpath = .`)
 
@@ -22,7 +22,7 @@ description: Development conventions and patterns for spread-hunter-live. Python
 |---------|------|
 | `core_brain/` | execution core — order registry, fills, pairs, risk, merge |
 | `strategy/` | signal and sizing logic |
-| `dash/` | FastAPI dashboard + static assets |
+| `dashboard/` | FastAPI dashboard + static assets |
 | `scripts/` | operator tooling and one-off maintenance |
 | `tests/` | pytest suite, mirrors module names |
 

@@ -1,0 +1,144 @@
+# Spread Hunter Live
+
+[![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/AI-Degen-69/spread-hunter-live?utm_source=oss&utm_medium=github&utm_campaign=AI-Degen-69%2Fspread-hunter-live&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
+
+A dedicated **real-money execution engine and operations dashboard** for the Polymarket
+**spread hunter** strategy: buy a complete outcome set for less than it pays, then merge it
+back to collateral.
+
+This repo is the live trading side of the spread hunter project — not a simulation, not a
+paper trader. Every command reaches the venue by default (see [Safety Rails](#safety-rails)).
+
+## The strategy
+
+One UP share plus one DOWN share of the same binary market always redeems for exactly
+**$1.00**. The bot screens the venue for markets whose book allows it, rests two-sided bids
+*under mid* on both outcomes, waits for both legs to fill, and **merges** the assembled pair
+back into $1.00 of USDC. The income is the difference:
+
+```
+profit per pair = 1.00 - (avg UP price + avg DOWN price)
+```
+
+Measured on `run/fleet.db`: **476 merge closes returned +$1,172.35** at an average pair cost
+of **$0.96006** — roughly 4c per pair. `max_pair_cost = 0.995` is the profit condition: the
+merge is the exit and the P&L event.
+
+- **Maker rebates are extra, not the income.** Over the same run they accrued about
+  $0.22/day against $566 committed — four hundredths of a percent. This is a pair-assembly
+  arbitrage that happens to earn rebates while it waits, not a rebate farm.
+- **The universe is not BTC 5-minute binaries.** The ranker's funnel (24h volume, top-3 bid
+  depth on both sides, book spread, horizon ≤ 30 days) writes survivors to
+  `run/markets.json`, and the fleet quotes *only* that list. The measured traded universe is
+  tennis, baseball and esports. The 5-minute BTC series was measured dead on adverse
+  selection and survives only as a legacy field.
+- **Spread capture pricing mode.** `objective = "spread_capture"` (formerly `"rewards"`)
+  selects the from-mid pricing path that assembles the pair at `≈ 1.00 - 2*offset` — the
+  mechanism that makes the strategy work. See [AGENTS.md](AGENTS.md) for the full statement.
+
+## Features
+
+**Engine** (`engine/`)
+- `quotes.py` — the decision layer: where to rest both legs, and why not to
+- `risk.py` — sizing ladder, inventory skew, dollar caps, hard blocks
+- `unhedged_stop_loss.py` — per-market markout state machine + fleet posture (HALTED etc.)
+- `main_spread_hunter_loop.py` — multi-market rotation: decide → plan → submit/cancel (5s cadence)
+- `live_exec.py` — CLI: `status`, `balance`, `decide`, `quote`, `poll`, `merge`, `redeem`,
+  `complete`, `exit`, `cancel`, `cancel-market`, `cancel-all`, `pairs`, `kpi`, `audit`
+- `single_side_buy_saver.py` — naked-leg rescue: complete the pair, or exit the leg
+- `merge_pairs.py` — gasless merge & redemption (ABI, alt-bn128, EIP-712)
+- `order_registry.py` — SQLite order/fill tracking + reconcile (`run/live.db`)
+- `audit.py`, `kpi.py`, `account.py`, `cycle_stream.py`, `market_feed.py`, `markets.py`
+
+**Operations dashboard** (`dash/`)
+- `live_dash.py` — ops dashboard on `:8799` with a browser SPA (`dash/static/`)
+- System start/stop endpoints drive the bot stack (screener + engine poll + fleet) through
+  the same code path as the dashboard buttons
+- Service cards, guardrail health, cycle telemetry ring, account/exposure tiles
+
+**Ops tooling** (`scripts/`)
+- `rank_markets.py` — the ranker funnel that graduates the universe
+- `rerank_loop.py` — continuous screener loop feeding `run/markets.json`
+- `guardrail_watch.py` — watchdog: over-cap pairs & repeat naked-leg exits
+- `live-spread-hunter-menu.ps1` — PowerShell control center: start/stop/status for the
+  dashboard + bot stack, with a themed, color-coded status view
+
+## Repository layout
+
+```
+spread-hunter-live/
+  engine/                 Core trading & execution engine
+  dash/                   Operations dashboard (:8799) + SPA
+  scripts/                Ranker, screener loop, watchdog, PowerShell control center
+  strategy/               Simulation-side modules (fork source for engine/config.py)
+  run/                    Runtime state (live.db registry, markets.json, logs — not committed)
+  tests/                  Full hermetic unit & integration test suite
+```
+
+## Quick start
+
+```bash
+# 1. Install
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+
+# 2. Configure credentials (never commit the real .env)
+cp .env.example .env
+#   POLY_PRIVATE_KEY, POLY_FUNDER, POLY_SIG_TYPE, optional RELAYER_API_KEY / POLYGON_RPC
+
+# 3. Check wallet and account status (read-only)
+python -m engine.live_exec status
+python -m engine.live_exec balance
+
+# 4. Run the operations dashboard
+python -m dash.live_dash          # http://127.0.0.1:8799
+
+# 5. Tests
+pytest -q
+```
+
+## Operating guide
+
+**CLI** — `python -m engine.live_exec <command>`. Live by default; pass `--no-live` for a
+dry-run preview.
+
+| Command | Purpose |
+| --- | --- |
+| `status` / `balance` | Account state, wallet balance |
+| `decide` | Read-only quote decision for graduated markets |
+| `quote <condition_id> --price P --size N` | Rest a maker bid (opening command) |
+| `poll --interval 5` | Reconcile fills from the venue into `run/live.db` |
+| `merge <condition_id> --amount N` | Merge UP+DOWN pairs back to USDC (the exit) |
+| `redeem <condition_id>` | Gasless redemption of resolved positions |
+| `complete <pair_id>` | Cross the book to complete a one-sided pair |
+| `exit <pair_id>` | Stop-loss exit of a naked leg |
+| `cancel` / `cancel-market` / `cancel-all` | Pull resting orders |
+
+**Bot stack** — the dashboard's START/STOP buttons (or the PowerShell menu) launch the
+screener loop, the engine poll loop, and the quoting fleet. The fleet rests real maker
+bids: verify dashboard state before starting.
+
+**PowerShell control center** — `.\scripts\live-spread-hunter-menu.ps1` offers
+`start` / `stop` / `status` / `open`. The `status` view shows the dashboard, every stack
+process (with PID and module path), the guardrail watchdog, the universe feed, and checkout
+identity in one aligned, color-coded report.
+
+**Runbook** — see [RUNBOOK-STAGE-4.5.md](RUNBOOK-STAGE-4.5.md) for the supervised live
+cycle: pre-flight checks, order placement gates, settlement, and emergency sequences.
+
+## Safety rails
+
+1. **LIVE is the default.** This is the real-money execution repo. Every subcommand reaches
+   the venue by default. Use `--no-live` for dry-run preview.
+2. **Closing commands are pre-approved:** `exit`, `complete`, `merge`, `redeem`, `cancel`,
+   `cancel-all` reduce exposure.
+3. **Opening commands require explicit supervision:** `quote` and live fleet quoting rest
+   real funds.
+4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (in `engine/config.py`).
+
+## Docs
+
+- [AGENTS.md](AGENTS.md) — the objective, universe rules, and design history
+- [RUNBOOK-STAGE-4.5.md](RUNBOOK-STAGE-4.5.md) — supervised live execution cycle
+- [Dashboard redesign spec](docs/superpowers/specs/2026-08-21-dashboard-redesign-design.md)
+- [Screener kanban spec](docs/superpowers/specs/2026-08-21-screener-kanban-tab.md)

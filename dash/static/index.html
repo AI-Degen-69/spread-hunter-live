@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spread Hunter — Live Operations</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div class="container">
+
+  <!-- ── Top Nav Bar ── -->
+  <header>
+    <div class="brand">
+      <span class="brand-icon">⚡</span>
+      <div>
+        <div class="font-display brand-title">SPREAD HUNTER LIVE</div>
+        <div class="brand-sub" id="wallet-addr">0xeE3B...1624</div>
+      </div>
+    </div>
+    <div class="top-meta">
+      <span id="usdc-balance" class="mono">USDC: --</span>
+      <!-- DT3: Exposure indicator in top nav -->
+      <div id="exposure-bar" class="exposure-bar safe" style="display:none">
+        <span id="exposure-text" class="mono">$0/$100</span>
+        <div class="exposure-track"><div id="exposure-fill" class="exposure-fill" style="width:0%;background:var(--exposure-safe)"></div></div>
+      </div>
+      <button id="btn-reset" class="btn-reset" type="button">RESET</button>
+      <button id="btn-cancel-all" class="btn-cancel-all" type="button">EMERGENCY CANCEL ALL</button>
+    </div>
+  </header>
+
+  <!-- ── Tab Switcher (DT4: text-only, no emoji) ── -->
+  <nav class="tab-switcher" role="tablist" aria-label="Dashboard tabs">
+    <button class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-1" id="tab-btn-1" type="button">LIVE OPERATIONS</button>
+    <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-2" id="tab-btn-2" type="button">PERFORMANCE &amp; ANALYTICS</button>
+    <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-3" id="tab-btn-3" type="button">SCREENER</button>
+  </nav>
+
+  <!-- ── Tab 1: Live Operations ── -->
+  <section id="tab-1" role="tabpanel" aria-labelledby="tab-btn-1">
+    <!-- Service Cards (DT1: guardrail first, alert borders) -->
+    <div class="card-grid" id="service-cards">
+      <!-- Cards rendered by JS -->
+    </div>
+
+    <!-- Strategy Parameters -->
+    <div class="card" style="margin-top:16px" id="params-panel">
+      <div class="font-display" style="font-size:14px;margin-bottom:12px">STRATEGY PARAMETERS &amp; TRIGGER RULES</div>
+      <table id="params-table">
+        <thead><tr><th>Parameter</th><th>Value</th><th>Trigger</th><th>Action</th></tr></thead>
+        <tbody id="params-body"></tbody>
+      </table>
+    </div>
+
+    <!-- Event Ticker (DT7: SSE reconnect banner, ARIA live region) -->
+    <div class="card" style="margin-top:16px">
+      <div class="font-display" style="font-size:14px;margin-bottom:8px">LIVE EVENT TICKER</div>
+      <div id="sse-reconnect" class="sse-reconnecting" style="display:none">Reconnecting...</div>
+      <div id="event-ticker" class="event-ticker" role="log" aria-live="polite" aria-label="Live event stream">
+        <div class="empty-state"><div class="empty-state-title">No events yet</div><div class="empty-state-msg">Events will appear here when the bot is running.</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Tab 2: Performance & Analytics ── -->
+  <section id="tab-2" role="tabpanel" aria-labelledby="tab-btn-2" hidden>
+    <!-- Hero KPIs -->
+    <div class="kpi-grid" id="kpi-grid">
+      <!-- KPIs rendered by JS -->
+    </div>
+
+    <!-- Return Distribution -->
+    <div class="card" style="margin-top:16px">
+      <div class="font-display" style="font-size:14px;margin-bottom:12px">RETURN DISTRIBUTION</div>
+      <div id="dist-container">
+        <div class="empty-state"><div class="empty-state-title">No trades yet</div><div class="empty-state-msg">The bell curve will appear when the bot makes its first spread capture.</div></div>
+      </div>
+    </div>
+
+    <!-- Market Inspection Table -->
+    <div class="card" style="margin-top:16px">
+      <div class="font-display" style="font-size:14px;margin-bottom:12px">MARKET INSPECTION</div>
+      <table id="market-table">
+        <thead><tr><th>Market</th><th>Commit ($)</th><th>Unrealized P&L</th><th>Realized P&L</th><th>Fills</th><th>Status</th></tr></thead>
+        <tbody id="market-body"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ── Tab 3: Screener Pipeline (kanban) ── -->
+  <section id="tab-3" role="tabpanel" aria-labelledby="tab-btn-3" hidden>
+    <!-- Screener header: scan state, snapshot age, census, gates -->
+    <div class="card" id="screener-header">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span id="scan-state-pill" class="pill stopped">--</span>
+          <span id="scan-snapshot-age" class="mono" style="font-size:12px;color:var(--text-secondary)">last scan: --</span>
+        </div>
+        <div id="scan-census" class="mono" style="font-size:11px;color:var(--text-muted)"></div>
+      </div>
+      <div id="scan-gates" class="mono" style="font-size:10px;color:var(--text-muted);margin-top:6px;display:none"></div>
+    </div>
+    <!-- Kanban board: 7 buckets left-to-right -->
+    <div id="kanban-board" class="kanban-board" role="list" aria-label="Screener pipeline buckets">
+      <!-- Buckets rendered by JS -->
+    </div>
+  </section>
+
+</div>
+
+<!-- ── Cancel-All Confirmation Modal (DT7: typed confirm) ── -->
+<div id="cancel-modal" class="modal-overlay" role="dialog" aria-labelledby="cancel-modal-title" aria-modal="true">
+  <div class="modal">
+    <div class="modal-title" id="cancel-modal-title">EMERGENCY CANCEL ALL</div>
+    <div class="modal-body">
+      This will cancel <strong id="cancel-order-count">all</strong> open orders on the venue.
+      <div id="cancel-notional" class="mono" style="margin-top:8px"></div>
+      Type <strong>CANCEL</strong> to confirm:
+    </div>
+    <input id="cancel-input" class="modal-input" type="text" placeholder="Type CANCEL" autocomplete="off">
+    <div class="modal-actions">
+      <button class="modal-btn cancel" id="cancel-modal-close" type="button">Dismiss</button>
+      <button class="modal-btn danger" id="cancel-modal-confirm" type="button" disabled>Confirm Cancel All</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Reset Confirmation Modal (typed confirm) ── -->
+<div id="reset-modal" class="modal-overlay" role="dialog" aria-labelledby="reset-modal-title" aria-modal="true">
+  <div class="modal">
+    <div class="modal-title" id="reset-modal-title">RESET DASHBOARD</div>
+    <div class="modal-body">
+      This will <strong>halt the bot</strong>, cancel all open orders on Polymarket, wipe the order registry (0 PnL, 0 fills, 0 markets), and snapshot your live wallet as the new starting capital.
+      <div style="margin-top:8px;font-size:12px;color:var(--text-muted)">Open positions on Polymarket are preserved and will be pulled into the fresh registry. Configuration is not touched.</div>
+      Type <strong>RESET</strong> to confirm:
+    </div>
+    <input id="reset-input" class="modal-input" type="text" placeholder="Type RESET" autocomplete="off">
+    <div id="reset-progress" style="display:none;font-size:12px;color:var(--text-secondary);margin-bottom:12px"></div>
+    <div class="modal-actions">
+      <button class="modal-btn cancel" id="reset-modal-close" type="button">Dismiss</button>
+      <button class="modal-btn danger" id="reset-modal-confirm" type="button" disabled>Confirm Reset</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const CONTROL_TOKEN = "__LIVE_DASH_CONTROL_TOKEN__";
+</script>
+<script src="/static/app.js"></script>
+</body>
+</html>

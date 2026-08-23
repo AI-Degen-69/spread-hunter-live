@@ -78,12 +78,13 @@ source_repo: https://github.com/AI-Degen-69/spread-hunter-live
 
 ## Action
 
-Use relative imports for project files
+Use absolute package imports rooted at the repo, e.g. `from engine.order_registry import OrderRegistry`
 
 ## Evidence
 
-- Import analysis shows relative import pattern
-- Example: import { x } from '../lib/x'
+- 21 absolute package imports, 0 relative imports across engine/, dash/, strategy/, scripts/
+- pytest.ini sets `pythonpath = .`, making the repo root the import root
+- Corrected 2026-08-23: generator emitted the opposite of actual practice
 
 ---
 id: spread-hunter-live-export-style
@@ -98,12 +99,13 @@ source_repo: https://github.com/AI-Degen-69/spread-hunter-live
 
 ## Action
 
-Prefer named exports
+Import named symbols explicitly; never use wildcard imports
 
 ## Evidence
 
-- Export pattern analysis
-- Dominant style: named
+- 0 occurrences of `import *` across the codebase
+- No `__all__` declarations; the module surface is its public names
+- Corrected 2026-08-23: generator emitted the JS "named exports" concept, which has no Python equivalent
 
 ---
 id: spread-hunter-live-test-separate
@@ -138,12 +140,13 @@ source_repo: https://github.com/AI-Degen-69/spread-hunter-live
 
 ## Action
 
-Name test files using the pattern: *.test.ts
+Name test files using the pattern: test_*.py
 
 ## Evidence
 
-- File pattern: *.test.ts
-- Consistent across test files
+- File pattern: test_*.py (pytest default discovery)
+- Verified across 60+ files in tests/, e.g. tests/test_live_exec.py
+- Corrected 2026-08-23: generator emitted *.test.ts on a Python repo
 
 ---
 id: spread-hunter-live-test-types

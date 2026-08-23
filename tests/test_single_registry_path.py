@@ -14,26 +14,26 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SOURCE_DIRS = ("engine", "dashboard", "scripts")
+SOURCE_DIRS = ("core_brain", "dashboard", "scripts")
 
 
 def test_default_db_path_is_data_orders_db():
-    from engine.order_registry import DEFAULT_DB_PATH
+    from core_brain.order_registry import DEFAULT_DB_PATH
 
     assert DEFAULT_DB_PATH == REPO_ROOT / "data" / "orders.db", DEFAULT_DB_PATH
 
 
 def test_cycle_stream_shares_the_registry_path():
     """Telemetry writes where the orders are, or the dashboard shows a blank ring."""
-    from engine import cycle_stream
-    from engine.order_registry import DEFAULT_DB_PATH
+    from core_brain import cycle_stream
+    from core_brain.order_registry import DEFAULT_DB_PATH
 
     assert cycle_stream.DEFAULT_DB_PATH == DEFAULT_DB_PATH
 
 
 def test_default_db_path_has_no_fallback():
     """A conditional path reintroduces the split this module exists to prevent."""
-    source = (REPO_ROOT / "engine" / "order_registry.py").read_text(encoding="utf-8")
+    source = (REPO_ROOT / "core_brain" / "order_registry.py").read_text(encoding="utf-8")
     assignment = re.search(r"^DEFAULT_DB_PATH = .*$", source, re.M)
     assert assignment, "DEFAULT_DB_PATH assignment not found"
     assert " if " not in assignment.group(0), assignment.group(0)

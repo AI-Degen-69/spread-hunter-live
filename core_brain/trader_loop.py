@@ -26,14 +26,14 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from engine.quotes import Inventory, QuoteIntent, evaluate_market_quote
-from engine.cycle_stream import emit as _emit_cycle_event
+from core_brain.quotes import Inventory, QuoteIntent, evaluate_market_quote
+from core_brain.cycle_stream import emit as _emit_cycle_event
 
 log = logging.getLogger("main_spread_hunter_loop")
 
 LIVE_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = LIVE_ROOT
-RUN = LIVE_ROOT / "run"
+RUN = LIVE_ROOT / "runtime"
 
 
 @dataclass
@@ -176,7 +176,7 @@ def run(
     does not accumulate every market visit in memory.
     """
     if seam.base_cfg is None:
-        from engine.config import load
+        from core_brain.config import load
         seam.base_cfg = load()
     if sleep_fn is None:
         sleep_fn = time.sleep
@@ -328,7 +328,7 @@ def _visit_one(
 
 def _market_specs(max_markets: Optional[int] = None) -> list[dict]:
     """Graduated markets as per-market dict specs, mirroring fleet.MarketState."""
-    from engine.market_feed import load_graduated_markets
+    from core_brain.market_feed import load_graduated_markets
     gms = load_graduated_markets()
     if max_markets:
         gms = gms[:max_markets]
@@ -346,7 +346,7 @@ def _market_specs(max_markets: Optional[int] = None) -> list[dict]:
 
 def _fetch_market(cid: str):
     """Resolve one market on the venue, raising so the loop records ERROR."""
-    from engine.markets import fetch_pinned_market
+    from core_brain.markets import fetch_pinned_market
     m = fetch_pinned_market(cid, require_rewards=False)
     if m is None:
         raise LookupError(
@@ -356,7 +356,7 @@ def _fetch_market(cid: str):
 
 def _make_inventory_fn(registry, db_path: Path):
     def inventory_fn(market) -> Inventory:
-        from engine.order_registry import inventory_from_registry
+        from core_brain.order_registry import inventory_from_registry
         return inventory_from_registry(
             market.condition_id, market.up_token, market.down_token,
             db_path=db_path)
@@ -400,10 +400,10 @@ def _submit_intents(client, registry, market, intents, cfg) -> int:
         OrderArgsV2, OrderPayload, OrderType, PostOrdersV2Args,
     )
     from py_clob_client_v2.order_builder.constants import BUY
-    from engine.venue import (
+    from core_brain.venue import (
         MAX_ORDER_USD, MAX_TOTAL_USD, open_notional, venue_order_id,
     )
-    from engine.order_registry import OrderRecord, QuoteRecord, get_run_id
+    from core_brain.order_registry import OrderRecord, QuoteRecord, get_run_id
 
     if not intents:
         return 0
@@ -571,8 +571,8 @@ def _cancel_orders(client, registry, orders) -> int:
 def _make_sweep_fn(funder: Optional[str], db_path: Path, registry):
     """Sweep the account and log a float mark, without failing the loop."""
     def sweep_fn() -> None:
-        from engine.account import log_float_mark_if_measured
-        from engine.order_manager import account_sweep
+        from core_brain.account import log_float_mark_if_measured
+        from core_brain.order_manager import account_sweep
         if not funder:
             return
         mark = account_sweep(funder=funder, db_path=str(db_path), quiet=True)
@@ -589,9 +589,9 @@ def _fleet_state(registry, cfg) -> dict:
     keeps the previous cycle's values -- never resetting a live cap to open on
     a bad read.
     """
-    from engine.unhedged_stop_loss import fleet_posture
-    from engine.markout import fleet_stats
-    from engine.order_registry import (
+    from core_brain.unhedged_stop_loss import fleet_posture
+    from core_brain.markout import fleet_stats
+    from core_brain.order_registry import (
         registry_committed_usd, registry_naked_usd,
     )
 
@@ -610,11 +610,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     `--once` runs a single rotation (the smoke-test path); without it the loop
     runs until interrupted.
     """
-    from engine.config import load
-    from engine.markets import full_book
-    from engine.order_registry import DEFAULT_DB_PATH, OrderRegistry
-    from engine.order_registry import reconcile_orders
-    from engine.quotes import decide_quotes
+    from core_brain.config import load
+    from core_brain.markets import full_book
+    from core_brain.order_registry import DEFAULT_DB_PATH, OrderRegistry
+    from core_brain.order_registry import reconcile_orders
+    from core_brain.quotes import decide_quotes
 
     ap = argparse.ArgumentParser(
         description="LIVE fleet: decide -> submit -> reconcile across graduated markets.")
@@ -647,7 +647,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     cfg = load()
     try:
-        from engine.account import fetch_live_balance
+        from core_brain.account import fetch_live_balance
         live_bal = fetch_live_balance(a.funder)
         if live_bal is not None and live_bal > 0:
             cfg = replace(cfg, bankroll_usd=live_bal)
@@ -656,7 +656,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     specs = _market_specs(a.max_markets)
     if not specs:
-        log.warning("no graduated markets in run/markets.json; "
+        log.warning("no graduated markets in runtime/markets.json; "
                     "run scripts/rank_markets.py first -- idling")
     else:
         log.info("rotating %d markets (live=%s interval=%ss once=%s)",
@@ -667,11 +667,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     maker = a.funder or os.environ.get("POLY_FUNDER")
 
     if a.live:
-        from engine.venue import client
+        from core_brain.venue import client
         client = client(a.funder)
     elif os.environ.get("POLY_PRIVATE_KEY") or os.environ.get("POLY_KEY"):
         # Dry-run with credentials: reconcile and sweep (read-only) can run.
-        from engine.venue import client
+        from core_brain.venue import client
         client = client(a.funder)
     else:
         log.info("no credentials in env: dry-run will skip reconcile/sweep "

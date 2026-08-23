@@ -1,7 +1,7 @@
 """The Polymarket CLOB adapter: client construction, order caps, and venue
 response plumbing.
 
-Extracted from engine.order_manager so the fleet loop can cross a public seam
+Extracted from core_brain.order_manager so the fleet loop can cross a public seam
 instead of importing live_exec's privates. Everything here is venue plumbing —
 no strategy, no registry. The strategy-side decision modules and the registry
 stay in their own homes.
@@ -15,11 +15,11 @@ from __future__ import annotations
 import hashlib
 import os
 
-# Hard ceilings. Re-exported from engine.config:MakerConfig so the dashboard's
+# Hard ceilings. Re-exported from core_brain.config:MakerConfig so the dashboard's
 # /api/parameters endpoint reads one config object. Kept here as module-level
 # constants for backward compatibility with every file that already does
-# `from engine.venue import MAX_ORDER_USD, MAX_TOTAL_USD`.
-from engine.config import load as _load_cfg
+# `from core_brain.venue import MAX_ORDER_USD, MAX_TOTAL_USD`.
+from core_brain.config import load as _load_cfg
 
 _CFG = _load_cfg()
 MAX_ORDER_USD = _CFG.max_order_usd

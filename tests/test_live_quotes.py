@@ -1,10 +1,10 @@
 """Unit tests for live/engine/quotes.py, risk.py, gate.py and inventory rebuilding."""
 import sqlite3
 import pytest
-from engine.config import MakerConfig
-from engine.order_registry import OrderRecord, OrderRegistry, FillRecord, inventory_from_registry
-from engine.quotes import Inventory, QuoteIntent, decide_quotes, mid_price
-from engine import risk, unhedged_stop_loss
+from core_brain.config import MakerConfig
+from core_brain.order_registry import OrderRecord, OrderRegistry, FillRecord, inventory_from_registry
+from core_brain.quotes import Inventory, QuoteIntent, decide_quotes, mid_price
+from core_brain import risk, unhedged_stop_loss
 
 
 def test_mid_price_calculation():
@@ -193,7 +193,7 @@ def test_flat_inventory_refuses_a_lone_leg():
     the product; half a couple is a directional bet nobody chose.
     """
     from dataclasses import replace
-    from engine.config import load
+    from core_brain.config import load
 
     cfg = replace(load(), bankroll_usd=5000.0)
     flat = Inventory(up_shares=0, down_shares=0, up_cost=0.0, down_cost=0.0)

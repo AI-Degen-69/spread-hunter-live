@@ -365,7 +365,7 @@ class MakerConfig:
     # near-miss tracker (READY_TO_TRIAL: 29 unique markets, 19 with measured
     # depth >= half the bar). The permanent bar above never changes; the trial
     # is opt-in per rank run, adopted markets are tagged `trial_depth_usd` in
-    # run/markets.json, and their markouts are watched before the change is
+    # runtime/markets.json, and their markouts are watched before the change is
     # made permanent. Overridable from HUNTER_DEPTH_TRIAL_USD; the ranker's own
     # `--trial-depth` flag wins over both.
     select_min_top3_depth_usd_trial: float | None = None
@@ -395,7 +395,7 @@ class MakerConfig:
     # of 35 for a market that measured 3,727 live -- a 100x error that put the
     # top-ranked market at $0.25/day actual against $18.96 projected.
     rank_sample_window_sec: float = 1800.0
-    # Re-rank cadence. run/markets.json was frozen from 2026-07-29 01:39 while
+    # Re-rank cadence. runtime/markets.json was frozen from 2026-07-29 01:39 while
     # the fleet ran against it for a day and a half.
     rerank_interval_sec: float = 600.0
     # Required profit per share AFTER both fees. Set at roughly one fee's

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-from engine.order_registry import OrderRegistry
+from core_brain.order_registry import OrderRegistry
 
 
 @dataclass

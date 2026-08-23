@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 import pytest
-from engine.market_feed import (
+from core_brain.market_feed import (
     GraduatedMarket,
     MarketFeedAbsentError,
     MarketFeedError,
@@ -46,7 +46,7 @@ def _real_feed_or_skip():
 def test_load_graduated_markets_real_file():
     """The real feed must load cleanly, whatever the ranker currently holds.
 
-    `run/markets.json` is rewritten by the live ranker every cycle -- row count
+    `runtime/markets.json` is rewritten by the live ranker every cycle -- row count
     and ordering both move. Asserting a fixed count here made the suite pass at
     the moment it was written and fail minutes later, which is the mutating-data
     trap: snapshot it, or assert only what is invariant. Shape is invariant;

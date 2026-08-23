@@ -84,7 +84,7 @@ def test_system_status_ignores_a_stale_procs_file(tmp_path, monkeypatch):
 
     import dashboard.server as dash_mod
 
-    run_dir = tmp_path / "run"
+    run_dir = tmp_path / "runtime"
     run_dir.mkdir()
     stale = time.time() - 86400
     (run_dir / "processes.json").write_text(json.dumps({
@@ -104,7 +104,7 @@ def test_system_status_reports_a_genuinely_running_process(tmp_path, monkeypatch
 
     import dashboard.server as dash_mod
 
-    run_dir = tmp_path / "run"
+    run_dir = tmp_path / "runtime"
     run_dir.mkdir()
     (run_dir / "processes.json").write_text(json.dumps({
         "query": {"pid": os.getpid(),

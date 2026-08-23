@@ -25,12 +25,12 @@ run/*.db-wal
 run/*.db-shm
 run/*.tmp.*
 run/cycle_events.jsonl.tmp.*
-run/dash_nohup.log
-run/fleet_nohup.log
-run/poll_nohup.log
-run/guardrail_watch.log
-run/guardrail_alerts.log
-run/live_events.log
+run/*.log
+runtime/*.db-wal
+runtime/*.db-shm
+runtime/*.tmp.*
+runtime/cycle_events.jsonl.tmp.*
+runtime/*.log
 
 # Local runtime state -- never publish: real order/fill data, heartbeats,
 # universe snapshots, process registries (public repo)
@@ -39,6 +39,11 @@ run/archive/
 run/*.json
 run/*.jsonl
 run/.current_run_id
+runtime/*.db
+runtime/archive/
+runtime/*.json
+runtime/*.jsonl
+runtime/.current_run_id
 data/*.db*
 data/archive/
 data/*.json

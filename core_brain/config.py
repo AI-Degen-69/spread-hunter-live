@@ -9,7 +9,7 @@ Quoting parameters (price band, offsets, balance target, fill caps) are derived
 from 56,768 of @powerwinner's BTC/ETH 5-min fills over 2026-07-14..21 (2,970
 markets). That is where the NUMBERS came from -- it is not where the bot
 trades. The live universe is the Market Filter's graduated list in
-run/markets.json.
+runtime/markets.json.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ class MakerConfig:
     # LEGACY. The rolling 5-minute BTC series this project started on, kept only
     # because `engine/markets.py` and the `probe` latency harness still resolve a
     # live window from it. THE FLEET DOES NOT TRADE THIS. The live universe is the
-    # Market Filter's graduated list in run/markets.json -- liquid sports, esports, macro
+    # Market Filter's graduated list in runtime/markets.json -- liquid sports, esports, macro
     # and political markets under `select_max_days_to_resolve` -- and 5-min BTC was
     # measured dead on adverse selection (see the pinned-market block at the bottom
     # of this file). Do not read this field as a statement of what the bot trades.
@@ -249,7 +249,7 @@ class MakerConfig:
     # `marginal_return_floor`, `allocation_budget` and `max_market_frac` below
     # belong to the water-fill allocator in `scoring/allocate.py`, which only
     # the Market Filter's scoring uses. The trading path has no allocator: the
-    # Trader quotes whatever run/markets.json lists and sizes each couple from
+    # Trader quotes whatever runtime/markets.json lists and sizes each couple from
     # `couple_allocation_usd`. Grep confirms no reference to these three
     # anywhere in engine/ or dashboard/. The live capital bounds that DO bind
     # are `max_naked_usd`,
@@ -347,7 +347,7 @@ class MakerConfig:
     # safe under either; the first real payout settles it empirically.
     # PAPER RUN ONLY -- READ BY NO LIVE CODE (same status as the allocator
     # knobs above). These price a REWARD market's payout floor, and the live
-    # universe has none: every graduated market in run/markets.json carries
+    # universe has none: every graduated market in runtime/markets.json carries
     # `source: "spread"` with `daily: 0.00`, because the markets that actually
     # trade publish clobRewards: 0. For those the income is the pair discount,
     # not an emission, and no floor applies.
@@ -415,7 +415,7 @@ class MakerConfig:
     # near-miss tracker (READY_TO_TRIAL: 29 unique markets, 19 with measured
     # depth >= half the bar). The permanent bar above never changes; the trial
     # is opt-in per rank run, adopted markets are tagged `trial_depth_usd` in
-    # run/markets.json, and their markouts are watched before the change is
+    # runtime/markets.json, and their markouts are watched before the change is
     # made permanent. Overridable from HUNTER_DEPTH_TRIAL_USD; the ranker's own
     # `--trial-depth` flag wins over both.
     select_min_top3_depth_usd_trial: float | None = None
@@ -448,7 +448,7 @@ class MakerConfig:
     # of 35 for a market that measured 3,727 live -- a 100x error that put the
     # top-ranked market at $0.25/day actual against $18.96 projected.
     rank_sample_window_sec: float = 1800.0
-    # Re-rank cadence. run/markets.json was frozen from 2026-07-29 01:39 while
+    # Re-rank cadence. runtime/markets.json was frozen from 2026-07-29 01:39 while
     # the fleet ran against it for a day and a half.
     rerank_interval_sec: float = 600.0
     # Required profit per share AFTER both fees. Set at roughly one fee's

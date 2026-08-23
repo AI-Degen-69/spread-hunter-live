@@ -1,4 +1,4 @@
-"""live/engine/market_feed.py - Market feed reading graduated markets from run/markets.json.
+"""live/engine/market_feed.py - Market feed reading graduated markets from runtime/markets.json.
 
 Reads the ranker's output (8 graduated markets) directly from disk without
 re-deriving the funnel and without importing across a package boundary.
@@ -15,7 +15,7 @@ from typing import Optional
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LIVE_ROOT = PROJECT_ROOT
 REPO_ROOT = PROJECT_ROOT
-DEFAULT_MARKETS_PATH = PROJECT_ROOT / "run" / "markets.json"
+DEFAULT_MARKETS_PATH = PROJECT_ROOT / "runtime" / "markets.json"
 
 # Default maximum age before a feed file is considered stale (e.g. 24 hours).
 DEFAULT_MAX_STALENESS_SEC: float = 86400.0
@@ -26,11 +26,11 @@ class MarketFeedError(RuntimeError):
 
 
 class MarketFeedAbsentError(MarketFeedError):
-    """Raised when run/markets.json is absent on disk."""
+    """Raised when runtime/markets.json is absent on disk."""
 
 
 class MarketFeedStaleError(MarketFeedError):
-    """Raised when run/markets.json is older than allowed staleness threshold."""
+    """Raised when runtime/markets.json is older than allowed staleness threshold."""
 
 
 @dataclass(frozen=True)
@@ -59,7 +59,7 @@ def load_graduated_markets(
     path: Path | str | None = None,
     max_age_sec: Optional[float] = DEFAULT_MAX_STALENESS_SEC,
 ) -> list[GraduatedMarket]:
-    """Read graduated markets from run/markets.json with staleness and existence checks.
+    """Read graduated markets from runtime/markets.json with staleness and existence checks.
 
     Raises `MarketFeedAbsentError` if file is missing.
     Raises `MarketFeedStaleError` if file mtime exceeds `max_age_sec`.

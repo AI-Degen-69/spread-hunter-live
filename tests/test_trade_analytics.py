@@ -21,9 +21,9 @@ import time
 
 import pytest
 
-from engine import kpi as kpi_mod
-from engine.kpi import compute_trade_analytics, report
-from engine.order_registry import SCHEMA, CloseRecord, OrderRegistry
+from core_brain import kpi as kpi_mod
+from core_brain.kpi import compute_trade_analytics, report
+from core_brain.order_registry import SCHEMA, CloseRecord, OrderRegistry
 
 RUN = "run-trade-analytics"
 

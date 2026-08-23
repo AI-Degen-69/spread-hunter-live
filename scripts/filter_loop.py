@@ -1,10 +1,10 @@
 """Re-run the Market Filter on a fixed interval, forever.
 
-Paths are relative to this repo: the log lands in run/rerank.log, the cycle ring
-lives in run/, and the filter writes run/markets.json for the Trader to adopt.
+Paths are relative to this repo: the log lands in runtime/rerank.log, the cycle ring
+lives in run/, and the filter writes runtime/markets.json for the Trader to adopt.
 The scoring rules it leans on live in scoring/.
 
-The Trader adopts run/markets.json every `rerank_interval_sec`, but
+The Trader adopts runtime/markets.json every `rerank_interval_sec`, but
 nothing regenerates that file -- and the U6 universe is short-dated by
 construction, so every market in it resolves within a day. Left alone, the
 fleet re-reads the same file until its whole universe has settled and then
@@ -29,15 +29,15 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-LOG = ROOT / "run" / "rerank.log"
+LOG = ROOT / "runtime" / "rerank.log"
 
 # The live cycle-telemetry ring (engine/cycle_stream.py). This script
 # APPENDS only, deliberately without importing engine.cycle_stream: it runs
 # from the repo root and must stay decoupled from the engine package.
 # Rotation of the ring is owned by the engine process (Q3).
-RING_PATH = ROOT / "run" / "cycle_events.jsonl"
+RING_PATH = ROOT / "runtime" / "cycle_events.jsonl"
 
-# How often to regenerate run/markets.json. The fleet adopts the file within
+# How often to regenerate runtime/markets.json. The fleet adopts the file within
 # a second of its mtime changing, so this is the whole "how fast do new
 # markets appear" budget. 3600 was the original: a universe that emptied at
 # 09:58 left the fleet quoting nothing until the next hourly sweep found

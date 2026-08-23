@@ -1,8 +1,8 @@
 """Unit tests for LiveFillEngine interface compliance, mock client execution, and invariant guards."""
 import pytest
 from unittest.mock import MagicMock
-from engine.live_fill_engine import LiveFillEngine, LiveRestingOrder, LiveFill
-from engine.order_registry import OrderRegistry
+from core_brain.live_fill_engine import LiveFillEngine, LiveRestingOrder, LiveFill
+from core_brain.order_registry import OrderRegistry
 
 
 @pytest.fixture

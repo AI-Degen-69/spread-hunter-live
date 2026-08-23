@@ -135,7 +135,7 @@ def fetch_pinned_market(condition_id: str,
     actually trade, and refusing them here made them unloadable, unsampled and
     therefore unfundable however well the allocator sized them. Whether a
     market is worth funding is the allocator's decision and it is made from
-    `run/markets.json`; this function's job is only to say whether the market
+    `runtime/markets.json`; this function's job is only to say whether the market
     can be quoted at all.
     """
     r = _SESSION.get(f"https://clob.polymarket.com/markets/{condition_id}",
@@ -321,7 +321,7 @@ def recent_trades(condition_id: str, seen: set, limit: int = 500) -> dict:
 
 
 if __name__ == "__main__":
-    from engine.config import load
+    from core_brain.config import load
 
     cfg = load()
     m = fetch_live_market(cfg.gamma_host, cfg.series_slug)

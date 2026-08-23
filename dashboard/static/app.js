@@ -328,11 +328,11 @@ connectSSE();
 const SERVICE_DEFS = [
   { key: 'filter', name: 'Market Filter', cmd: 'python -m scripts.filter_loop',
     desc: 'Scans 500+ Polymarket binary markets and screens down to 8 graduated pairs.' },
-  { key: 'query', name: 'Query Polymarket', cmd: 'python -m engine.order_manager poll --interval 0.5',
+  { key: 'query', name: 'Query Polymarket', cmd: 'python -m core_brain.order_manager poll --interval 0.5',
     desc: 'Queries CLOB every 0.5s, reconciles fills, executes account sweeps.' },
-  { key: 'decide', name: 'Decide & Execute', cmd: 'python -m engine.trader_loop --live --no-reconcile --no-sweep --interval 5',
+  { key: 'decide', name: 'Decide & Execute', cmd: 'python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5',
     desc: 'Runs the trading loop (decide quotes -> submit maker orders) every 5s across approved markets.' },
-  { key: 'guardrail', name: 'Guardrail Watchdog', cmd: 'python -m scripts.guardrail_watch',
+  { key: 'guardrail', name: 'Guardrail Watchdog', cmd: 'python -m scripts.global_stop_loss',
     desc: 'Continuous risk monitor enforcing hard exposure and inventory limits.',
     readOnly: true },
 ];
@@ -786,7 +786,7 @@ function renderScreener(kpi, scanState) {
     // No pipeline data — show empty state
     board.innerHTML = `<div class="kanban-empty" style="flex:1">
       <div class="empty-state-title">No screener data yet</div>
-      <div class="empty-state-msg">The screener writes run/pipeline.json on each scan cycle. Data will appear here when the screener runs.</div>
+      <div class="empty-state-msg">The screener writes runtime/pipeline.json on each scan cycle. Data will appear here when the screener runs.</div>
     </div>`;
     headerCensus.textContent = '';
     headerGates.style.display = 'none';

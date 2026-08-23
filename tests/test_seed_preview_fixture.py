@@ -11,8 +11,8 @@ import sqlite3
 
 import pytest
 
-from engine.kpi import report
-from engine.order_registry import SCHEMA, OrderRegistry
+from core_brain.kpi import report
+from core_brain.order_registry import SCHEMA, OrderRegistry
 from scripts.seed_preview_fixture import RUN_ID, seed
 
 
@@ -96,7 +96,7 @@ def test_fixture_populates_the_account_card(temp_db):
 
 def test_fixture_order_book_is_hedged_and_fresh(temp_db):
     """Balanced pairs mean no naked-leg alarm; recent polls mean no stale banner."""
-    from engine.registry_state import summarize_state
+    from core_brain.registry_state import summarize_state
 
     reg = OrderRegistry(temp_db)
     seed(reg)

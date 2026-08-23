@@ -29,7 +29,7 @@ merge is the exit and the P&L event.
   arbitrage that happens to earn rebates while it waits, not a rebate farm.
 - **The universe is not BTC 5-minute binaries.** The ranker's funnel (24h volume, top-3 bid
   depth on both sides, book spread, horizon ≤ 30 days) writes survivors to
-  `run/markets.json`, and the fleet quotes *only* that list. The measured traded universe is
+  `runtime/markets.json`, and the fleet quotes *only* that list. The measured traded universe is
   tennis, baseball and esports. The 5-minute BTC series was measured dead on adverse
   selection and survives only as a legacy field.
 - **Spread capture pricing mode.** `objective = "spread_capture"` (formerly `"rewards"`)
@@ -58,8 +58,8 @@ merge is the exit and the P&L event.
 
 **Ops tooling** (`scripts/`)
 - `filter_markets.py` — the filter funnel that graduates the universe
-- `filter_loop.py` — continuous market filter loop feeding `run/markets.json`
-- `guardrail_watch.py` — watchdog: over-cap pairs & repeat naked-leg exits
+- `filter_loop.py` — continuous market filter loop feeding `runtime/markets.json`
+- `global_stop_loss.py` — watchdog: over-cap pairs & repeat naked-leg exits
 - `spread-hunter-menu.ps1` — PowerShell control center: start/stop/status for the
   dashboard + bot stack, with a themed, color-coded status view
 
@@ -88,8 +88,8 @@ cp .env.example .env
 #   POLY_PRIVATE_KEY, POLY_FUNDER, POLY_SIG_TYPE, optional RELAYER_API_KEY / POLYGON_RPC
 
 # 3. Check wallet and account status (read-only)
-python -m engine.order_manager status
-python -m engine.order_manager balance
+python -m core_brain.order_manager status
+python -m core_brain.order_manager balance
 
 # 4. Run the operations dashboard
 python -m dashboard.server          # http://127.0.0.1:8799
@@ -100,7 +100,7 @@ pytest -q
 
 ## Operating guide
 
-**CLI** — `python -m engine.order_manager <command>`. Live by default; pass `--no-live` for a
+**CLI** — `python -m core_brain.order_manager <command>`. Live by default; pass `--no-live` for a
 dry-run preview.
 
 | Command | Purpose |

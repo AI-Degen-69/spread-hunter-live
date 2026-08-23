@@ -16,8 +16,8 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH
-from engine.config import load as load_cfg
+from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
+from core_brain.config import load as load_cfg
 
 _CFG = load_cfg()
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -200,9 +200,9 @@ def _resolve_market_meta(cid: str, closes: list[dict], quotes: list[dict]) -> di
         out["category"] = UNCATEGORIZED
         return out
     
-    # Try reading run/markets.json from repo root (written by ranker)
+    # Try reading runtime/markets.json from repo root (written by ranker)
     try:
-        feed_path = REPO_ROOT / "run" / "markets.json"
+        feed_path = REPO_ROOT / "runtime" / "markets.json"
         if feed_path.exists():
             feed = json.loads(feed_path.read_text(encoding="utf-8"))
             for row in feed if isinstance(feed, list) else []:
@@ -315,15 +315,15 @@ def _funnel_from_pipeline(
     markets_path: Path | str | None = None,
 ) -> Optional[dict[str, Any]]:
     """Build the Level 2 market funnel from the screener's own snapshot and annotate graduated markets with live results.
-    `run/pipeline.json` is the same file the paper-run scan (server/fleet_dash.py) renders, so sourcing the funnel from it makes the live Level 2 lanes compare 1:1 with the paper-run scan: identical gate names [...]
+    `runtime/pipeline.json` is the same file the paper-run scan (server/fleet_dash.py) renders, so sourcing the funnel from it makes the live Level 2 lanes compare 1:1 with the paper-run scan: identical gate names [...]
     Parameters:
         by_mkt (dict[str, Any]): Market metrics used to annotate graduated markets.
-        pipeline_path (Path | str | None): Optional path to the screener snapshot. Defaults to run/pipeline.json.
+        pipeline_path (Path | str | None): Optional path to the screener snapshot. Defaults to runtime/pipeline.json.
         markets_path (Path | str | None): Optional path to graduated market metadata.
     Returns:
         Optional[dict[str, Any]]: Funnel data containing counts, rejection filters, graduated markets, and snapshot metadata; None when the ranker hasn't written a snapshot yet (caller falls back to [...]
     """
-    pp = Path(pipeline_path) if pipeline_path is not None else (REPO_ROOT / "run" / "pipeline.json")
+    pp = Path(pipeline_path) if pipeline_path is not None else (REPO_ROOT / "runtime" / "pipeline.json")
     if not pp.is_file():
         return None
     try:
@@ -350,7 +350,7 @@ def _funnel_from_pipeline(
     ]
 
     graduated: list[dict[str, Any]] = []
-    mp = Path(markets_path) if markets_path is not None else (REPO_ROOT / "run" / "markets.json")
+    mp = Path(markets_path) if markets_path is not None else (REPO_ROOT / "runtime" / "markets.json")
     specs: list = []
     if mp.is_file():
         try:
@@ -637,7 +637,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # A market leaves "MARKETS IN RUN" once the venue reports it settled. The
     # account sweep writes those as `closes` rows with method='venue_sync'
     # (distinct from local merge/sell closes, which are still-open trades the
-    # operator wants to see). A negative `days_to_resolve` from run/markets.json
+    # operator wants to see). A negative `days_to_resolve` from runtime/markets.json
     # is the same fact from the ranker's side. Both are durable, venue-free
     # signals already in the registry.
     #

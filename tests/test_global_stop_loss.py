@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from scripts.guardrail_watch import (
+from scripts.global_stop_loss import (
     GuardrailWatch, detect_over_cap_pairs, detect_repeat_exits,
 )
-from engine.order_registry import (
+from core_brain.order_registry import (
     FillRecord, OrderRecord, OrderRegistry, QuoteRecord,
 )
 
@@ -141,7 +141,7 @@ def test_watch_alerts_once_per_repeat_exit_growth(tmp_path, capsys):
     ring = tmp_path / "ring.jsonl"
     w = GuardrailWatch(alerts_log=log, ring_path=ring,
                        db_path=tmp_path / "live.db", window_s=900.0)
-    from engine.cycle_stream import emit
+    from core_brain.cycle_stream import emit
     emit(1, "settling", "pairs_exited", extra={"pair_id": "pair-1"},
          ring_path=ring)
     emit(2, "settling", "pairs_exited", extra={"pair_id": "pair-1"},

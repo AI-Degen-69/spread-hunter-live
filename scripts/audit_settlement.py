@@ -5,7 +5,7 @@ Captures:
 2. POL native balances at all 3 candidate addresses.
 3. CLOB get_balance_allowance across all supported signature types.
 4. Polymarket Data-API positions and portfolio values.
-5. Recent relayer transaction status from run/live_orders.json or CLI argument.
+5. Recent relayer transaction status from runtime/live_orders.json or CLI argument.
 """
 
 import argparse
@@ -107,7 +107,7 @@ def check_clob_balance_allowance(funder: str, sig_type: int) -> dict:
 def check_relayer_status(tx_id: str | None = None, log_file: Path | str | None = None) -> dict:
     last_status = None
     if not tx_id:
-        p = Path(log_file) if log_file is not None else Path("run/live_orders.json")
+        p = Path(log_file) if log_file is not None else Path("runtime/live_orders.json")
         if p.exists():
             try:
                 content = p.read_text(encoding="utf-8")

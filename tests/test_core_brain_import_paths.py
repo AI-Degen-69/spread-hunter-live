@@ -1,16 +1,12 @@
-"""Every module the live branch of `live_exec` defers must actually import.
+"""Every module the live branch of `order_manager` defers must actually import.
 
-`quote` imports `engine.markets` BEFORE its dry-run return and
-`engine.order_registry` AFTER it. A dry run therefore exercises the first and
+`quote` imports `core_brain.markets` BEFORE its dry-run return and
+`core_brain.order_registry` AFTER it. A dry run therefore exercises the first and
 never the second: if the second cannot resolve, the operator sees a clean dry
 run, approves the order, and the crash lands on the `--live` call -- at the
 venue, with money committed.
 
-That is not hypothetical. On 2026-08-18 a `quote ... --live` run from the repo
-root died with `ModuleNotFoundError: No module named 'order_registry'` after a
-dry run of the same command had printed cleanly.
-
-The execution package is named `engine` so it cannot merge with a same-named
+The execution package is named `core_brain` so it cannot merge with a same-named
 package anywhere else, and the order manager bootstraps this repo -- and only
 this repo -- onto `sys.path`. These tests exercise
 the deferred imports through both invocations an operator actually uses, so the
@@ -25,14 +21,14 @@ import pytest
 
 LIVE_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = LIVE_ROOT.parent
-LIVE_EXEC = LIVE_ROOT / "engine" / "order_manager.py"
+LIVE_EXEC = LIVE_ROOT / "core_brain" / "order_manager.py"
 
 
 def _deferred_engine_imports() -> set[str]:
-    """Module names `order_manager` imports from the `engine` package."""
+    """Module names `order_manager` imports from the `core_brain` package."""
     src = LIVE_EXEC.read_text(encoding="utf-8")
-    names = set(re.findall(r"^\s*from engine\.(\w+) import", src, re.MULTILINE))
-    names |= set(re.findall(r"^\s*from engine import (\w+)", src, re.MULTILINE))
+    names = set(re.findall(r"^\s*from core_brain\.(\w+) import", src, re.MULTILINE))
+    names |= set(re.findall(r"^\s*from core_brain import (\w+)", src, re.MULTILINE))
     return names
 
 
@@ -59,9 +55,9 @@ def test_live_branch_imports_resolve(cwd_name):
     prog = (
         "import sys\n"
         f"sys.path.insert(0, {str(LIVE_ROOT)!r})\n"
-        "import engine.order_manager as live_exec\n"
+        "import core_brain.order_manager as live_exec\n"
     )
-    prog += "".join(f"import engine.{n}\n" for n in names)
+    prog += "".join(f"import core_brain.{n}\n" for n in names)
     prog += "print('ok')"
 
     res = subprocess.run(argv + [prog], cwd=str(cwd), capture_output=True, text=True)
@@ -69,17 +65,17 @@ def test_live_branch_imports_resolve(cwd_name):
     assert "ok" in res.stdout
 
 
-def test_engine_resolves_inside_project():
-    """`engine` is a regular package inside the standalone project."""
+def test_core_brain_resolves_inside_project():
+    """`core_brain` is a regular package inside the standalone project."""
     res = subprocess.run(
         [sys.executable, "-c",
          f"import sys; sys.path.insert(0, {str(LIVE_ROOT)!r}); "
-         "import engine; print(*engine.__path__, sep=chr(10))"],
+         "import core_brain; print(*core_brain.__path__, sep=chr(10))"],
         cwd=str(LIVE_ROOT), capture_output=True, text=True,
     )
     assert res.returncode == 0, res.stderr
     paths = [Path(p).resolve() for p in res.stdout.strip().splitlines() if p.strip()]
-    assert paths == [(LIVE_ROOT / "engine").resolve()], paths
+    assert paths == [(LIVE_ROOT / "core_brain").resolve()], paths
 
 
 def test_importing_live_exec_places_project_root_on_sys_path():
@@ -87,7 +83,7 @@ def test_importing_live_exec_places_project_root_on_sys_path():
     res = subprocess.run(
         [sys.executable, "-c",
          f"import sys; sys.path.insert(0, {str(LIVE_ROOT)!r}); "
-         "import engine.order_manager as live_exec; "
+         "import core_brain.order_manager as live_exec; "
          "import pathlib; "
          "print(*[pathlib.Path(p).resolve() for p in sys.path if p], sep=chr(10))"],
         cwd=str(LIVE_ROOT), capture_output=True, text=True,

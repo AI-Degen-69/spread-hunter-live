@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from engine import config
+from core_brain import config
 
 OTHER = {"UP": "DOWN", "DOWN": "UP"}
 

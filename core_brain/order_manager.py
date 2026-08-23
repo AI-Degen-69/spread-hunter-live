@@ -14,16 +14,16 @@ and nothing that does should ever be added to it.
     POLY_FUNDER=0x...           # address actually holding the USDC
     POLY_SIG_TYPE=3             # 0 EOA | 1 magic proxy | 2 Gnosis Safe | 3 Deposit Wallet
 
-    python -m engine.order_manager status
-    python -m engine.order_manager quote <condition_id> --price 0.22 --size 20
-    python -m engine.order_manager quote <condition_id> --price 0.22 --size 20 --live
-    python -m engine.order_manager cancel-all --live
+    python -m core_brain.order_manager status
+    python -m core_brain.order_manager quote <condition_id> --price 0.22 --size 20
+    python -m core_brain.order_manager quote <condition_id> --price 0.22 --size 20 --live
+    python -m core_brain.order_manager cancel-all --live
 
 SAFETY RAILS, all on by default:
   * --live is required for anything that reaches the venue. Without it every
     command prints what it WOULD send and exits.
   * MAX_ORDER_USD caps one order; MAX_TOTAL_USD caps everything open at once.
-  * Each leg is written to run/live_orders.json as it is sent, so a crash
+  * Each leg is written to runtime/live_orders.json as it is sent, so a crash
     mid-flight still leaves a record of what went out.
   * cancel-all is its own command, because the thing you want at 3am is a way
     to pull every quote without reading code first.
@@ -42,7 +42,7 @@ reports balance 0 with zero allowances. Nothing in that response says "wrong
 address", so it reads exactly like an unfunded account. Do not go hunting for
 the money -- sweep the type instead, it settles the question in seconds:
 
-    foreach ($s in 0,1,2,3) { $env:POLY_SIG_TYPE=$s; python -m engine.order_manager balance }
+    foreach ($s in 0,1,2,3) { $env:POLY_SIG_TYPE=$s; python -m core_brain.order_manager balance }
 
 Exactly one returns a non-zero balance. Then run `status` and confirm the
 address it prints is the one holding your money.
@@ -62,10 +62,10 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
-RUN = ROOT / "run"
+RUN = ROOT / "runtime"
 
 # Put live/ on sys.path so `engine.*` resolves however this module was reached
-# -- `python -m engine.order_manager` from live/, `python live/engine/live_exec.py`
+# -- `python -m core_brain.order_manager` from live/, `python live/engine/live_exec.py`
 # from the repo root, or an import from a test.
 #
 # ROOT only. The repo root is deliberately NOT added: `engine` must resolve
@@ -83,7 +83,7 @@ if str(ROOT) not in sys.path:
 
 # Settlement primitives (ABI encoding, id derivation, EIP-712 signing) live in
 # engine.settlement; the relayer/RPC submit path stays here with the CLI verbs.
-from engine.merge_pairs import (
+from core_brain.merge_pairs import (
     CTF_CONTRACT,
     USDC_E_CONTRACT,
     ZERO_BYTES32,
@@ -93,7 +93,7 @@ from engine.merge_pairs import (
     get_position_id,
     sign_redeem_transaction,
 )
-from engine.venue import (
+from core_brain.venue import (
     MAX_ORDER_USD,
     MAX_TOTAL_USD,
     api_creds_from_env,
@@ -101,7 +101,7 @@ from engine.venue import (
     open_notional,
     venue_order_id,
 )
-from engine.account import fetch_live_balance, log_float_mark_if_measured
+from core_brain.account import fetch_live_balance, log_float_mark_if_measured
 
 
 
@@ -237,7 +237,7 @@ def _update_order_log(entry_id: str, updates: dict) -> bool:
 
 
 def _check_idempotency_guard(condition_id: str, force: bool = False) -> None:
-    """Scan run/live_orders.json for prior pending/submitted/interrupted orders matching condition_id.
+    """Scan runtime/live_orders.json for prior pending/submitted/interrupted orders matching condition_id.
     Refuses execution unless force is True.
     """
     if force:
@@ -340,8 +340,8 @@ def pairs(db_path: str | Path | None = None) -> None:
     find one is to open orders.db by hand -- which is exactly the sort of step an
     operator skips at the moment it matters.
     """
-    from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH, get_connection
-    from engine.single_buy_saver import load_pair, PairExitRefused
+    from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH, get_connection
+    from core_brain.single_buy_saver import load_pair, PairExitRefused
 
     db = Path(db_path) if db_path else DEFAULT_DB_PATH
     registry = OrderRegistry(db_path=db)
@@ -380,7 +380,7 @@ def quote(condition_id: str, price: float, size: float, live: bool,
         OrderArgsV2, OrderType, PostOrdersV2Args, OrderPayload,
     )
     from py_clob_client_v2.order_builder.constants import BUY
-    from engine.markets import fetch_pinned_market
+    from core_brain.markets import fetch_pinned_market
 
     # Pre-flight parse check on TIF and post_only
     if post_only and tif not in ("GTC", "GTD"):
@@ -402,9 +402,9 @@ def quote(condition_id: str, price: float, size: float, live: bool,
     # farming phase. `sweep.py:507` -- the fleet, the thing that actually trades
     # -- passes require_rewards=False and has since spread capture landed, so the
     # CLI was refusing every market the fleet quotes: all eight currently in
-    # run/markets.json are source=spread with daily=0.00. The guard is gone here
+    # runtime/markets.json are source=spread with daily=0.00. The guard is gone here
     # for the same reason it is off there. Whether a market is worth funding is
-    # the allocator's call, made from run/markets.json, not this function's.
+    # the allocator's call, made from runtime/markets.json, not this function's.
     m = fetch_pinned_market(condition_id, require_rewards=False)
     if m is None:
         raise SystemExit(
@@ -442,10 +442,10 @@ def quote(condition_id: str, price: float, size: float, live: bool,
     # act on, and the two legs rest at the venue with real money and nothing
     # tracking them -- the exact failure the registry exists to prevent.
     import uuid as _uuid
-    from engine.order_registry import (
+    from core_brain.order_registry import (
         OrderRegistry, OrderRecord, DEFAULT_DB_PATH,
     )
-    from engine import config as strategy_config
+    from core_brain import config as strategy_config
 
     registry = OrderRegistry(db_path=Path(db_path) if db_path else DEFAULT_DB_PATH)
     pair_id = f"pair-{_uuid.uuid4().hex[:12]}"
@@ -533,7 +533,7 @@ def quote(condition_id: str, price: float, size: float, live: bool,
 
     if succeeded_count == 0:
         # Log venue errors if present
-        from engine.order_registry import VenueErrorRecord, get_run_id
+        from core_brain.order_registry import VenueErrorRecord, get_run_id
         for idx, leg in enumerate(local_legs):
             item_resp = resp_list[idx] if idx < len(resp_list) else None
             if isinstance(item_resp, dict) and (item_resp.get("errorMsg") or item_resp.get("success") is False):
@@ -592,7 +592,7 @@ def quote(condition_id: str, price: float, size: float, live: bool,
         raise SystemExit(f"FAIL CLOSED: Order verification mismatch ({mismatch_reason}); all orders cancelled.")
 
     # 6. Agreement confirmed: commit venue IDs to registry and log QuoteRecord
-    from engine.order_registry import QuoteRecord, get_run_id
+    from core_brain.order_registry import QuoteRecord, get_run_id
     mid_quote = round((price + dn_price) / 2.0, 4)
     for local_id, v_id in verified_mappings:
         registry.attach_venue_order_id(local_id, v_id, status="open", last_polled_ts=now_ms)
@@ -618,9 +618,9 @@ def quote(condition_id: str, price: float, size: float, live: bool,
 
     print(f"\nlogged to {RUN / 'live_orders.json'}")
     print(f"pair_id  {pair_id}")
-    print("  poll:     python -m engine.order_manager poll --interval 0.5")
-    print(f"  exit:     python -m engine.order_manager exit {pair_id}")
-    print(f"  complete: python -m engine.order_manager complete {pair_id}")
+    print("  poll:     python -m core_brain.order_manager poll --interval 0.5")
+    print(f"  exit:     python -m core_brain.order_manager exit {pair_id}")
+    print(f"  complete: python -m core_brain.order_manager complete {pair_id}")
 
 
 # Provenance: matches the 598s delta measured on transaction 0x66bc709b1a1d515d813e9d191a84b8863d8f2a251e1698a85d452152c7602135, block 92098496.
@@ -893,7 +893,7 @@ def _submit_and_log(
 
     if action == "MERGE" and (status == "executed" or state == "STATE_EXECUTED"):
         try:
-            from engine.order_registry import OrderRegistry, CloseRecord, get_run_id
+            from core_brain.order_registry import OrderRegistry, CloseRecord, get_run_id
             registry = OrderRegistry()
             cost_basis = 0.0
             with registry._conn() as conn:
@@ -1076,7 +1076,7 @@ def merge(condition_id: str,
           force: bool = False,
           live: bool = True) -> None:
     """Gasless merge of full outcome sets (UP + DOWN) back into USDC.e collateral."""
-    from engine.config import MakerConfig
+    from core_brain.config import MakerConfig
     if index_sets is None:
         index_sets = [1, 2]
     amount_base_units = int(round(amount * 1e6))
@@ -1341,7 +1341,7 @@ def probe(series: str | None = None,
     print("=" * 80)
 
     if not live:
-        from engine.markets import fetch_live_market
+        from core_brain.markets import fetch_live_market
         gamma_host = os.environ.get("GAMMA_HOST", "https://gamma-api.polymarket.com")
         resolved = fetch_live_market(gamma_host, series) if not token_id else None
         print("\n[DRY-RUN] Probe execution plan validated.")
@@ -1367,7 +1367,7 @@ def probe(series: str | None = None,
     import websocket
     from py_clob_client_v2.clob_types import OrderArgsV2, OrderType
     from py_clob_client_v2.order_builder.constants import BUY
-    from engine.markets import fetch_live_market
+    from core_brain.markets import fetch_live_market
 
     gamma_host = os.environ.get("GAMMA_HOST", "https://gamma-api.polymarket.com")
     _clob = client()
@@ -1693,7 +1693,7 @@ def _sweep_due(
     return cycle % sweep_every == 0
 
 
-def _spawn_guardrail_watcher(db_path: str | Path | None = None):
+def _spawn_global_stop_losser(db_path: str | Path | None = None):
     """Launch the guardrail watcher as a child of the poll process.
 
     The watcher is read-only (cycle ring + registry, opened read-only); the
@@ -1704,7 +1704,7 @@ def _spawn_guardrail_watcher(db_path: str | Path | None = None):
     """
     import subprocess
     try:
-        argv = [sys.executable, str(ROOT / "scripts" / "guardrail_watch.py"),
+        argv = [sys.executable, str(ROOT / "scripts" / "global_stop_loss.py"),
                 "--interval", "5"]
         if db_path is not None:
             argv += ["--db", str(db_path)]
@@ -1738,7 +1738,7 @@ def _supervise_watcher(proc, db_path, last_restart_ts, log_fn=None,
             log_fn(msg)
         except Exception:
             pass
-    return _spawn_guardrail_watcher(db_path), time.time()
+    return _spawn_global_stop_losser(db_path), time.time()
 
 def poll(
     interval: float = 0.5,
@@ -1753,8 +1753,8 @@ def poll(
 
     Operability features:
     - Status line printed every cycle.
-    - Append-only event log (run/live_events.log).
-    - Atomic heartbeat (run/live_poll_heartbeat.json).
+    - Append-only event log (runtime/live_events.log).
+    - Atomic heartbeat (runtime/live_poll_heartbeat.json).
     - Exponential backoff on 429 / 5xx capped at 60s.
     - Account sweep folded into the loop, on its own error budget.
     - Clean SIGTERM / KeyboardInterrupt exit.
@@ -1766,8 +1766,8 @@ def poll(
     """
     import datetime
     import signal
-    from engine.cycle_stream import emit as _emit_cycle_event
-    from engine.order_registry import (
+    from core_brain.cycle_stream import emit as _emit_cycle_event
+    from core_brain.order_registry import (
         OrderRegistry,
         reconcile_orders,
         compute_backoff_delay,
@@ -1783,7 +1783,7 @@ def poll(
     # dry-run client whose presence means "do not reach the venue yourself".
     injected_client = client is not None
     if client is None:
-        from engine.venue import client as _client_builder
+        from core_brain.venue import client as _client_builder
         client = _client_builder()
 
     funder = os.environ.get("POLY_FUNDER")
@@ -1867,7 +1867,7 @@ def poll(
     # production path (no injected client), and stopped when the loop exits.
     markout_worker = None
     if not once and not injected_client:
-        from engine.markout import MarkoutWorker
+        from core_brain.markout import MarkoutWorker
         markout_worker = MarkoutWorker(
             registry=registry,
             clob_host=os.environ.get("CLOB_HOST", "https://clob.polymarket.com"),
@@ -1881,7 +1881,7 @@ def poll(
     watcher_proc = None
     watcher_last_restart = 0.0
     if watch_guardrails and not once and not injected_client:
-        watcher_proc = _spawn_guardrail_watcher(db_p)
+        watcher_proc = _spawn_global_stop_losser(db_p)
         if watcher_proc is not None:
             watcher_last_restart = time.time()
             _log_event(f"[POLL] guardrail watcher started (pid={watcher_proc.pid})")
@@ -2003,8 +2003,8 @@ def poll(
         # inside auto_manage_pairs; a pass-level failure must never stop the
         # loop either.
         try:
-            from engine.config import load as _load_cfg
-            from engine.single_buy_saver import auto_manage_pairs
+            from core_brain.config import load as _load_cfg
+            from core_brain.single_buy_saver import auto_manage_pairs
             for pr in auto_manage_pairs(
                 client, registry, _load_cfg(), funder=funder,
             ):
@@ -2093,11 +2093,11 @@ def exit_pair(pair_id: str, live: bool, db_path: str | Path | None = None,
     Data API is down and the operator has decided to act anyway, and it says so
     on the record.
     """
-    from engine.single_buy_saver import (
+    from core_brain.single_buy_saver import (
         exit_naked_leg, fetch_positions, load_pair, PairExitRefused,
     )
-    from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH
-    from engine import config as strategy_config
+    from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
+    from core_brain import config as strategy_config
 
     registry = OrderRegistry(db_path=Path(db_path) if db_path else DEFAULT_DB_PATH)
     _clob = client()
@@ -2182,7 +2182,7 @@ def exit_pair(pair_id: str, live: bool, db_path: str | Path | None = None,
         print(
             f"\nThe pair completed between the cancel and the sell. It is now "
             f"worth $1.00 at merge -- run:\n"
-            f"  python -m engine.order_manager merge {result['condition_id']} "
+            f"  python -m core_brain.order_manager merge {result['condition_id']} "
             f"--amount <shares> --live"
         )
 
@@ -2196,12 +2196,12 @@ def complete_pair_cmd(pair_id: str, live: bool, db_path: str | Path | None = Non
     cross that would push the pair to or past max_pair_cost -- that case
     belongs to `exit`, and this path must not do the stop-loss's job badly.
     """
-    from engine.single_buy_saver import (
+    from core_brain.single_buy_saver import (
         complete_pair, fetch_positions, load_pair, PairCompletionRefused,
         PairExitRefused,
     )
-    from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH
-    from engine import config as strategy_config
+    from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
+    from core_brain import config as strategy_config
 
     registry = OrderRegistry(db_path=Path(db_path) if db_path else DEFAULT_DB_PATH)
     # load_pair signals an unknown pair with the exit path's exception, which
@@ -2304,7 +2304,7 @@ def cancel_single_order(order_id: str, live: bool,
         return
 
     from py_clob_client_v2.clob_types import OrderPayload
-    from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH
+    from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
 
     c = client()
     try:
@@ -2338,7 +2338,7 @@ def cancel_market(condition_id: str, live: bool,
         return
 
     from py_clob_client_v2.clob_types import OrderMarketCancelParams
-    from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH
+    from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
 
     c = client()
     try:
@@ -2451,8 +2451,8 @@ def account_sweep(funder: str | None = None, db_path: str | None = None,
     is what lets the headline tile show the account's real value while the page
     keeps its "zero venue network calls, zero credentials" contract.
     """
-    from engine.account import read_account
-    from engine.order_registry import OrderRegistry
+    from core_brain.account import read_account
+    from core_brain.order_registry import OrderRegistry
 
     who = funder or os.environ.get("POLY_FUNDER")
     if not who:
@@ -2510,8 +2510,8 @@ def venue_sync(funder=None, db_path=None, quiet=False):
     Sync button when the page must catch up with state the bot stack missed
     (overnight fills, on-chain resolutions the local engine never observed).
     """
-    from engine.account import read_account, fetch_closed_positions, fetch_open_positions
-    from engine.order_registry import (
+    from core_brain.account import read_account, fetch_closed_positions, fetch_open_positions
+    from core_brain.order_registry import (
         OrderRegistry, CloseRecord, get_run_id,
     )
 
@@ -2687,9 +2687,9 @@ def decide(
 ) -> list[dict]:
     """Read-only quote decision for graduated markets using live venue books."""
     from dataclasses import replace
-    from engine.config import load
-    from engine.market_feed import load_graduated_markets, get_market_by_cid, GraduatedMarket
-    from engine.order_registry import DEFAULT_DB_PATH
+    from core_brain.config import load
+    from core_brain.market_feed import load_graduated_markets, get_market_by_cid, GraduatedMarket
+    from core_brain.order_registry import DEFAULT_DB_PATH
 
     cfg = load()
     live_bal = fetch_live_balance()
@@ -2700,7 +2700,7 @@ def decide(
 
     graduated_list = load_graduated_markets()
     if not graduated_list:
-        raise SystemExit("no graduated markets found in run/markets.json")
+        raise SystemExit("no graduated markets found in runtime/markets.json")
 
     targets: list[tuple[str, GraduatedMarket | None]] = []
     if all_graduated or target == "all" or target == "--all":
@@ -2738,9 +2738,9 @@ def _evaluate_single_market_quote(
     reg_db: Path,
 ) -> dict:
     """Evaluate and print strategy quote decision for one market."""
-    from engine.markets import fetch_pinned_market, full_book
-    from engine.order_registry import inventory_from_registry, OrderRegistry
-    from engine.quotes import (
+    from core_brain.markets import fetch_pinned_market, full_book
+    from core_brain.order_registry import inventory_from_registry, OrderRegistry
+    from core_brain.quotes import (
         MarketQuoteError, MarketUnavailable, decide_quotes, evaluate_market_quote,
     )
 
@@ -2828,7 +2828,7 @@ def _evaluate_single_market_quote(
     print("=" * 80)
 
     # Telemetry logging to orders.db (Amendment 4: decide stays strictly read-only on orders, logs telemetry only)
-    from engine.order_registry import HedgeCensusRecord, MarketEventRecord, get_run_id
+    from core_brain.order_registry import HedgeCensusRecord, MarketEventRecord, get_run_id
     pair_touch = round(ba_up + ba_dn - 0.02, 4) if (ba_up is not None and ba_dn is not None) else None
     fillable_sub = 1.0 if (pair_touch is not None and pair_touch < cfg.max_pair_cost) else 0.0
     registry.log_hedge_census(HedgeCensusRecord(
@@ -2998,7 +2998,7 @@ def main() -> None:
     pr.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     dec = sub.add_parser("decide", help="Read-only quote decision for graduated markets using live venue books.")
     dec.add_argument("target", nargs="?", default=None, help="Market condition ID, slug, or index (0..7). Default: first graduated market.")
-    dec.add_argument("--all", action="store_true", help="Evaluate all graduated markets from run/markets.json")
+    dec.add_argument("--all", action="store_true", help="Evaluate all graduated markets from runtime/markets.json")
     dec.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     aud = sub.add_parser("audit", help="Read-only three-way audit comparing Registry, Venue, and Chain views.")
     aud.add_argument("target", help="Condition ID or pair_id to audit")
@@ -3027,7 +3027,7 @@ def main() -> None:
     elif a.cmd == "balance":
         balance(a.funder)
     elif a.cmd == "audit":
-        from engine.audit import audit_three_way, format_audit_report
+        from core_brain.audit import audit_three_way, format_audit_report
         res = audit_three_way(a.target, client=client(), funder=a.funder, db_path=a.db)
         print(format_audit_report(res))
         if not res.agree:
@@ -3040,7 +3040,7 @@ def main() -> None:
         # exposure rule gates direction, and this command has none.
         account_sweep(funder=a.funder, db_path=a.db)
     elif a.cmd == "kpi":
-        from engine.kpi import report as generate_kpi_report
+        from core_brain.kpi import report as generate_kpi_report
         import pprint
         rep = generate_kpi_report(db_path=a.db, run_id=a.run_id)
         pprint.pprint(rep, sort_dicts=False)

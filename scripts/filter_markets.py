@@ -1,4 +1,4 @@
-"""Filter funded and liquid markets by RETURN, and write the winners to run/markets.json.
+"""Filter funded and liquid markets by RETURN, and write the winners to runtime/markets.json.
 
     python -m scripts.filter_markets            # top 20
     python -m scripts.filter_markets --top 40
@@ -29,7 +29,7 @@ from scoring.markets import parse_book   # noqa: E402
 from scoring.rewards import score_per_share   # noqa: E402
 from scoring.selector import identity_allowed, pair_books_allowed  # noqa: E402
 
-RUN = ROOT / "run"
+RUN = ROOT / "runtime"
 OFFSET = 0.020          # where we intend to quote, in price units
 C = 3.0                 # venue's one-sided penalty
 
@@ -687,26 +687,26 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     This used to be a hand-rolled scan of sys.argv for "--top", which meant
     `--help` was not a flag the script recognised -- it was silently ignored,
     and asking for usage instead ran the whole pipeline: a few hundred requests
-    against the venue, ending in an overwrite of run/markets.json. A mistyped
+    against the venue, ending in an overwrite of runtime/markets.json. A mistyped
     flag did the same, and `--top` with no value raised IndexError. argparse
     turns all three into a usage error, and exits before the first request.
     """
     p = argparse.ArgumentParser(
         prog="python -m scripts.filter_markets",
         description=__doc__.split("\n\n")[0],
-        epilog="Writes the winners to run/markets.json, which the Trader "
+        epilog="Writes the winners to runtime/markets.json, which the Trader "
                "reads as its market universe.")
     p.add_argument("--top", type=_positive_int, default=20, metavar="N",
                    help="how many markets to write (default: 20)")
     p.add_argument("--dry-run", action="store_true",
                    help="score and print the ranking, but leave "
-                        "run/markets.json untouched")
+                        "runtime/markets.json untouched")
     p.add_argument("--trial-depth", type=float, default=None, metavar="USD",
                    help="DEPTH-GATE TRIAL (U32): gate on this top-3 bid depth "
                         "bar instead of the permanent one ($%.0f). Wins over "
                         "HUNTER_DEPTH_TRIAL_USD; the permanent config value is "
                         "never changed. Adopted markets are tagged "
-                        "trial_depth_usd in run/markets.json so their "
+                        "trial_depth_usd in runtime/markets.json so their "
                         "markouts can be watched before the bar is loosened "
                         "permanently. See scripts/trial_depth_gate.py for the "
                         "recorded-data replay that shows which markets a bar "
@@ -716,7 +716,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         "instead of the permanent one ($%.0f). Wins over "
                         "HUNTER_VOLUME_TRIAL_USD; the permanent config value is "
                         "never changed. Adopted markets are tagged "
-                        "trial_volume_usd in run/markets.json so their "
+                        "trial_volume_usd in runtime/markets.json so their "
                         "markouts can be watched before the bar is loosened "
                         "permanently." % MIN_VOLUME_24H)
     return p.parse_args(argv)
@@ -736,7 +736,7 @@ _VOLUME_RE = re.compile(
 
 
 def _log_rank_near_misses(out, rejected, verdicts, ts=None) -> int:
-    """Append this rank's near-misses to run/near_misses.jsonl.
+    """Append this rank's near-misses to runtime/near_misses.jsonl.
 
     A NEAR-MISS is a rejected market whose if-adopted first-dollar marginal
     return clears the allocator's floor -- the green cards on the FILTERS
@@ -795,7 +795,7 @@ def _log_rank_near_misses(out, rejected, verdicts, ts=None) -> int:
 
 
 def _log_rank_volume_near_misses(out, rejected, verdicts=None, ts=None) -> int:
-    """Append this rank's volume-rejects to run/volume_near_misses.jsonl.
+    """Append this rank's volume-rejects to runtime/volume_near_misses.jsonl.
 
     The DEPTH near-miss log records only would-fund greens, and U33's triage
     showed the binding constraint is the VOLUME gate, not depth: on the
@@ -868,9 +868,9 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
                              trial_depth_usd: Optional[float] = None,
                              volume_gate_usd: Optional[float] = None,
                              trial_volume_usd: Optional[float] = None) -> None:
-    """Persist the whole selection funnel to run/pipeline.json.
+    """Persist the whole selection funnel to runtime/pipeline.json.
 
-    run/markets.json keeps only the winners, so the dashboard can show the
+    runtime/markets.json keeps only the winners, so the dashboard can show the
     fleet but not the funnel that produced it. This file keeps the rest of
     the run: the raw pools the ranker listed, every rejection bucketed by
     gate with example titles, the eligible-but-unpicked ranking, and the
@@ -1181,7 +1181,7 @@ def main() -> None:
     census = (f"scored {len(out)}, rejected {rejected} "
               f"({', '.join(f'{k}={v}' for k, v in sorted(causes.items())) or 'none'}), "
               f"{'would write' if args.dry_run else 'wrote'} top {len(picked)}"
-              f" -> run/markets.json")
+              f" -> runtime/markets.json")
     print(census)
     depth_bar_str = (f"${trial_bar:,.0f}"
                      + (f" [TRIAL vs permanent ${MIN_TOP3_DEPTH_USD:,.0f}]"

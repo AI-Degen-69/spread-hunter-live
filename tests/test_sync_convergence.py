@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from engine.kpi import report as kpi_report
-from engine.order_registry import (
+from core_brain.kpi import report as kpi_report
+from core_brain.order_registry import (
     CloseRecord, FillRecord, OrderRecord, OrderRegistry, QuoteRecord,
     inventory_from_registry,
 )

@@ -17,8 +17,8 @@ import threading
 import time
 from typing import Optional
 
-from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH
-from engine.config import load as load_cfg
+from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
+from core_brain.config import load as load_cfg
 
 _CFG = load_cfg()
 MARKOUT_HORIZONS: tuple[float, ...] = getattr(
@@ -50,7 +50,7 @@ def sample_pending_markouts(
     horizons: tuple[float, ...] = MARKOUT_HORIZONS,
 ) -> int:
     """Sample one pass of due markouts out-of-band. Never raises to caller."""
-    from engine.markets import full_book, fetch_pinned_market
+    from core_brain.markets import full_book, fetch_pinned_market
 
     now = now_sec if now_sec is not None else time.time()
     try:

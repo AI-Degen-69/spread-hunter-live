@@ -18,8 +18,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional
 
-from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH, SIZE_EPS
-from engine.markets import fetch_pinned_market
+from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH, SIZE_EPS
+from core_brain.markets import fetch_pinned_market
 
 RPC_ENDPOINTS = [
     "https://polygon-bor-rpc.publicnode.com",
@@ -89,7 +89,7 @@ def read_merged_amount_from_logs(condition_id: str, orders_log_path: Optional[Pa
     Returns None when the log file is missing or unreadable.
     Returns 0.0 when no merges are found for this condition.
     """
-    path = orders_log_path or (LIVE_ROOT / "run" / "live_orders.json")
+    path = orders_log_path or (LIVE_ROOT / "runtime" / "live_orders.json")
     if not path.is_file():
         return None
     try:

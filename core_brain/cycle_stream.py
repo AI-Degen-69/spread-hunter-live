@@ -1,6 +1,6 @@
 """Append-only cycle telemetry stream and intent logger for the live engine.
 
-Writes a compact NDJSON ring to `live/run/cycle_events.jsonl` (max 500 lines with atomic
+Writes a compact NDJSON ring to `live/runtime/cycle_events.jsonl` (max 500 lines with atomic
 rotation) and logs cycle decisions to `cycle_intent` in `orders.db`.
 
 Designed for zero latency impact on the core loop:
@@ -26,12 +26,12 @@ from typing import Any, Optional
 _APPEND_LOCK = threading.Lock()
 
 LIVE_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_RING_PATH = LIVE_ROOT / "run" / "cycle_events.jsonl"
+DEFAULT_RING_PATH = LIVE_ROOT / "runtime" / "cycle_events.jsonl"
 
 # One registry, one path. This module used to hardcode data/orders.db while every
 # other caller resolved data/orders.db through order_registry, so cycle_intent
 # rows landed in a database the dashboard never read.
-from engine.order_registry import DEFAULT_DB_PATH  # noqa: E402
+from core_brain.order_registry import DEFAULT_DB_PATH  # noqa: E402
 
 MAX_LINES = 500
 KEEP_LINES = 400
@@ -40,7 +40,7 @@ KEEP_LINES = 400
 def _resolve_run_id() -> str:
     """The current run id, resolved the same way for decide and submit events."""
     try:
-        from engine.order_registry import get_run_id
+        from core_brain.order_registry import get_run_id
         return get_run_id()
     except Exception:
         return "live"
@@ -179,7 +179,7 @@ def _rotate_ring_file(ring_path: Path) -> None:
 
     A concurrent writer (fleet/screener) can append between our read and the
     replace. A fully atomic rotation would need a cross-process lock shared
-    with those decoupled writers (they must not import engine.*), so instead
+    with those decoupled writers (they must not import core_brain.*), so instead
     we re-stat after reading and skip this rotation when the file grew. The
     residual window (append after the re-stat, before os.replace) can drop at
     most one telemetry line in a rare race; the next emit re-checks.

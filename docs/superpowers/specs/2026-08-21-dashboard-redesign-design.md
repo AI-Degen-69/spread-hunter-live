@@ -46,20 +46,20 @@ Four independent cards represent the background architecture:
    - *Purpose:* Polls Polymarket CLOB every 0.5s, reconciles order fills against SQLite database, and executes account sweeps.
    - *Controls:* Independent `[ START ]` / `[ STOP ]` toggle switch.
    - *Status Display:* PID, Uptime, Venue Latency (ms), Fills Reconciled, DB Sync Status.
-   - *Info Bubble (?):* Explains functionality + raw CLI command: `python -m engine.order_manager poll --interval 0.5`.
+   - *Info Bubble (?):* Explains functionality + raw CLI command: `python -m core_brain.order_manager poll --interval 0.5`.
 
 3. **Quoting Fleet (`engine.live_fleet loop`)**
    - *Purpose:* Evaluates two-sided pricing, computes size ladders ($3/leg budget), and submits maker bids to Polymarket.
    - *Controls:* Independent `[ START ]` / `[ STOP ]` toggle switch.
    - *Status Display:* PID, Active Quoting Markets Count, Resting Notional ($), Total Orders Resting.
-   - *Info Bubble (?):* Explains functionality + raw CLI command: `python -m engine.live_fleet loop`.
+   - *Info Bubble (?):* Explains functionality + raw CLI command: `python -m core_brain.live_fleet loop`.
    - *Expandable Rotation Queue:* Shows the sequential rotation order of active markets and quoting calculations.
 
-4. **Guardrail Watchdog (`scripts.guardrail_watch`)**
+4. **Guardrail Watchdog (`scripts.global_stop_loss`)**
    - *Purpose:* Continuous risk monitor enforcing hard exposure and inventory limits.
    - *Controls:* Independent `[ START ]` / `[ STOP ]` toggle switch.
    - *Status Display:* PID, Heartbeat health, Active Exposure ($ vs $100 cap), Max Naked Loss ($ vs $6 cap).
-   - *Info Bubble (?):* Explains functionality + raw CLI command: `python -m scripts.guardrail_watch`.
+   - *Info Bubble (?):* Explains functionality + raw CLI command: `python -m scripts.global_stop_loss`.
 
 ### 3.2 Strategy Parameters & Trigger Rules Panel
 An interactive settings panel displaying active bot constraints with clear trigger/action mappings:
@@ -147,7 +147,7 @@ Clicking any row opens a drill-down drawer showing:
 - `GET /api/kpi` — Returns aggregate portfolio analytics, Sharpe, Drawdown, win rates, and return distributions.
 - `GET /api/active-markets` — Returns graduated and currently quoted markets with order depth and PnL.
 - `GET /api/closed-markets` — Returns historical closed/settled markets and booked PnL.
-- `GET /api/cycle-stream` — SSE stream of real-time operational events from `run/cycle_events.jsonl`.
+- `GET /api/cycle-stream` — SSE stream of real-time operational events from `runtime/cycle_events.jsonl`.
 
 ### 5.2 Frontend Technology & Styling
 - Pure semantic HTML5 + Vanilla CSS (clean CSS design system with custom CSS variables for dark-mode palette, crisp cards, flex/grid layouts, no heavy external CSS libraries).
@@ -172,7 +172,7 @@ Clicking any row opens a drill-down drawer showing:
 
 ## NOT in scope
 
-- **Decoupling guardrail watcher from poll loop** — The watcher is a child of `engine/live_exec.py:poll()` (spawned by `_spawn_guardrail_watcher` at line 1686, supervised by `_supervise_watcher`). Making it a true independent service requires engine changes. Deferred — the 4th card stays read-only.
+- **Decoupling guardrail watcher from poll loop** — The watcher is a child of `engine/live_exec.py:poll()` (spawned by `_spawn_global_stop_losser` at line 1686, supervised by `_supervise_watcher`). Making it a true independent service requires engine changes. Deferred — the 4th card stays read-only.
 - **Full independent START for each service** — `start_bot()` launches all 3 services atomically with an interprocess lock. Only individual STOP (screener, fleet) is in scope. Independent START risks partial-starts where the fleet submits orders against stale engine-reconciled state.
 - **New `/api/analytics` endpoint for Tab 2** — Tab 2 reuses the existing `GET /api/kpi` response. No parallel computation path.
 - **Rebuilding existing API routes under new names** — The existing `/api/system/*` routes already have CSRF tokens, PID recycling protection, and 20+ tests. Only genuinely new routes (`/api/parameters`, `/api/active-markets`, `/api/closed-markets`, `/api/system/cancel-all`) are added.

@@ -13,7 +13,7 @@
 # the dashboard's own /api/system/start|stop endpoints -- the same code path as
 # the dashboard's START/STOP buttons (interprocess lock, starting-capital
 # snapshot, shared run_id). The dashboard process itself is owned by this
-# script via run/live-dash.pids.json, mirroring the old checkout's convention.
+# script via runtime/live-dash.pids.json, mirroring the old checkout's convention.
 #
 # NOTE: "start" launches the fleet, which rests REAL maker bids. That is an
 # opening command and requires explicit supervision (AGENTS.md).
@@ -29,27 +29,27 @@ $ErrorActionPreference = "Stop"
 $ProjectPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $LivePort    = 8799
 $DashUrl     = "http://127.0.0.1:$LivePort"
-$RunDir      = Join-Path $ProjectPath "run"
+$RunDir      = Join-Path $ProjectPath "runtime"
 $DashPidFile = Join-Path $RunDir "live-dash.pids.json"
 $ProcsFile   = Join-Path $RunDir "processes.json"
 $OutLog      = Join-Path $RunDir "live_dash.out.log"
 $ErrLog      = Join-Path $RunDir "live_dash.err.log"
-$HbFile      = Join-Path $RunDir "guardrail_watch_heartbeat.json"
+$HbFile      = Join-Path $RunDir "global_stop_loss_heartbeat.json"
 
 # Module map: each stack process -> its source file (relative to the repo root).
 $StackPaths = @{
     filter     = "scripts/filter_loop.py"
-    query      = "engine/order_manager.py"
-    decide     = "engine/trader_loop.py"
-    guardrail  = "scripts/guardrail_watch.py"
+    query      = "core_brain/order_manager.py"
+    decide     = "core_brain/trader_loop.py"
+    guardrail  = "scripts/global_stop_loss.py"
     dash       = "dashboard/server.py"
 }
 
 $StackCmds = @{
     filter     = "python -m scripts.filter_loop"
-    query      = "python -m engine.order_manager poll --interval 0.5"
-    decide     = "python -m engine.trader_loop --live --no-reconcile --no-sweep --interval 5"
-    guardrail  = "python -m scripts.guardrail_watch"
+    query      = "python -m core_brain.order_manager poll --interval 0.5"
+    decide     = "python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5"
+    guardrail  = "python -m scripts.global_stop_loss"
     dash       = "python -m dashboard.server --port 8799"
 }
 
@@ -159,7 +159,7 @@ function Format-AgeSec {
     return "{0}s" -f $Seconds
 }
 
-# ── Dashboard process ownership (run/live-dash.pids.json) ──
+# ── Dashboard process ownership (runtime/live-dash.pids.json) ──
 function Get-DashInstance {
     <# The recorded dashboard process that is STILL the one we started (start-ticks checked). #>
     if (-not (Test-Path $DashPidFile)) { return $null }
@@ -443,7 +443,7 @@ function Write-StackRows {
         Write-ProcessRow -Label $r.Name -Running $r.Running -PidVal $r.Pid -Path $r.Path -RunCmd $r.RunCmd
     }
     if ($Rows.Count -gt 0 -and $runningCount -eq 0 -and (Test-Path $ProcsFile)) {
-        Write-FileRow -Label "Process file" -Status "STALE" -Path "run/processes.json" -Dynamic "no active PID"
+        Write-FileRow -Label "Process file" -Status "STALE" -Path "runtime/processes.json" -Dynamic "no active PID"
     }
 }
 
@@ -571,15 +571,15 @@ function Show-Status {
     if ($inst) {
         Write-SectionHeader -Number "1" -Title "DASHBOARD" -Status "ON" -StatusStyle "Success"
         Write-ProcessRow -Label "Dashboard" -Running $true -PidVal $inst.pid -Path $StackPaths["dash"] -ExtraInfo $DashUrl
-        Write-FileRow -Label "PID file" -Status "FOUND" -Path "run/live-dash.pids.json" -Dynamic ("PID {0} recorded" -f $inst.pid)
+        Write-FileRow -Label "PID file" -Status "FOUND" -Path "runtime/live-dash.pids.json" -Dynamic ("PID {0} recorded" -f $inst.pid)
     } elseif ($portUp) {
         Write-SectionHeader -Number "1" -Title "DASHBOARD" -Status "LISTENING" -StatusStyle "Warning"
         Write-FileRow -Label "Dashboard" -Status "LISTENING" -Path $StackPaths["dash"] -Dynamic ("PID {0} on port {1} (external)" -f (Get-PortPid), $LivePort)
-        Write-FileRow -Label "PID file" -Status "MISSING" -Path "run/live-dash.pids.json" -Dynamic "not owned by menu"
+        Write-FileRow -Label "PID file" -Status "MISSING" -Path "runtime/live-dash.pids.json" -Dynamic "not owned by menu"
     } else {
         Write-SectionHeader -Number "1" -Title "DASHBOARD" -Status "OFF" -StatusStyle "Error"
         Write-ProcessRow -Label "Dashboard" -Running $false -Path $StackPaths["dash"] -RunCmd ("python -m dashboard.server --port {0}" -f $LivePort)
-        Write-FileRow -Label "PID file" -Status "MISSING" -Path "run/live-dash.pids.json" -Dynamic "no PID file"
+        Write-FileRow -Label "PID file" -Status "MISSING" -Path "runtime/live-dash.pids.json" -Dynamic "no PID file"
     }
 
     # ── 2 · BOT STACK (dashboard API when up, processes.json otherwise) ──
@@ -619,49 +619,49 @@ function Show-Status {
         }
     }
 
-    # ── 3 · GUARDRAIL WATCHDOG (API when up, heartbeat file otherwise) ──
+    # ── 3 · GLOBAL STOP LOSS (API when up, heartbeat file otherwise) ──
     $gh = $null
     if ($portUp) {
         try { $gh = Invoke-RestMethod -Uri "$DashUrl/api/guardrail-health" -UseBasicParsing -TimeoutSec 5 } catch {}
     }
     if ($gh) {
         if ($gh.running) {
-            Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "ON" -StatusStyle "Success"
-            Write-ProcessRow -Label "Watchdog (guardrail)" -Running $true -PidVal $gh.pid -Path $StackPaths["guardrail"]
-            Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec ([int]$gh.age_s)))
-            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic ("{0} alert(s)" -f $gh.alerts_total)
+            Write-SectionHeader -Number "3" -Title "GLOBAL STOP LOSS" -Status "ON" -StatusStyle "Success"
+            Write-ProcessRow -Label "Global Stop Loss" -Running $true -PidVal $gh.pid -Path $StackPaths["guardrail"]
+            Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec ([int]$gh.age_s)))
+            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic ("{0} alert(s)" -f $gh.alerts_total)
         } else {
-            Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "OFF" -StatusStyle "Error"
-            Write-ProcessRow -Label "Watchdog (guardrail)" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.guardrail_watch"
-            Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec ([int]$gh.age_s)))
-            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic ("{0} alert(s)" -f $gh.alerts_total)
+            Write-SectionHeader -Number "3" -Title "GLOBAL STOP LOSS" -Status "OFF" -StatusStyle "Error"
+            Write-ProcessRow -Label "Global Stop Loss" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.global_stop_loss"
+            Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec ([int]$gh.age_s)))
+            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic ("{0} alert(s)" -f $gh.alerts_total)
         }
     } elseif (Test-Path $HbFile) {
         try {
             $hb = Get-Content $HbFile -Raw | ConvertFrom-Json
             $age = Get-HeartbeatAgeSec $hb.ts
             if ($null -ne $age -and $age -le 30) {
-                Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "ON" -StatusStyle "Success"
-                Write-ProcessRow -Label "Watchdog (guardrail)" -Running $true -PidVal $hb.pid -Path $StackPaths["guardrail"]
-                Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec $age))
-                Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic "0 alerts"
+                Write-SectionHeader -Number "3" -Title "GLOBAL STOP LOSS" -Status "ON" -StatusStyle "Success"
+                Write-ProcessRow -Label "Global Stop Loss" -Running $true -PidVal $hb.pid -Path $StackPaths["guardrail"]
+                Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec $age))
+                Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic "0 alerts"
             } else {
-                Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "OFF" -StatusStyle "Error"
-                Write-ProcessRow -Label "Watchdog (guardrail)" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.guardrail_watch"
-                Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec $age))
-                Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic "0 alerts"
+                Write-SectionHeader -Number "3" -Title "GLOBAL STOP LOSS" -Status "OFF" -StatusStyle "Error"
+                Write-ProcessRow -Label "Global Stop Loss" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.global_stop_loss"
+                Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec $age))
+                Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic "0 alerts"
             }
         } catch {
-            Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "OFF" -StatusStyle "Error"
-            Write-ProcessRow -Label "Watchdog (guardrail)" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.guardrail_watch"
-            Write-FileRow -Label "Heartbeat file" -Status "ERROR" -Path "run/guardrail_watch_heartbeat.json" -Dynamic "unreadable"
-            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic "0 alerts"
+            Write-SectionHeader -Number "3" -Title "GLOBAL STOP LOSS" -Status "OFF" -StatusStyle "Error"
+            Write-ProcessRow -Label "Global Stop Loss" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.global_stop_loss"
+            Write-FileRow -Label "Heartbeat file" -Status "ERROR" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic "unreadable"
+            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic "0 alerts"
         }
     } else {
-        Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "OFF" -StatusStyle "Error"
-        Write-ProcessRow -Label "Watchdog (guardrail)" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.guardrail_watch"
-        Write-FileRow -Label "Heartbeat file" -Status "MISSING" -Path "run/guardrail_watch_heartbeat.json" -Dynamic "no file"
-        Write-FileRow -Label "Alerts log" -Status "MISSING" -Path "run/guardrail_alerts.log" -Dynamic "no file"
+        Write-SectionHeader -Number "3" -Title "GLOBAL STOP LOSS" -Status "OFF" -StatusStyle "Error"
+        Write-ProcessRow -Label "Global Stop Loss" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.global_stop_loss"
+        Write-FileRow -Label "Heartbeat file" -Status "MISSING" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic "no file"
+        Write-FileRow -Label "Alerts log" -Status "MISSING" -Path "runtime/global_stop_loss_alerts.log" -Dynamic "no file"
     }
 
     # ── 4 · MARKET FILTER & UNIVERSE FEED (what the stack depends on) ──
@@ -677,7 +677,7 @@ function Show-ScreenerAndFeed {
     $strategyCfg = Join-Path $ProjectPath "scoring\config.py"
     $modulesOk = ((Test-Path $rerank) -and (Test-Path $ranker) -and (Test-Path $strategyCfg))
 
-    $feed = Join-Path $ProjectPath "run\markets.json"
+    $feed = Join-Path $ProjectPath "runtime\markets.json"
     $feedExists = Test-Path $feed
     $ageSec = if ($feedExists) { [int]((Get-Date) - (Get-Item $feed).LastWriteTime).TotalSeconds } else { $null }
     $count = "?"
@@ -702,11 +702,11 @@ function Show-ScreenerAndFeed {
     $feedDetail = if (-not $feedExists) { "Run: python -m scripts.filter_loop" }
                   elseif ($feedStatus -eq "STALE") { "{0} market(s) · {1} old · Run: python -m scripts.filter_loop" -f $count, (Format-AgeSec $ageSec) }
                   else { "{0} market(s) · {1} old" -f $count, (Format-AgeSec $ageSec) }
-    Write-FileRow -Label "Universe feed" -Status $feedStatus -Path "run/markets.json" -Dynamic $feedDetail
+    Write-FileRow -Label "Universe feed" -Status $feedStatus -Path "runtime/markets.json" -Dynamic $feedDetail
 }
 
 function Show-CheckoutIdentity {
-    $code = "import sys; sys.path.insert(0, r'$ProjectPath'); import os, dashboard.server as d, engine.order_manager as m, engine.trader_loop as f, scripts.filter_loop as r, scripts.filter_markets as k; print('cwd=' + os.getcwd()); print(d.__file__); print(m.__file__); print(f.__file__); print(r.__file__); print(k.__file__)"
+    $code = "import sys; sys.path.insert(0, r'$ProjectPath'); import os, dashboard.server as d, core_brain.order_manager as m, core_brain.trader_loop as f, scripts.filter_loop as r, scripts.filter_markets as k; print('cwd=' + os.getcwd()); print(d.__file__); print(m.__file__); print(f.__file__); print(r.__file__); print(k.__file__)"
     $raw = @()
     try { $raw = @(& python -c $code 2>&1) } catch {}
     if ($raw.Count -lt 5) {
@@ -734,8 +734,8 @@ function Show-CheckoutIdentity {
         if ($tail) { Write-FileRow -Label "Diagnostic" -Status "WARN" -Path "error" -Dynamic $tail }
         return
     }
-    $labels = @("dashboard.server", "engine.order_manager", "engine.trader_loop", "scripts.filter_loop", "scripts.filter_markets")
-    $relPaths = @("dashboard/server.py", "engine/order_manager.py", "engine/trader_loop.py", "scripts/filter_loop.py", "scripts/filter_markets.py")
+    $labels = @("dashboard.server", "core_brain.order_manager", "core_brain.trader_loop", "scripts.filter_loop", "scripts.filter_markets")
+    $relPaths = @("dashboard/server.py", "core_brain/order_manager.py", "core_brain/trader_loop.py", "scripts/filter_loop.py", "scripts/filter_markets.py")
     for ($i = 0; $i -lt 5; $i++) {
         $p = $paths[$i].Trim()
         if ($p -like "$ProjectPath*") {

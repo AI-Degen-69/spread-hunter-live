@@ -18,7 +18,7 @@ exactly $1.00; and keep quotes inside the 4.5c reward window (>= min size) so th
 rebate accrues while we wait.
 
 The universe is NOT the BTC 5-minute series. The fleet quotes the ranker's
-graduated list (run/markets.json, via engine/market_feed.py) -- liquid sports,
+graduated list (runtime/markets.json, via engine/market_feed.py) -- liquid sports,
 esports, macro and political markets inside a 30-day horizon. `config.series_slug`
 is a legacy field; see AGENTS.md.
 """
@@ -27,8 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from engine import config, risk, unhedged_stop_loss
-from engine.config import MakerConfig
+from core_brain import config, risk, unhedged_stop_loss
+from core_brain.config import MakerConfig
 
 
 @dataclass

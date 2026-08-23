@@ -43,7 +43,7 @@ def _market_identity(condition_id: str, closes_by_cid: dict) -> dict:
     if not condition_id:
         return out
     try:
-        feed = json.loads((REPO_ROOT / "run" / "markets.json").read_text(encoding="utf-8"))
+        feed = json.loads((REPO_ROOT / "runtime" / "markets.json").read_text(encoding="utf-8"))
     except Exception:
         feed = []
     for row in feed if isinstance(feed, list) else []:

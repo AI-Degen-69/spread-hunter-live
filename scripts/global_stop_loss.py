@@ -14,10 +14,10 @@ happen, independent of the poll loop.
    the backstop that screams if a pair still forms.
 
 Detection is pure and testable; the loop only calls it, dedupes, and alerts
-(console, `run/guardrail_alerts.log`, and a `guardrail_alert` ring event so the
+(console, `runtime/global_stop_loss_alerts.log`, and a `guardrail_alert` ring event so the
 dashboard telemetry sees it).
 
-Run:  cd live && python scripts/guardrail_watch.py [--interval 5] [--once]
+Run:  cd live && python scripts/global_stop_loss.py [--interval 5] [--once]
 """
 from __future__ import annotations
 
@@ -34,11 +34,11 @@ LIVE_ROOT = Path(__file__).resolve().parent.parent
 if str(LIVE_ROOT) not in sys.path:
     sys.path.insert(0, str(LIVE_ROOT))
 
-from engine.order_registry import DEFAULT_DB_PATH as DEFAULT_DB  # noqa: E402
+from core_brain.order_registry import DEFAULT_DB_PATH as DEFAULT_DB  # noqa: E402
 
-DEFAULT_RING = LIVE_ROOT / "run" / "cycle_events.jsonl"
-DEFAULT_ALERTS_LOG = LIVE_ROOT / "run" / "guardrail_alerts.log"
-DEFAULT_HEARTBEAT = LIVE_ROOT / "run" / "guardrail_watch_heartbeat.json"
+DEFAULT_RING = LIVE_ROOT / "runtime" / "cycle_events.jsonl"
+DEFAULT_ALERTS_LOG = LIVE_ROOT / "runtime" / "global_stop_loss_alerts.log"
+DEFAULT_HEARTBEAT = LIVE_ROOT / "runtime" / "global_stop_loss_heartbeat.json"
 
 
 def _parse_iso(ts: str) -> float:
@@ -100,7 +100,7 @@ def detect_over_cap_pairs(db_path: Path | str, cap: float = 0.995) -> list[dict]
                 "AND side IN ('UP','DOWN') GROUP BY side", (cid,))}
             if len(sides) != 2:
                 continue
-            from engine.order_registry import inventory_from_registry
+            from core_brain.order_registry import inventory_from_registry
             inv = inventory_from_registry(cid, sides["UP"], sides["DOWN"],
                                           db_path=db)
             pc = inv.pair_cost()
@@ -174,7 +174,7 @@ class GuardrailWatch:
             print(f"guardrail: could not write {self.alerts_log}: {exc}",
                   file=sys.stderr)
         try:
-            from engine.cycle_stream import emit
+            from core_brain.cycle_stream import emit
             emit(service="guardrail", cycle=self.cycle, phase="settling",
                  action="guardrail_alert",
                  reason=kind, extra={"subject": subject, "detail": detail},
@@ -186,7 +186,7 @@ class GuardrailWatch:
         self.cycle += 1
         now = time.time()
 
-        from engine.cycle_stream import read_ring
+        from core_brain.cycle_stream import read_ring
         events = read_ring(self.ring_path, tail=0)
 
         # Repeat-exit: alert on growth; re-arm once the pair leaves the

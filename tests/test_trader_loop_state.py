@@ -13,11 +13,11 @@ from __future__ import annotations
 
 import pytest
 
-from engine.config import load
-from engine.order_registry import registry_committed_usd
-from engine.trader_loop import _fleet_state
-from engine.markout import fleet_stats
-from engine.order_registry import (
+from core_brain.config import load
+from core_brain.order_registry import registry_committed_usd
+from core_brain.trader_loop import _fleet_state
+from core_brain.markout import fleet_stats
+from core_brain.order_registry import (
     CloseRecord,
     FillRecord,
     MarkoutRecord,

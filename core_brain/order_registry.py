@@ -61,14 +61,14 @@ def _resolve_run_id() -> str:
 
     Priority:
     1. SH_RUN_ID env var (explicit override, set by start_bot)
-    2. live/run/.current_run_id lock file, if it was written in the last 12h
+    2. live/runtime/.current_run_id lock file, if it was written in the last 12h
     3. New UUID — generates and writes the lock file so other processes pick it up
     """
     env_id = os.environ.get("SH_RUN_ID")
     if env_id:
         return env_id
 
-    lock_file = LIVE_ROOT / "run" / ".current_run_id"
+    lock_file = LIVE_ROOT / "runtime" / ".current_run_id"
     try:
         if lock_file.exists():
             mtime = lock_file.stat().st_mtime
@@ -1678,7 +1678,7 @@ def inventory_from_registry(
     db_path: Path | str = DEFAULT_DB_PATH,
 ) -> "Inventory":
     """Rebuild a market's share inventory from fills and closes in the SQLite registry."""
-    from engine.quotes import Inventory
+    from core_brain.quotes import Inventory
 
     inv = Inventory()
     db = Path(db_path)
@@ -1783,7 +1783,7 @@ def inventory_from_registry(
     return inv
 
 
-# --- fleet-wide aggregates (moved from engine.order_manager) ----------------
+# --- fleet-wide aggregates (moved from core_brain.order_manager) ----------------
 # `registry_naked_usd` and `registry_committed_usd` are pure registry
 # reads -- the fleet's risk caps and the poll loop both need them, so they
 # live next to the registry instead of in live_exec's CLI grab-bag.
@@ -1797,7 +1797,7 @@ def registry_naked_usd(registry) -> float:
     longer carries. A partially-exited pair is skipped whole rather than
     over-stated, which is the safe direction for a risk figure.
     """
-    from engine.single_buy_saver import load_pair, PairExitRefused
+    from core_brain.single_buy_saver import load_pair, PairExitRefused
 
     with registry._conn() as conn:
         closed_cids = {

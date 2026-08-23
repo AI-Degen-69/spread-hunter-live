@@ -38,7 +38,7 @@ Describe this bot as a **pair-assembly arbitrage** that earns rebates while it w
 
 The **Market Filter** (`scripts/filter_markets.py`, run continuously by
 `scripts/filter_loop.py`) funnels the venue — 24h volume, top-3 bid depth on both sides,
-book spread, horizon — and writes the survivors to `run/markets.json`. The **Trader**
+book spread, horizon — and writes the survivors to `runtime/markets.json`. The **Trader**
 (`engine/trader_loop.py`) quotes **only** that list, via `engine/market_feed.py`.
 
 `scripts/rank_markets.py` and `scripts/rerank_loop.py` are backward-compatible aliases
@@ -95,7 +95,7 @@ spread-hunter-live/
     live_fill_engine.py   Turns venue fills into registry rows
     markout.py            Post-fill mark-to-market used by the stop-loss
     venue.py              Venue client wiring + the MAX_ORDER_USD / MAX_TOTAL_USD caps
-    market_feed.py        Reads the market filter's graduated universe (run/markets.json)
+    market_feed.py        Reads the market filter's graduated universe (runtime/markets.json)
     markets.py            Venue market lookup
     cycle_stream.py       Append-only telemetry ring + cycle_intent rows
     account.py            Wallet balance & float marks
@@ -108,7 +108,7 @@ spread-hunter-live/
   scripts/
     filter_markets.py     Fetch, filter and score PolyMarket candidate pairs
     filter_loop.py        Continuous filter loop (every 10 minutes)
-    guardrail_watch.py    Watchdog: over-cap pairs & repeat single-buy exits
+    global_stop_loss.py    Watchdog: over-cap pairs & repeat single-buy exits
     audit_settlement.py   Settlement & balance verification
     spread-hunter-menu.ps1 Interactive operations menu
   data/
@@ -143,7 +143,7 @@ calling them. Do not add to them.
 
 ```bash
 # Check status and balance
-python -m engine.order_manager status
+python -m core_brain.order_manager status
 
 # Launch the operations dashboard on http://127.0.0.1:8799
 python -m dashboard.server
@@ -180,14 +180,14 @@ Sizing, fill attribution, and merge paths always land with a test.
 cheapest route that actually proves the change:
 
 - **Terminal, read-only:** the exact command plus the line to look for.
-  Example: `python -m engine.order_manager status` → the `open_notional` row reads `$0.00`.
+  Example: `python -m core_brain.order_manager status` → the `open_notional` row reads `$0.00`.
 - **Dashboard:** the click path and the value that should differ.
   Example: start `python -m dashboard.server`, open `http://127.0.0.1:8799`, the
   **Trader** card → poll cadence reads `0.5s`.
 - **Live, with real money:** this repo trades for real, and a change to quoting,
   filling or merging is only proven when a real order behaves. Say so, and give the
   smallest test that settles it: one pair at the venue minimum, inside
-  `MAX_ORDER_USD` / `MAX_TOTAL_USD`, on a graduated market from `run/markets.json`.
+  `MAX_ORDER_USD` / `MAX_TOTAL_USD`, on a graduated market from `runtime/markets.json`.
 
 Rules for the block:
 

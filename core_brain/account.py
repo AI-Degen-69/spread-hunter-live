@@ -261,7 +261,7 @@ def read_account(funder: str, collateral_usd: Optional[float],
     )
 
 
-# --- live balance + float mark (moved from engine.order_manager) ----------
+# --- live balance + float mark (moved from core_brain.order_manager) ----------
 # `fetch_live_balance` reads the CLOB client's collateral balance; the
 # poll loop and the fleet both need it, so it lives with the other
 # venue account reads instead of live_exec's CLI grab-bag.
@@ -274,7 +274,7 @@ def fetch_live_balance(funder: str | None = None) -> float | None:
         return None
     try:
         from py_clob_client_v2.clob_types import AssetType, BalanceAllowanceParams
-        from engine.venue import client
+        from core_brain.venue import client
         who = funder or os.environ.get("POLY_FUNDER")
         sig_type = int(os.environ.get("POLY_SIG_TYPE", "3"))
         r = client(who).get_balance_allowance(
@@ -293,7 +293,7 @@ def log_float_mark_if_measured(registry, mark: dict) -> None:
     partial sweep skips rather than writing 0.0 for a number the venue never
     reported.
     """
-    from engine.order_registry import registry_naked_usd
+    from core_brain.order_registry import registry_naked_usd
     unrealized = mark.get("unrealized_usd")
     committed = mark.get("committed_usd")
     if unrealized is None or committed is None:

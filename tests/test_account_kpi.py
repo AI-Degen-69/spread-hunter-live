@@ -17,10 +17,10 @@ import pytest
 
 from pathlib import Path
 
-from engine import account as acct
-from engine import kpi as kpi_mod
-from engine.kpi import report
-from engine.order_registry import SCHEMA, OrderRegistry
+from core_brain import account as acct
+from core_brain import kpi as kpi_mod
+from core_brain.kpi import report
+from core_brain.order_registry import SCHEMA, OrderRegistry
 from dashboard.server import PAGE_HTML
 
 RUN = "run-account"
@@ -315,7 +315,7 @@ def test_active_run_falls_back_to_all_when_most_recent_run_has_no_fills(temp_db)
     run_id; the dashboard's default most-recent run had no fills, so all 29
     fills became invisible.
     """
-    from engine.order_registry import FillRecord, OrderRecord
+    from core_brain.order_registry import FillRecord, OrderRecord
     reg = OrderRegistry(temp_db)
     # Earlier run: orders + fills. Lower max_ts so it's NOT the most-recent.
     earlier = "run-orphan"
@@ -346,7 +346,7 @@ def test_active_run_falls_back_to_all_when_most_recent_run_has_no_fills(temp_db)
 def test_active_run_sticks_to_most_recent_when_it_has_fills(temp_db):
     """When the most-recent run DOES have fills, do NOT fall back to "all" --
     the operator wants to see the current run in isolation, not pooled."""
-    from engine.order_registry import FillRecord, OrderRecord
+    from core_brain.order_registry import FillRecord, OrderRecord
     reg = OrderRegistry(temp_db)
     reg.log_account_mark(_mark(collateral_usd=101.0), ts=1000.0, run_id="run-old")
     reg.create_order(OrderRecord(
@@ -388,7 +388,7 @@ def _make_quote(*, run_id, ts, **over):
     Returns:
         A configured QuoteRecord.
     """
-    from engine.order_registry import QuoteRecord
+    from core_brain.order_registry import QuoteRecord
     base = dict(
         ts=ts, market_slug="slug", condition_id="cond-1",
         token_id="tok-1", side="BUY", price=0.5, size=5.0,
@@ -403,7 +403,7 @@ def test_order_only_markets_appear_in_by_market_for_drilldown(temp_db):
     no fill, no close, no market_events) must still appear in by_market so the
     operator can drill down on it. Before the fix, order-only markets were excluded
     from all_cids and thus never reached by_mkt."""
-    from engine.order_registry import OrderRecord
+    from core_brain.order_registry import OrderRecord
     reg = OrderRegistry(temp_db)
     # Market with order only, no other telemetry
     reg.create_order(OrderRecord(

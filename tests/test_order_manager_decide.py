@@ -4,9 +4,9 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
-from engine.order_manager import decide, _evaluate_single_market_quote
-from engine.market_feed import GraduatedMarket
-from engine.markets import LiveMarket
+from core_brain.order_manager import decide, _evaluate_single_market_quote
+from core_brain.market_feed import GraduatedMarket
+from core_brain.markets import LiveMarket
 
 
 @pytest.fixture
@@ -40,12 +40,12 @@ def mock_books():
 def frozen_feed(tmp_path, monkeypatch):
     """Two graduated markets, frozen.
 
-    `run/markets.json` is rewritten by the live ranker every cycle: row count
+    `runtime/markets.json` is rewritten by the live ranker every cycle: row count
     and ordering both move under the suite. Pointing these tests at the real
     file made them pass when written and fail minutes later. The feed's own
     parser still runs -- only the bytes are pinned.
     """
-    from engine import market_feed
+    from core_brain import market_feed
 
     row = {
         "source": "spread", "spread": 0.01, "eligible": True, "reject_reason": "",
@@ -70,8 +70,8 @@ def test_decide_single_market_with_mocked_network(
     mock_pinned_market, mock_books, tmp_path, frozen_feed
 ):
     up_book, down_book = mock_books
-    with patch("engine.markets.fetch_pinned_market", return_value=mock_pinned_market), \
-         patch("engine.markets.full_book", side_effect=[up_book, down_book]):
+    with patch("core_brain.markets.fetch_pinned_market", return_value=mock_pinned_market), \
+         patch("core_brain.markets.full_book", side_effect=[up_book, down_book]):
 
         results = decide(target="0", db_path=tmp_path / "live.db")
         assert len(results) == 1
@@ -85,8 +85,8 @@ def test_decide_all_graduated_markets_mocked(
     mock_pinned_market, mock_books, tmp_path, frozen_feed
 ):
     up_book, down_book = mock_books
-    with patch("engine.markets.fetch_pinned_market", return_value=mock_pinned_market), \
-         patch("engine.markets.full_book", return_value=up_book):
+    with patch("core_brain.markets.fetch_pinned_market", return_value=mock_pinned_market), \
+         patch("core_brain.markets.full_book", return_value=up_book):
 
         results = decide(all_graduated=True, db_path=tmp_path / "live.db")
         assert len(results) == 2

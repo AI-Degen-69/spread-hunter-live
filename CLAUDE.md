@@ -4,7 +4,7 @@
 
 ## Before you touch anything
 
-This repo places real orders with real money. `python -m engine.order_manager` is LIVE by
+This repo places real orders with real money. `python -m core_brain.order_manager` is LIVE by
 default — every subcommand reaches the venue unless you pass `--no-live`.
 
 - **Opening commands are the operator's to run.** `quote`, `complete`, the Trader loop,
@@ -41,7 +41,7 @@ is a booked loss on an instrument that pays exactly $1.00.
 Full set in `.claude/skills/spread-hunter-live/SKILL.md`. The short version:
 
 - Conventional commits, imperative: `fix(engine): size pair completion against the asks ladder`.
-- Absolute imports rooted at the repo (`from engine.order_registry import OrderRegistry`).
+- Absolute imports rooted at the repo (`from core_brain.order_registry import OrderRegistry`).
   No relative imports, no wildcards.
 - Narrow `except` clauses only. A bare `except Exception: pass` in an execution path
   hides money-losing state.
@@ -51,5 +51,5 @@ Full set in `.claude/skills/spread-hunter-live/SKILL.md`. The short version:
 ## One name per concept
 
 Match the code and the dashboard: **single buy** (not naked leg / one-sided / unhedged),
-**pair cost**, **merge** as the exit, **graduated** for the markets in `run/markets.json`.
+**pair cost**, **merge** as the exit, **graduated** for the markets in `runtime/markets.json`.
 Full rename table: the Glossary section of AGENTS.md.

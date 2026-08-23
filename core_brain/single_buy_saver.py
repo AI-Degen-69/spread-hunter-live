@@ -44,7 +44,7 @@ import urllib.error
 import urllib.request
 from typing import Optional
 
-from engine.order_registry import CloseRecord, OrderRegistry, SIZE_EPS
+from core_brain.order_registry import CloseRecord, OrderRegistry, SIZE_EPS
 
 DATA_API_BASE = "https://data-api.polymarket.com"
 

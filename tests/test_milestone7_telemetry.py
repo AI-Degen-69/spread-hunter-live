@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 import pytest
 
-from engine.order_registry import (
+from core_brain.order_registry import (
     OrderRegistry,
     OrderRecord,
     FillRecord,
@@ -24,9 +24,9 @@ from engine.order_registry import (
     set_run_id,
     _reconcile_pass,
 )
-from engine.markout import sample_pending_markouts, MARKOUT_HORIZONS
-from engine.kpi import report as generate_kpi_report
-from engine.order_manager import decide
+from core_brain.markout import sample_pending_markouts, MARKOUT_HORIZONS
+from core_brain.kpi import report as generate_kpi_report
+from core_brain.order_manager import decide
 
 
 class DummyClobClient:
@@ -345,7 +345,7 @@ def test_markout_samples_a_buy_side_row_by_token(tmp_path, monkeypatch):
     The row now carries the token it filled on, and the leg is resolved from that.
     """
     import types
-    import engine.markets as markets_mod
+    import core_brain.markets as markets_mod
 
     reg = OrderRegistry(tmp_path / "test_markout_leg.db")
     t_now = time.time()
@@ -386,7 +386,7 @@ def test_markout_samples_a_buy_side_row_by_token(tmp_path, monkeypatch):
 
 def test_markout_leg_resolution_rejects_a_foreign_token(tmp_path):
     """A token belonging to neither leg leaves the markout unsampled, not mis-sided."""
-    from engine.markout import _resolve_leg
+    from core_brain.markout import _resolve_leg
 
     mids = {"UP": 0.62, "DOWN": 0.36, "_up_token": "tok_up", "_down_token": "tok_down"}
     assert _resolve_leg("tok_up", mids, "BUY") == "UP"
@@ -404,7 +404,7 @@ def test_markout_leg_resolution_rejects_a_foreign_token(tmp_path):
 def test_latency_ms_persisted_by_log_quote(tmp_path):
     """Fleet log_quote with latency_ms stores the value, not NULL."""
     db_file = tmp_path / "test_latency.db"
-    from engine.order_registry import QuoteRecord
+    from core_brain.order_registry import QuoteRecord
     reg = OrderRegistry(db_file)
     reg.log_quote(QuoteRecord(
         ts=1000.0, market_slug="test-slug", condition_id="test-cid",
@@ -419,8 +419,8 @@ def test_latency_ms_persisted_by_log_quote(tmp_path):
 
 def test_run_id_lock_file_shared_across_processes(tmp_path, monkeypatch):
     """First import writes .current_run_id; second import reuses it."""
-    from engine import order_registry as reg_mod
-    lock_dir = tmp_path / "run"
+    from core_brain import order_registry as reg_mod
+    lock_dir = tmp_path / "runtime"
     monkeypatch.setattr(reg_mod, "LIVE_ROOT", tmp_path)
     monkeypatch.delenv("SH_RUN_ID", raising=False)
     monkeypatch.setattr(reg_mod, "_CURRENT_RUN_ID", None)
@@ -435,7 +435,7 @@ def test_run_id_lock_file_shared_across_processes(tmp_path, monkeypatch):
 
 def test_sh_run_id_env_overrides_lock_file(tmp_path, monkeypatch):
     """SH_RUN_ID wins when set, no lock file read needed."""
-    from engine import order_registry as reg_mod
+    from core_brain import order_registry as reg_mod
     monkeypatch.setenv("SH_RUN_ID", "env-override-123")
     monkeypatch.setattr(reg_mod, "_CURRENT_RUN_ID", None)
     rid = reg_mod._resolve_run_id()

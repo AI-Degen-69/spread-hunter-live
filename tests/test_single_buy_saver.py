@@ -16,10 +16,10 @@ from pathlib import Path
 from unittest.mock import MagicMock
 import pytest
 
-from engine.order_registry import (
+from core_brain.order_registry import (
     OrderRegistry, OrderRecord, FillRecord, QuoteRecord,
 )
-from engine import single_buy_saver as lp
+from core_brain import single_buy_saver as lp
 
 
 MAX_PAIR_COST = 0.995
@@ -735,7 +735,7 @@ def test_route_to_merge_does_not_leave_the_condition_blocked(
     marked `submitted`, `_check_idempotency_guard` would then refuse that merge
     until --force -- a guard blocking the recovery it just recommended.
     """
-    from engine import order_manager as live_exec
+    from core_brain import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     monkeypatch.setattr(live_exec, "client", lambda *a, **k: None)
@@ -748,7 +748,7 @@ def test_route_to_merge_does_not_leave_the_condition_blocked(
                 "condition_id": COND, "cancelled": [light.order_id], "size": 0.0}
 
     monkeypatch.setattr(live_exec, "exit_naked_leg", fake_exit, raising=False)
-    monkeypatch.setattr("engine.single_buy_saver.exit_naked_leg", fake_exit)
+    monkeypatch.setattr("core_brain.single_buy_saver.exit_naked_leg", fake_exit)
 
     live_exec.exit_pair(pair_id, live=True, db_path=registry.db_path,
                         skip_positions_check=True)
@@ -760,7 +760,7 @@ def test_route_to_merge_does_not_leave_the_condition_blocked(
 def test_a_real_exit_does_hold_the_condition(registry: OrderRegistry, tmp_path,
                                              monkeypatch):
     """The mirror: a sell that actually went out must block a second one."""
-    from engine import order_manager as live_exec
+    from core_brain import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     monkeypatch.setattr(live_exec, "client", lambda *a, **k: None)
@@ -771,7 +771,7 @@ def test_a_real_exit_does_hold_the_condition(registry: OrderRegistry, tmp_path,
         return {"action": "exited", "pair_id": pair_id, "condition_id": COND,
                 "size": 10.0, "cancelled": []}
 
-    monkeypatch.setattr("engine.single_buy_saver.exit_naked_leg", fake_exit)
+    monkeypatch.setattr("core_brain.single_buy_saver.exit_naked_leg", fake_exit)
 
     live_exec.exit_pair(pair_id, live=True, db_path=registry.db_path,
                         skip_positions_check=True)
@@ -785,12 +785,12 @@ def test_complete_pair_cmd_runs_end_to_end_and_holds_after_a_cross(
 ):
     """The Stage 4 command has its own config load, audit row and result handling.
 
-    It carried the same `from engine.config import Config` failure as the exit
+    It carried the same `from core_brain.config import Config` failure as the exit
     and was fixed alongside it, but the round-four tests only drove `exit_pair`.
     Fixing one entry point and testing the other is how that defect survived
     thirty-seven passing tests in the first place.
     """
-    from engine import order_manager as live_exec
+    from core_brain import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     monkeypatch.setattr(live_exec, "client", lambda *a, **k: None)
@@ -804,7 +804,7 @@ def test_complete_pair_cmd_runs_end_to_end_and_holds_after_a_cross(
         return {"action": "completed", "pair_id": pair_id, "condition_id": COND,
                 "size": 10.0, "notional": 3.0}
 
-    monkeypatch.setattr("engine.single_buy_saver.complete_pair", fake_complete)
+    monkeypatch.setattr("core_brain.single_buy_saver.complete_pair", fake_complete)
 
     live_exec.complete_pair_cmd(pair_id, live=True, db_path=registry.db_path,
                                 skip_positions_check=True)
@@ -818,7 +818,7 @@ def test_complete_pair_cmd_does_not_hold_the_condition_when_nothing_crossed(
     registry: OrderRegistry, tmp_path, monkeypatch
 ):
     """`balanced` sends no BUY, so it must not block a later merge or completion."""
-    from engine import order_manager as live_exec
+    from core_brain import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     monkeypatch.setattr(live_exec, "client", lambda *a, **k: None)
@@ -829,7 +829,7 @@ def test_complete_pair_cmd_does_not_hold_the_condition_when_nothing_crossed(
         return {"action": "balanced", "pair_id": pair_id, "condition_id": COND,
                 "size": 0.0}
 
-    monkeypatch.setattr("engine.single_buy_saver.complete_pair", fake_complete)
+    monkeypatch.setattr("core_brain.single_buy_saver.complete_pair", fake_complete)
 
     live_exec.complete_pair_cmd(pair_id, live=True, db_path=registry.db_path,
                                 skip_positions_check=True)
@@ -844,7 +844,7 @@ def test_an_unknown_pair_id_refuses_cleanly_on_both_commands(tmp_path, monkeypat
     before either command's try block, and the completion path does not
     otherwise catch the exit path's exception type.
     """
-    from engine import order_manager as live_exec
+    from core_brain import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     monkeypatch.setattr(live_exec, "client", lambda *a, **k: None)
@@ -1080,7 +1080,7 @@ def test_quote_writes_both_legs_to_the_registry_under_one_pair_id(
     """Without this the poll loop has nothing to reconcile and exit/complete
     have no pair_id, so the two legs rest at the venue with real money and
     nothing tracking them."""
-    from engine import order_manager as live_exec
+    from core_brain import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     db = tmp_path / "live.db"
@@ -1092,7 +1092,7 @@ def test_quote_writes_both_legs_to_the_registry_under_one_pair_id(
         tick_size = "0.01"
         neg_risk = False
 
-    monkeypatch.setattr("engine.markets.fetch_pinned_market",
+    monkeypatch.setattr("core_brain.markets.fetch_pinned_market",
                         lambda cid, require_rewards=True: Market())
 
     posted = []
@@ -1144,7 +1144,7 @@ def test_quote_leaves_the_row_pending_when_the_venue_returns_no_id(
     Guessing an id would bind our row to somebody else's order; `pending` is
     what reconcile's orphan adoption is built to claim.
     """
-    from engine import order_manager as live_exec
+    from core_brain import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     db = tmp_path / "live.db"
@@ -1156,7 +1156,7 @@ def test_quote_leaves_the_row_pending_when_the_venue_returns_no_id(
         tick_size = "0.01"
         neg_risk = False
 
-    monkeypatch.setattr("engine.markets.fetch_pinned_market",
+    monkeypatch.setattr("core_brain.markets.fetch_pinned_market",
                         lambda cid, require_rewards=True: Market())
 
     class Client:
@@ -1182,7 +1182,7 @@ def test_quote_leaves_the_row_pending_when_the_venue_returns_no_id(
 
 
 def test_venue_order_id_accepts_the_spellings_and_refuses_to_guess():
-    from engine import order_manager as live_exec
+    from core_brain import order_manager as live_exec
 
     assert live_exec.venue_order_id({"orderID": "a"}) == "a"
     assert live_exec.venue_order_id({"orderId": "b"}) == "b"
@@ -1202,7 +1202,7 @@ def test_quote_says_why_a_market_was_rejected(monkeypatch, tmp_path):
     exactly two tokens -- and the message must say so rather than sending the
     operator hunting for a typo in a condition_id that is perfectly correct.
     """
-    from engine import order_manager as live_exec
+    from core_brain import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
 
@@ -1221,14 +1221,14 @@ def test_quote_says_why_a_market_was_rejected(monkeypatch, tmp_path):
         seen["require_rewards"] = require_rewards
         return None if require_rewards else Market()
 
-    monkeypatch.setattr("engine.markets.fetch_pinned_market", unfunded)
+    monkeypatch.setattr("core_brain.markets.fetch_pinned_market", unfunded)
     live_exec.quote(COND, price=0.48, size=5.0, live=False,
                     db_path=tmp_path / "live.db")
     assert seen["require_rewards"] is False
 
     # Unusable for a reason that is not funding: refused, and the message names
     # the causes that are left rather than blaming the id.
-    monkeypatch.setattr("engine.markets.fetch_pinned_market",
+    monkeypatch.setattr("core_brain.markets.fetch_pinned_market",
                         lambda cid, require_rewards=True: None)
     with pytest.raises(SystemExit, match="no tradeable market") as exc_info:
         live_exec.quote(COND, price=0.48, size=5.0, live=False,

@@ -8,8 +8,10 @@ Invariants:
 from __future__ import annotations
 
 import os
+import re
 import socket
 import sqlite3
+import urllib.parse
 from pathlib import Path
 
 import pytest
@@ -95,20 +97,48 @@ class ProductionRegistryWriteError(BaseException):
     """
 
 
-def _is_production_registry(database) -> bool:
-    """True when `database` names the production registry file."""
+def _uri_to_path(raw: str) -> str | None:
+    """Resolve a SQLite `file:` URI to the path it actually opens.
+
+    Returns None when the URI does not name a local file. SQLite decodes
+    percent escapes and accepts a `localhost` authority, so comparing the raw
+    URI text lets `file:data/orders%2edb` and `file://localhost/<abs>` through
+    a guard that only strips the scheme.
+    """
+    parsed = urllib.parse.urlparse(raw)
+    # An empty or `localhost` authority means this machine; anything else is a
+    # host we cannot resolve to a local path.
+    if parsed.netloc not in ("", "localhost"):
+        return None
+    query = urllib.parse.parse_qs(parsed.query)
+    if "memory" in query.get("mode", ()):
+        return None
+    path = urllib.parse.unquote(parsed.path)
+    # `file:///C:/x` parses to `/C:/x`; drop the slash in front of the drive.
+    if re.match(r"^/[A-Za-z]:", path):
+        path = path[1:]
+    return path or None
+
+
+def _is_production_registry(database, uri: bool = False) -> bool:
+    """True when `database` names the production registry file.
+
+    `uri` mirrors sqlite3.connect's own flag: without it a leading `file:` is
+    part of the filename, not a scheme.
+    """
     if not isinstance(database, (str, os.PathLike)):
         return False
     raw = os.fspath(database)
     if not raw or raw == ":memory:":
         return False
-    if raw.startswith("file:"):
-        raw = raw[len("file:"):].split("?", 1)[0]
-        if not raw or raw == ":memory:":
+    if uri and raw.startswith("file:"):
+        resolved = _uri_to_path(raw)
+        if resolved is None:
             return False
+        raw = resolved
     try:
         return Path(raw).resolve() == DEFAULT_DB_PATH.resolve()
-    except OSError:
+    except (OSError, ValueError):
         return False
 
 
@@ -124,7 +154,10 @@ def block_production_registry(monkeypatch):
     orig_connect = sqlite3.connect
 
     def guarded_connect(database, *args, **kwargs):
-        if _is_production_registry(database):
+        # `uri` is the 8th positional parameter of sqlite3.connect, so args[6]
+        # once `database` is peeled off.
+        uri = args[6] if len(args) >= 7 else kwargs.get("uri", False)
+        if _is_production_registry(database, uri=bool(uri)):
             raise ProductionRegistryWriteError(
                 f"test opened the production registry {DEFAULT_DB_PATH}; "
                 "pass an explicit db_path under tmp_path instead"

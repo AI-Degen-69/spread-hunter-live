@@ -20,6 +20,50 @@ def test_direct_connect_to_production_registry_is_blocked():
         sqlite3.connect(str(DEFAULT_DB_PATH))
 
 
+# SQLite decodes percent escapes and accepts a `localhost` authority, so a
+# guard that only strips the `file:` scheme lets every one of these through
+# while they all open the real registry.
+BYPASS_URIS = [
+    "file:data/orders.db",
+    "file:data/orders.db?mode=ro",
+    "file:data/orders%2edb",
+    "file:data%2Forders.db",
+    "file:///" + str(DEFAULT_DB_PATH).replace("\\", "/"),
+    "file://localhost/" + str(DEFAULT_DB_PATH).replace("\\", "/"),
+]
+
+
+@pytest.mark.parametrize("uri", BYPASS_URIS)
+def test_uri_forms_of_the_production_registry_are_blocked(uri):
+    with pytest.raises(BaseException, match="production registry"):
+        sqlite3.connect(uri, uri=True)
+
+
+def test_file_prefix_without_uri_flag_is_a_literal_filename(tmp_path, monkeypatch):
+    """Without `uri=True`, a leading `file:` is part of the name, not a scheme.
+
+    Blocking it anyway would be a false positive, so the guard has to read the
+    same flag sqlite3.connect does. Connecting without the guard firing is the
+    assertion; the name on disk is left to the platform, since a colon means
+    something different on NTFS.
+    """
+    monkeypatch.chdir(tmp_path)
+    # What is under test is that the guard stays quiet, not whether the
+    # platform can hold a file whose name contains a colon, so a plain
+    # OperationalError is an acceptable outcome here.
+    # ProductionRegistryWriteError is not: it derives from BaseException and
+    # sails straight through this except clause.
+    try:
+        sqlite3.connect("file:data/orders.db").close()
+    except sqlite3.OperationalError:
+        pass
+
+
+def test_shared_memory_uri_still_connects():
+    with sqlite3.connect("file:guardcheck?mode=memory&cache=shared", uri=True) as conn:
+        assert conn.execute("SELECT 1").fetchone() == (1,)
+
+
 def test_temporary_database_still_connects(tmp_path):
     db = tmp_path / "live.db"
     with sqlite3.connect(str(db)) as conn:

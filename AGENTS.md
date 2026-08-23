@@ -45,6 +45,32 @@ Operator-facing commands are PowerShell; sequence with `;`, never `&&`.
 the change, and a **How to verify** block written for the operator. Report the output, not
 the impression. Rules and examples: [docs/agents/verifying.md](docs/agents/verifying.md).
 
+## Pushing and merging
+
+Pushes and merges reach GitHub and cannot be undone from here. These four rules are
+here, rather than only in the linked file, because reading that file *partway* is how
+they get missed. Full rules: [docs/agents/git-workflow.md](docs/agents/git-workflow.md).
+
+1. **One push per review round.** Batch every accepted fix into one commit and push
+   once. Each push starts its own incremental review.
+2. **One summary comment per round** — what you changed, what you declined, why. The
+   `@coderabbitai` handle must not appear in it. Post `@coderabbitai resolve` as a
+   separate comment. Never ask for a review; they fire on their own.
+3. **A fourth automatic review means stop, not grind.** Decline the rest in the summary
+   and say so.
+4. **Read the full diff and check the stack before merging.** A stacked merge can carry
+   another PR onto `main` with it. Anything touching order sizing, fill attribution,
+   risk limits, the merge path or live execution waits for operator sign-off, however
+   green the checks are.
+
+A `PreToolUse` hook (`scripts/hooks/git_workflow_guard.py`) puts these rules at the
+command. It **reminds** on rule 1, printing the round discipline before a push, and
+**blocks** on rules 3 and 4: a push once the PR has had three automatic reviews, and a
+merge of any PR touching `core_brain/`, `scoring/` or `dashboard/server.py` until the
+operator signs off. Record sign-off with
+`python scripts/hooks/git_workflow_guard.py --approve <pr>`; it is bound to the head
+commit and lapses on the next push.
+
 ## Reference
 
 | Read this | When |
@@ -55,7 +81,7 @@ the impression. Rules and examples: [docs/agents/verifying.md](docs/agents/verif
 | [docs/agents/glossary.md](docs/agents/glossary.md) | Naming anything in code, commits, issues or dashboard copy |
 | [docs/agents/strategy.md](docs/agents/strategy.md) | Changing quoting, sizing, market selection or pricing mode |
 | [docs/agents/python-conventions.md](docs/agents/python-conventions.md) | Writing or reviewing Python in this repo |
-| [docs/agents/git-workflow.md](docs/agents/git-workflow.md) | Branching, committing, opening a PR, CodeRabbit review |
+| [docs/agents/git-workflow.md](docs/agents/git-workflow.md) | **In full, before your first push to any branch.** Branching, committing, opening a PR, CodeRabbit review, merging |
 | [docs/agents/issue-tracker.md](docs/agents/issue-tracker.md) | Working GitHub issues via `gh` |
 | [docs/agents/triage-labels.md](docs/agents/triage-labels.md) | Labelling an issue |
 | [docs/agents/domain.md](docs/agents/domain.md) | `CONTEXT.md` and ADR conventions |

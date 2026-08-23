@@ -493,15 +493,18 @@ def test_page_html_contains_status_bar_and_bot_buttons():
 
 
 def test_system_status_endpoint(client):
-    """GET /api/system/status returns 4 sub-services (filter, query, decide, dash), and bot state."""
+    """GET /api/system/status returns exactly 4 sub-services, and bot state.
+
+    The key set is compared exactly rather than key by key. The rename replaced
+    `screener`/`engine`/`fleet` with `filter`/`query`/`decide`, and a response
+    still carrying one of the legacy keys passes a presence-only check while
+    the dashboard renders a service that no longer runs.
+    """
     res = client.get("/api/system/status")
     assert res.status_code == 200
     data = res.json()
     assert "services" in data
-    assert "filter" in data["services"]
-    assert "query" in data["services"]
-    assert "decide" in data["services"]
-    assert "dash" in data["services"]
+    assert set(data["services"]) == {"filter", "query", "decide", "dash"}
     assert data["services"]["dash"]["running"] is True
     assert "bot_state" in data
 

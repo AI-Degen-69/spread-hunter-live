@@ -17,7 +17,7 @@ Detection is pure and testable; the loop only calls it, dedupes, and alerts
 (console, `runtime/global_stop_loss_alerts.log`, and a `guardrail_alert` ring event so the
 dashboard telemetry sees it).
 
-Run:  cd live && python scripts/global_stop_loss.py [--interval 5] [--once]
+Run:  python scripts/global_stop_loss.py [--interval 5] [--once]   (from the repo root)
 """
 from __future__ import annotations
 

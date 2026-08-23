@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+
+# Testing and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Logs and runtime artifacts
+*.log
+run/*.db-wal
+run/*.db-shm
+run/*.tmp.*
+run/cycle_events.jsonl.tmp.*
+run/dash_nohup.log
+run/fleet_nohup.log
+run/poll_nohup.log
+run/guardrail_watch.log
+run/guardrail_alerts.log
+run/live_events.log
+
+# Local runtime state -- never publish: real order/fill data, heartbeats,
+# universe snapshots, process registries (public repo)
+run/*.db
+run/archive/
+run/*.json
+run/*.jsonl
+run/.current_run_id
+
+# Session tooling
+.freebuff/
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

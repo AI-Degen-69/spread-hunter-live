@@ -58,7 +58,7 @@ that import from the filter modules; new work targets the filter names.
 ### Pricing mode: spread_capture (formerly "rewards")
 
 `config.objective` defaults to the string `"spread_capture"` (formerly `"rewards"`) and
-`main_spread_hunter_loop._market_cfg` sets it on every market. It selects
+`trader_loop._market_cfg` sets it on every market. It selects
 `quotes._decide_quotes_from_mid`, which rests both legs at `mid - offset`. Because
 `mid_UP + mid_DOWN ≈ 1.00`, that construction assembles the pair at `≈ 1.00 - 2*offset` —
 precisely how a sub-$1.00 pair gets built. The mechanism is correct; "rewards" was a historical label.
@@ -159,8 +159,8 @@ python -m pytest -q
 ## Safety Rails
 
 1. **LIVE is the default:** This is the real-money execution repo. Every subcommand reaches the venue by default. Use `--no-live` for dry-run preview.
-2. **Closing commands are pre-approved:** `exit`, `complete`, `merge`, `redeem`, `cancel`, `cancel-all` reduce exposure.
-3. **Opening commands require explicit supervision:** `quote` and the Trader loop rest real funds. Propose the command; the operator runs it.
+2. **Closing commands are pre-approved:** `exit`, `complete`, `merge`, `redeem`, `cancel`, `cancel-market`, `cancel-all` reduce exposure. Cancelling pulls resting orders only — a filled leg still needs `complete` then `merge`, or `exit`.
+3. **Opening commands require explicit supervision:** `quote`, the Trader loop, and the dashboard's **START** button all rest real funds — START launches `engine.trader_loop --live`, so a click on the dashboard is a live order path like any command. Propose it; the operator runs it.
 4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (`engine/config.py`).
 5. **`data/orders.db` is production state.** Read it; never rewrite or delete it.
 

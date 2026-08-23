@@ -137,6 +137,29 @@ function Format-Uptime {
     return ("{0}s" -f [int]$el.TotalSeconds)
 }
 
+function Format-AgeSec {
+    <# Convert raw seconds into a compact human-readable string:
+       ≥ 1 day  → "2d 3h"    ≥ 1 hour → "4h 21m"
+       ≥ 1 min  → "6m 12s"   < 1 min  → "42s"  #>
+    param([int]$Seconds)
+    if ($Seconds -ge 86400) {
+        $d = [math]::Floor($Seconds / 86400)
+        $h = [math]::Floor(($Seconds % 86400) / 3600)
+        return "{0}d {1}h" -f $d, $h
+    }
+    if ($Seconds -ge 3600) {
+        $h = [math]::Floor($Seconds / 3600)
+        $m = [math]::Floor(($Seconds % 3600) / 60)
+        return "{0}h {1}m" -f $h, $m
+    }
+    if ($Seconds -ge 60) {
+        $m = [math]::Floor($Seconds / 60)
+        $s = $Seconds % 60
+        return "{0}m {1}s" -f $m, $s
+    }
+    return "{0}s" -f $Seconds
+}
+
 # ── Dashboard process ownership (run/live-dash.pids.json) ──
 function Get-DashInstance {
     <# The recorded dashboard process that is STILL the one we started (start-ticks checked). #>
@@ -606,12 +629,12 @@ function Show-Status {
         if ($gh.running) {
             Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "ON" -StatusStyle "Success"
             Write-ProcessRow -Label "Watchdog (guardrail)" -Running $true -PidVal $gh.pid -Path $StackPaths["guardrail"]
-            Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0}s old" -f [int]$gh.age_s)
+            Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec ([int]$gh.age_s)))
             Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic ("{0} alert(s)" -f $gh.alerts_total)
         } else {
             Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "OFF" -StatusStyle "Error"
             Write-ProcessRow -Label "Watchdog (guardrail)" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.guardrail_watch"
-            Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0}s old" -f [int]$gh.age_s)
+            Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec ([int]$gh.age_s)))
             Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic ("{0} alert(s)" -f $gh.alerts_total)
         }
     } elseif (Test-Path $HbFile) {
@@ -621,12 +644,12 @@ function Show-Status {
             if ($null -ne $age -and $age -le 30) {
                 Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "ON" -StatusStyle "Success"
                 Write-ProcessRow -Label "Watchdog (guardrail)" -Running $true -PidVal $hb.pid -Path $StackPaths["guardrail"]
-                Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0}s old" -f $age)
+                Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec $age))
                 Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic "0 alerts"
             } else {
                 Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "OFF" -StatusStyle "Error"
                 Write-ProcessRow -Label "Watchdog (guardrail)" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.guardrail_watch"
-                Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0}s old" -f $age)
+                Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "run/guardrail_watch_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec $age))
                 Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "run/guardrail_alerts.log" -Dynamic "0 alerts"
             }
         } catch {
@@ -652,7 +675,7 @@ function Show-Status {
 function Show-ScreenerAndFeed {
     $rerank = Join-Path $ProjectPath "scripts\filter_loop.py"
     $ranker = Join-Path $ProjectPath "scripts\filter_markets.py"
-    $strategyCfg = Join-Path $ProjectPath "strategy\config.py"
+    $strategyCfg = Join-Path $ProjectPath "scoring\config.py"
     $modulesOk = ((Test-Path $rerank) -and (Test-Path $ranker) -and (Test-Path $strategyCfg))
 
     $feed = Join-Path $ProjectPath "run\markets.json"
@@ -672,14 +695,14 @@ function Show-ScreenerAndFeed {
     Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status $hdrStatus
 
     $stRerank = if (Test-Path $rerank) { "FOUND" } else { "MISSING" }
-    Write-FileRow -Label "Filter loop" -Status $stRerank -Path "scripts/filter_loop.py" -Dynamic "10m cadence"
+    Write-FileRow -Label "Filter loop" -Status $stRerank -Path "scripts/filter_loop.py" -Dynamic "runs every 10 min"
 
     $stRanker = if (Test-Path $ranker) { "FOUND" } else { "MISSING" }
-    Write-FileRow -Label "Filter engine" -Status $stRanker -Path "scripts/filter_markets.py" -Dynamic "scorer"
+    Write-FileRow -Label "Filter engine" -Status $stRanker -Path "scripts/filter_markets.py" -Dynamic "fetch & filter"
 
     $feedDetail = if (-not $feedExists) { "Run: python -m scripts.filter_loop" }
-                  elseif ($feedStatus -eq "STALE") { "{0} market(s) · {1}s old · Run: python -m scripts.filter_loop" -f $count, $ageSec }
-                  else { "{0} market(s) · {1}s old" -f $count, $ageSec }
+                  elseif ($feedStatus -eq "STALE") { "{0} market(s) · {1} old · Run: python -m scripts.filter_loop" -f $count, (Format-AgeSec $ageSec) }
+                  else { "{0} market(s) · {1} old" -f $count, (Format-AgeSec $ageSec) }
     Write-FileRow -Label "Universe feed" -Status $feedStatus -Path "run/markets.json" -Dynamic $feedDetail
 }
 

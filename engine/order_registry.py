@@ -19,7 +19,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional
@@ -1680,7 +1680,7 @@ def inventory_from_registry(
     if not db.is_file():
         return inv
 
-    with get_connection(db) as conn:
+    with closing(get_connection(db)) as conn:
         # A `venue_sync` close (the dashboard's Sync) means the venue reports
         # this condition's position as CLOSED -- the account no longer holds
         # it. Its rows carry no leg encoding (both legs write `up_price`), so
@@ -1773,7 +1773,6 @@ def inventory_from_registry(
                 if up_c is not None and dn_c is not None:
                     inv.up_cost = max(0.0, inv.up_cost - float(up_c))
                     inv.down_cost = max(0.0, inv.down_cost - float(dn_c))
-        conn.close()
     return inv
 
 

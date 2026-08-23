@@ -48,3 +48,4 @@ run/.current_run_id
 Thumbs.db
 .vscode/
 .idea/
+.claude/settings.local.json

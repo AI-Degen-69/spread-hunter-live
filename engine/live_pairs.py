@@ -805,15 +805,14 @@ def complete_pair(
     # Size from what actually filled, never from the intended size. Completing
     # the intended size against a partial fill would open fresh exposure on the
     # other side -- the opposite of this path's purpose.
-    # Use depth only at prices acceptable for execution (at or below ask).
-    tick = _tick_size(book)
-    acceptable_depth = depth_at_or_above(book, ask) if hasattr(book, 'get') else ask_depth(book)
-    size = min(pair["naked"], acceptable_depth)
+    # `depth_at_or_above` reads the bids ladder. This path buys, so it must
+    # size against the asks ladder or it will order shares nobody is offering.
+    size = min(pair["naked"], ask_depth(book))
     if size < MIN_ORDER_SHARES:
         raise PairCompletionRefused(
             f"Completable size {size:.4f} is below the venue minimum of "
-            f"{MIN_ORDER_SHARES}. Naked {pair['naked']:.4f}, depth at/above ask "
-            f"{ask:.4f} is {acceptable_depth:.4f}."
+            f"{MIN_ORDER_SHARES}. Naked {pair['naked']:.4f}, ask depth "
+            f"{ask_depth(book):.4f}."
         )
 
     notional = size * ask

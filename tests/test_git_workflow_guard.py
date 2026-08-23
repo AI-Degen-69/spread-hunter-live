@@ -165,8 +165,73 @@ class TestPush:
         monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "16")
         monkeypatch.setattr(guard, "_reviews", lambda pr: [
             "APPROVED", "CHANGES_REQUESTED", "CHANGES_REQUESTED",
+            "CHANGES_REQUESTED",
         ])
         assert guard.check_push()[0] == 2
+
+    def test_a_trailing_approval_does_not_hide_the_rounds(self, guard, monkeypatch):
+        """The real pattern on PR #16: every round ended in an approval.
+
+        Exempting "latest review is an approval" meant the block could never
+        fire, because the reviewer posts CHANGES_REQUESTED and then APPROVED
+        for the same commit. Five rounds ran with the guard installed.
+        """
+        monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "16")
+        monkeypatch.setattr(guard, "_reviews", lambda pr: [
+            "CHANGES_REQUESTED",
+            "CHANGES_REQUESTED", "APPROVED",
+            "CHANGES_REQUESTED", "APPROVED",
+        ])
+        code, message = guard.check_push()
+        assert code == 2
+        assert "3 rounds" in message
+
+    def test_only_the_review_bot_counts(self, guard, monkeypatch):
+        """A person requesting changes is not an automatic review round."""
+        page = [
+            {"user": {"login": guard.REVIEW_BOT}, "state": "CHANGES_REQUESTED"},
+            {"user": {"login": "a-human"}, "state": "CHANGES_REQUESTED"},
+            {"user": {"login": guard.REVIEW_BOT}, "state": "APPROVED"},
+        ]
+        monkeypatch.setattr(guard, "_run", lambda args: json.dumps([page]))
+        assert guard._reviews("16") == ["CHANGES_REQUESTED", "APPROVED"]
+
+    def test_every_page_of_reviews_is_read(self, guard, monkeypatch):
+        """The endpoint returns 30 reviews a page.
+
+        A pull request past that count is exactly the runaway this guard is
+        for, so reading one page would undercount it into silence.
+        """
+        captured: list[list[str]] = []
+        bot = {"user": {"login": guard.REVIEW_BOT}, "state": "CHANGES_REQUESTED"}
+        pages = [[bot] * 30, [bot] * 5]
+
+        def fake_run(args):
+            captured.append(args)
+            return json.dumps(pages)
+
+        monkeypatch.setattr(guard, "_run", fake_run)
+        assert len(guard._reviews("16")) == 35
+        assert "--paginate" in captured[0]
+        # Without --slurp, --paginate emits one JSON value per page rather than
+        # a single array. The parse then fails and _reviews returns [], which
+        # reads as no rounds and silently disables the block.
+        assert "--slurp" in captured[0]
+        # gh rejects --slurp alongside --jq, so the filtering is done in Python.
+        assert "--jq" not in captured[0]
+
+    @pytest.mark.parametrize("payload", [
+        '{"not": "a list"}',
+        '[{"no": "user"}]',
+        '[[{"user": null, "state": "CHANGES_REQUESTED"}]]',
+        '[[{"user": {"login": "coderabbitai[bot]"}, "state": 5}]]',
+        '[["not a review object"]]',
+        '["a page that is not a list"]',
+    ])
+    def test_unexpected_review_payloads_count_as_no_rounds(self, guard,
+                                                           monkeypatch, payload):
+        monkeypatch.setattr(guard, "_run", lambda args: payload)
+        assert guard._reviews("16") == []
 
     def test_unreadable_review_states_do_not_block(self, guard, monkeypatch):
         monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "16")

@@ -36,8 +36,11 @@ from pathlib import Path
 # sign-off before merging however green the checks are.
 SIGN_OFF_PATHS = ("core_brain/", "scoring/", "dashboard/server.py")
 
-# A fourth automatic review means stop, not grind.
+# A fourth round of findings means stop, not grind.
 MAX_REVIEW_ROUNDS = 3
+
+# Only this account's reviews are the automatic ones the rule counts.
+REVIEW_BOT = "coderabbitai[bot]"
 
 DOC = "docs/agents/git-workflow.md"
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -176,14 +179,39 @@ def _open_pr_for_head() -> str | None:
 
 
 def _reviews(pr: str) -> list[str]:
-    """The review states on a pull request, oldest first."""
-    raw = _run(["gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews",
-                "--jq", "[.[].state] | @json"])
+    """States of the automatic reviews on a pull request, oldest first.
+
+    Only the review bot's own reviews. A human review is not a round, and
+    counting one would trip the runaway block on a pull request a person had
+    merely commented on.
+
+    `--paginate` matters here rather than being tidiness: the endpoint returns
+    30 reviews a page, and a pull request past that count is precisely the
+    runaway this guard exists to stop. Reading one page would undercount it
+    into silence. `--slurp` gives a list of page-lists and cannot be combined
+    with `--jq`, so the filtering happens below.
+    """
+    raw = _run(["gh", "api", "--paginate", "--slurp",
+                f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews"])
     try:
-        states = json.loads(raw.strip() or "[]")
+        pages = json.loads(raw.strip() or "[]")
     except json.JSONDecodeError:
         return []
-    return [s for s in states if isinstance(s, str)] if isinstance(states, list) else []
+    if not isinstance(pages, list):
+        return []
+
+    states: list[str] = []
+    for page in pages:
+        for review in page if isinstance(page, list) else []:
+            if not isinstance(review, dict):
+                continue
+            user = review.get("user")
+            if not isinstance(user, dict) or user.get("login") != REVIEW_BOT:
+                continue
+            state = review.get("state")
+            if isinstance(state, str):
+                states.append(state)
+    return states
 
 
 def _changed_paths(pr: str) -> list[str]:
@@ -250,21 +278,23 @@ def check_push() -> tuple[int, str]:
     pr = _open_pr_for_head()
     if pr is None:
         return 0, ""
-    states = _reviews(pr)
-    rounds = len(states)
-    # An approval is not a round of findings. Counting it toward the runaway
-    # threshold blocks the push that lands the fixes an approved review asked
-    # for, which is the opposite of what the stop condition is for.
-    if rounds >= MAX_REVIEW_ROUNDS and states[-1] != "APPROVED":
+    # Count rounds of findings, not review objects. The reviewer posts a
+    # CHANGES_REQUESTED and then an APPROVED for the same commit, so counting
+    # objects inflates the total, and exempting "latest is an approval" hides
+    # it completely -- the last review is an approval every time, and the block
+    # can never fire. Both mistakes shipped before this; see PR #16.
+    rounds = _reviews(pr).count("CHANGES_REQUESTED")
+    if rounds >= MAX_REVIEW_ROUNDS:
         return 2, (
-            f"BLOCKED: pull request #{pr} has had {rounds} automatic reviews. "
-            f"A fourth means stop, not grind ({DOC}, 'Stop condition').\n\n"
+            f"BLOCKED: pull request #{pr} has had {rounds} rounds of review "
+            f"findings. A fourth means stop, not grind ({DOC}, "
+            "'Stop condition').\n\n"
             "Decline the remaining minors in one summary comment and merge, or "
             "explain to the operator why another round is warranted and ask "
             "them to confirm this push.\n\n" + ROUND_RULES
         )
-    return 0, (f"Pull request #{pr} already has {rounds} automatic review(s).\n\n"
-               f"{ROUND_RULES}")
+    return 0, (f"Pull request #{pr} has had {rounds} round(s) of review "
+               f"findings.\n\n{ROUND_RULES}")
 
 
 def check_merge(pr: str | None) -> tuple[int, str]:

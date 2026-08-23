@@ -352,38 +352,39 @@ function Write-StackRow {
 }
 
 function Write-StackRows {
-    <# Bot state + starting capital + one aligned row per stack process. #>
+    <# Bot state count (X/3) + one aligned row per stack process. #>
     param(
-        [object[]]$Rows,
-        [string]$BotState,
-        [object]$Capital
+        [object[]]$Rows
     )
-    if ($BotState -eq "RUNNING") {
-        Write-StatusLine -Label "Bot state" -Status "RUNNING" -StatusStyle Success
+    $runningCount = @($Rows | Where-Object { $_.Running }).Count
+    $totalCount = $Rows.Count
+    if ($totalCount -eq 0) { $totalCount = 3 }
+
+    if ($runningCount -eq $totalCount) {
+        Write-StatusLine -Label "Bot state" -Status "RUNNING" -StatusStyle Success -Detail ("ALL RUNNING ({0}/{1})" -f $runningCount, $totalCount)
+    } elseif ($runningCount -gt 0) {
+        Write-StatusLine -Label "Bot state" -Status "PARTIAL" -StatusStyle Warning -Detail ("{0}/{1} processes running" -f $runningCount, $totalCount)
     } else {
-        Write-StatusLine -Label "Bot state" -Status "STOPPED" -StatusStyle Error
-    }
-    if ($null -ne $Capital) {
-        $capTxt = "{0:F2}" -f [double]$Capital
-        Write-StatusLine -Label "Starting capital" -Detail ("$" + $capTxt + " · snapshot at bot start")
+        Write-StatusLine -Label "Bot state" -Status "STOPPED" -StatusStyle Error -Detail ("0/{0} processes running" -f $totalCount)
     }
     foreach ($r in $Rows) { Write-StackRow -Name $r.Name -Running $r.Running -ProcId $r.Pid -Path $r.Path }
-    if ($Rows.Count -gt 0 -and @($Rows | Where-Object { $_.Running }).Count -eq 0) {
+    if ($Rows.Count -gt 0 -and $runningCount -eq 0 -and (Test-Path $ProcsFile)) {
         Write-StatusLine -Label "live_procs.json" -Status "STALE" -StatusStyle Warning -Detail "record exists but no process is alive"
     }
 }
 
 function Show-ServiceTable {
-    <# Render the /api/system/status payload: bot state + each stack service
+    <# Render the /api/system/status payload: bot state count + 3 stack services
     (dash excluded - it is reported separately in the DASHBOARD section). #>
     param($Status)
     $rows = @()
-    $rows += [pscustomobject]@{ Name = "Supervisor"; Running = [bool]$Status.supervisor.running; Pid = $Status.supervisor.pid; Path = $StackPaths["supervisor"] }
     foreach ($svc in @("screener", "engine", "fleet")) {
         $s = $Status.services.$svc
-        $rows += [pscustomobject]@{ Name = $s.name; Running = [bool]$s.running; Pid = $s.pid; Path = $StackPaths[$svc] }
+        if ($s) {
+            $rows += [pscustomobject]@{ Name = $s.name; Running = [bool]$s.running; Pid = $s.pid; Path = $StackPaths[$svc] }
+        }
     }
-    Write-StackRows -Rows $rows -BotState ([string]$Status.bot_state) -Capital $Status.starting_capital
+    Write-StackRows -Rows $rows
 }
 
 function Start-BotStack {
@@ -511,19 +512,17 @@ function Show-Status {
         if (Test-Path $ProcsFile) { try { $saved = Get-Content $ProcsFile -Raw | ConvertFrom-Json } catch {} }
         $rows = @()
         if ($saved) {
-            foreach ($name in @("supervisor", "screener", "engine", "fleet")) {
+            foreach ($name in @("screener", "engine", "fleet")) {
                 $info = $saved.$name
                 $running = [bool]($info -and $info.pid -and (Test-PidAlive -ProcessId $info.pid))
                 $label = @{
-                    supervisor = "Supervisor"
                     screener   = "Screener (rerank)"
-                    engine     = "Engine (sweep/poll)"
-                    fleet      = "Trader (decide/submit)"
+                    engine     = "Order Reconciler (poll)"
+                    fleet      = "Trader (loop)"
                 }[$name]
                 $rows += [pscustomobject]@{ Name = $label; Running = $running; Pid = $info.pid; Path = $StackPaths[$name] }
             }
-            $botState = if (@($rows | Where-Object { $_.Running }).Count -gt 0) { "RUNNING" } else { "STOPPED" }
-            Write-StackRows -Rows $rows -BotState $botState -Capital $saved.starting_account_value
+            Write-StackRows -Rows $rows
         } else {
             Write-StatusLine -Label "Bot stack" -Status "STOPPED" -StatusStyle Error -Detail "no run/live_procs.json on disk"
         }

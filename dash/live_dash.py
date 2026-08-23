@@ -469,14 +469,14 @@ def get_system_status() -> dict:
                 "pid": scr_pid if scr_running else None,
             },
             "engine": {
-                "name": "Engine (sweep/poll)",
+                "name": "Order Reconciler (poll)",
                 "running": eng_running,
                 "pid": eng_pid if eng_running else None,
                 "sweep_interval_sec": configured_sweep_interval,
                 "running_sweep_interval_sec": running_sweep_interval,
             },
             "fleet": {
-                "name": "Trader (decide/submit)",
+                "name": "Trader (loop)",
                 "running": fleet_running,
                 "pid": fleet_pid if fleet_running else None,
             },

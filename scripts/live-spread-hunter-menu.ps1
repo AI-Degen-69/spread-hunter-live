@@ -49,6 +49,14 @@ $StackPaths = @{
     dash       = "dash/live_dash.py"
 }
 
+$StackCmds = @{
+    screener   = "python -m scripts.rerank_loop"
+    engine     = "python -m engine.live_exec poll"
+    fleet      = "python -m engine.main_spread_hunter_loop"
+    guardrail  = "python -m scripts.guardrail_watch"
+    dash       = "python -m dash.live_dash --port 8799"
+}
+
 # ── Theme system (shared profile templates, self-contained fallback) ──
 # Dot-source the profile theme system (PowerShell 7 Theme folder) when installed
 # - the same Write-Profile* templates the sim checkout's scripts use. When it is
@@ -340,7 +348,8 @@ function Write-StackRow {
         [Parameter(Mandatory)][string]$Name,
         [Parameter(Mandatory)][bool]$Running,
         [object]$ProcId,
-        [Parameter(Mandatory)][string]$Path
+        [Parameter(Mandatory)][string]$Path,
+        [string]$RunCmd = ""
     )
     $word = if ($Running) { "RUNNING" } else { "STOPPED" }
     $cStatus = Get-ProfileColor -Name $(if ($Running) { "Success" } else { "Error" })
@@ -349,6 +358,10 @@ function Write-StackRow {
     Write-Host ("  {0,-9}" -f $word) -ForegroundColor $cStatus -NoNewline
     Write-Host ("  {0,-12}" -f $pidTxt) -ForegroundColor (Get-ProfileColor -Name Neutral) -NoNewline
     Write-Host ("  " + $Path) -ForegroundColor (Get-ProfileColor -Name Path)
+    if (-not $Running -and $RunCmd) {
+        Write-Host "       [i] Run: " -ForegroundColor (Get-ProfileColor -Name Info) -NoNewline
+        Write-Host $RunCmd -ForegroundColor (Get-ProfileColor -Name Command)
+    }
 }
 
 function Write-SectionHeader {
@@ -390,7 +403,9 @@ function Write-StackRows {
     } else {
         Write-SectionHeader -Number "2" -Title "BOT STACK" -Status ("STOPPED (0/{0})" -f $totalCount) -StatusStyle "Error"
     }
-    foreach ($r in $Rows) { Write-StackRow -Name $r.Name -Running $r.Running -ProcId $r.Pid -Path $r.Path }
+    foreach ($r in $Rows) {
+        Write-StackRow -Name $r.Name -Running $r.Running -ProcId $r.Pid -Path $r.Path -RunCmd $r.RunCmd
+    }
     if ($Rows.Count -gt 0 -and $runningCount -eq 0 -and (Test-Path $ProcsFile)) {
         Write-StatusLine -Label "live_procs.json" -Status "STALE" -StatusStyle Warning -Detail "record exists but no process is alive"
     }
@@ -404,7 +419,19 @@ function Show-ServiceTable {
     foreach ($svc in @("screener", "engine", "fleet")) {
         $s = $Status.services.$svc
         if ($s) {
-            $rows += [pscustomobject]@{ Name = $s.name; Running = [bool]$s.running; Pid = $s.pid; Path = $StackPaths[$svc] }
+            $label = @{
+                screener   = "Market Filter (loop)"
+                engine     = "Order Reconciler (poll)"
+                fleet      = "Trader (loop)"
+            }[$svc]
+            if (-not $label) { $label = $s.name }
+            $rows += [pscustomobject]@{
+                Name = $label
+                Running = [bool]$s.running
+                Pid = $s.pid
+                Path = $StackPaths[$svc]
+                RunCmd = $StackCmds[$svc]
+            }
         }
     }
     Write-StackRows -Rows $rows
@@ -522,6 +549,8 @@ function Show-Status {
         Write-StatusLine -Label "Dashboard URL" -Detail ("{0} · Run: python -m dash.live_dash --port {1}" -f $DashUrl, $LivePort) -DetailStyle Warning
         Write-StatusLine -Label "Filepath" -Detail $StackPaths["dash"] -DetailStyle Path
         Write-StatusLine -Label "PID file" -Detail "run/live-dash.pids.json" -DetailStyle Path
+        Write-Host "       [i] Run: " -ForegroundColor (Get-ProfileColor -Name Info) -NoNewline
+        Write-Host "python -m dash.live_dash --port $LivePort" -ForegroundColor (Get-ProfileColor -Name Command)
     }
 
     # ── 2 · BOT STACK (dashboard API when up, live_procs.json otherwise) ──
@@ -540,11 +569,17 @@ function Show-Status {
                 $info = $saved.$name
                 $running = [bool]($info -and $info.pid -and (Test-PidAlive -ProcessId $info.pid))
                 $label = @{
-                    screener   = "Screener (rerank)"
+                    screener   = "Market Filter (loop)"
                     engine     = "Order Reconciler (poll)"
                     fleet      = "Trader (loop)"
                 }[$name]
-                $rows += [pscustomobject]@{ Name = $label; Running = $running; Pid = $info.pid; Path = $StackPaths[$name] }
+                $rows += [pscustomobject]@{
+                    Name = $label
+                    Running = $running
+                    Pid = $info.pid
+                    Path = $StackPaths[$name]
+                    RunCmd = $StackCmds[$name]
+                }
             }
             Write-StackRows -Rows $rows
         } else {
@@ -566,6 +601,8 @@ function Show-Status {
         } else {
             Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "DOWN" -StatusStyle "Error"
             Write-StatusLine -Label "Heartbeat" -Detail ("heartbeat {0}s old · alerts {1}" -f [int]$gh.age_s, $gh.alerts_total) -DetailStyle Error
+            Write-Host "       [i] Run: " -ForegroundColor (Get-ProfileColor -Name Info) -NoNewline
+            Write-Host "python -m scripts.guardrail_watch" -ForegroundColor (Get-ProfileColor -Name Command)
         }
     } elseif (Test-Path $HbFile) {
         try {
@@ -578,19 +615,25 @@ function Show-Status {
             } else {
                 Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "DOWN" -StatusStyle "Error"
                 Write-StatusLine -Label "Heartbeat" -Detail ("heartbeat {0}s old" -f $age) -DetailStyle Error
+                Write-Host "       [i] Run: " -ForegroundColor (Get-ProfileColor -Name Info) -NoNewline
+                Write-Host "python -m scripts.guardrail_watch" -ForegroundColor (Get-ProfileColor -Name Command)
             }
         } catch {
             Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "DOWN" -StatusStyle "Error"
             Write-StatusLine -Label "Heartbeat" -Detail "unreadable heartbeat file" -DetailStyle Error
+            Write-Host "       [i] Run: " -ForegroundColor (Get-ProfileColor -Name Info) -NoNewline
+            Write-Host "python -m scripts.guardrail_watch" -ForegroundColor (Get-ProfileColor -Name Command)
         }
     } else {
         Write-SectionHeader -Number "3" -Title "GUARDRAIL WATCHDOG" -Status "DOWN" -StatusStyle "Error"
         Write-StatusLine -Label "Heartbeat" -Detail "no heartbeat file" -DetailStyle Error
+        Write-Host "       [i] Run: " -ForegroundColor (Get-ProfileColor -Name Info) -NoNewline
+        Write-Host "python -m scripts.guardrail_watch" -ForegroundColor (Get-ProfileColor -Name Command)
     }
     Write-StatusLine -Label "Heartbeat file" -Detail "run/guardrail_watch_heartbeat.json" -DetailStyle Path
     Write-StatusLine -Label "Alerts log" -Detail "run/guardrail_alerts.log" -DetailStyle Path
 
-    # ── 4 · SCREENER & UNIVERSE FEED (what the stack depends on) ──
+    # ── 4 · MARKET FILTER & UNIVERSE FEED (what the stack depends on) ──
     Show-ScreenerAndFeed
 
     # ── 5 · CHECKOUT IDENTITY (prove every launched module resolves inside THIS repo) ──
@@ -612,22 +655,22 @@ function Show-ScreenerAndFeed {
     }
 
     if (-not $modulesOk) {
-        Write-SectionHeader -Number "4" -Title "SCREENER & UNIVERSE FEED" -Status "MISSING" -StatusStyle "Error"
+        Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status "MISSING" -StatusStyle "Error"
     } elseif (-not $feedExists) {
-        Write-SectionHeader -Number "4" -Title "SCREENER & UNIVERSE FEED" -Status "NO FEED" -StatusStyle "Error"
+        Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status "NO FEED" -StatusStyle "Error"
     } elseif ($ageSec -gt 21600) {
-        Write-SectionHeader -Number "4" -Title "SCREENER & UNIVERSE FEED" -Status "STALE" -StatusStyle "Error"
+        Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status "STALE" -StatusStyle "Error"
     } elseif ($ageSec -gt 3600) {
-        Write-SectionHeader -Number "4" -Title "SCREENER & UNIVERSE FEED" -Status "AGING" -StatusStyle "Warning"
+        Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status "AGING" -StatusStyle "Warning"
     } else {
-        Write-SectionHeader -Number "4" -Title "SCREENER & UNIVERSE FEED" -Status "FRESH" -StatusStyle "Success"
+        Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status "FRESH" -StatusStyle "Success"
     }
 
     if ($modulesOk) {
-        Write-StatusLine -Label "Screener modules" -Status "OK" -StatusStyle Success `
+        Write-StatusLine -Label "Filter modules" -Status "OK" -StatusStyle Success `
             -Detail "scripts/rerank_loop.py · scripts/rank_markets.py · strategy/config.py" -DetailStyle Path
     } else {
-        Write-StatusLine -Label "Screener modules" -Status "MISSING" -StatusStyle Error `
+        Write-StatusLine -Label "Filter modules" -Status "MISSING" -StatusStyle Error `
             -Detail "dashboard start-bot would spawn a phantom process"
     }
 

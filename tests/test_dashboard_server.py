@@ -1273,9 +1273,12 @@ def test_html_has_screener_tab_button():
 
 
 def test_html_has_kanban_board_container():
-    """The HTML has the kanban board container."""
+    """The HTML has the kanban board container and carousel navigation arrows."""
     html = _read_static("index.html")
     assert 'kanban-board' in html
+    assert 'kanban-carousel-container' in html
+    assert 'kanban-nav-prev' in html
+    assert 'kanban-nav-next' in html
     assert 'screener-header' in html
     assert 'scan-state-pill' in html
     assert 'scan-snapshot-age' in html
@@ -1312,6 +1315,19 @@ def test_app_js_has_render_screener():
     assert 'No screener data yet' in app_js
     # Near-miss footer
     assert 'would_fund' in app_js or 'would_clear' in app_js
+    # Categorization and flow progression
+    assert 'categorizeGate' in app_js
+    assert 'stageFlow' in app_js
+    assert 'getStageHero' in app_js
+    assert 'kanban-bucket-hero' in app_js
+    assert 'passed-card' in app_js
+    assert 'card-metrics-grid' in app_js
+    # Carousel navigation
+    assert 'scrollKanban' in app_js
+    assert 'updateKanbanNavButtons' in app_js
+    assert 'initKanbanCarousel' in app_js
+    assert 'ArrowLeft' in app_js
+    assert 'ArrowRight' in app_js
     # 3-tab switching (tab-btn-3 is constructed dynamically)
     assert 'tab3' in app_js
     assert "'tab-btn-' + which" in app_js or 'tab-btn-1' in app_js
@@ -1320,13 +1336,20 @@ def test_app_js_has_render_screener():
 def test_styles_css_has_kanban_styles():
     """CSS has styles for the kanban board, buckets, cards, and badges."""
     css = _read_static("styles.css")
+    assert '.kanban-carousel-container' in css
     assert '.kanban-board' in css
+    assert '.kanban-nav-btn' in css
     assert '.kanban-bucket' in css
     assert '.kanban-bucket-header' in css
+    assert '.kanban-bucket-hero' in css
+    assert '.hero-param-label' in css
+    assert '.hero-critical-val' in css
     assert '.kanban-bucket-body' in css
     assert '.market-card' in css
+    assert '.passed-card' in css
     assert '.bucket-count-badge' in css
     assert '.kanban-empty' in css
+    assert '.kanban-header-flow' in css
     # Bucket color states
     assert '.kanban-bucket.passed' in css
     assert '.kanban-bucket.rejected' in css
@@ -1334,8 +1357,9 @@ def test_styles_css_has_kanban_styles():
     # Card elements
     assert '.card-title' in css or 'card-title' in css
     assert '.card-reason' in css or 'card-reason' in css
-    # Scroll snap for responsive
+    # Scroll snap and smooth scrolling for carousel
     assert 'scroll-snap' in css
+    assert 'scroll-behavior: smooth' in css
 
     # Event ticker translation styles
     assert '.ticker-translation' in css

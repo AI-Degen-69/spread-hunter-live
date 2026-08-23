@@ -72,6 +72,9 @@ function switchTab(which) {
   tab2.hidden = (which !== 2);
   tab3.hidden = (which !== 3);
   localStorage.setItem('sh-active-tab', String(which));
+  if (which === 3) {
+    setTimeout(updateKanbanNavButtons, 60);
+  }
 }
 
 tabBtns.forEach(b => {
@@ -746,20 +749,76 @@ function renderMarkets(kpi, state) {
 
 /* ── Render: Screener Kanban Board (Tab 3) ── */
 const BUCKET_DEFS = [
-  { key: 'raw', name: 'Raw Fetch', cls: 'raw' },
-  { key: 'identity', name: 'Identity Gate', cls: 'rejected' },
-  { key: 'volume', name: 'Volume Gate', cls: 'rejected' },
-  { key: 'depth', name: 'Depth Gate', cls: 'rejected' },
-  { key: 'spread', name: 'Spread Gate', cls: 'rejected' },
-  { key: 'horizon', name: 'Horizon Gate', cls: 'rejected' },
-  { key: 'passed', name: 'Passed (Quoting)', cls: 'passed' },
+  { key: 'raw', name: '1. Ingestion / Universe', cls: 'raw' },
+  { key: 'identity', name: '2. Identity Gate', cls: 'rejected' },
+  { key: 'volume', name: '3. Volume Gate', cls: 'rejected' },
+  { key: 'depth', name: '4. Depth Gate', cls: 'rejected' },
+  { key: 'spread', name: '5. Spread Gate', cls: 'rejected' },
+  { key: 'horizon', name: '6. Horizon & Yield Gate', cls: 'rejected' },
+  { key: 'passed', name: '7. Passed (Quoting)', cls: 'passed' },
 ];
+const STAGE_DEFS = BUCKET_DEFS;
 
 function fmtAge(sec) {
   if (sec === null || sec === undefined) return '--';
   if (sec < 60) return Math.round(sec) + 's ago';
   if (sec < 3600) return Math.floor(sec / 60) + 'm ago';
   return Math.floor(sec / 3600) + 'h ago';
+}
+
+function categorizeGate(cause) {
+  const c = (cause || '').toLowerCase();
+  if (c.includes('depth')) return 'depth';
+  if (c.includes('spread')) return 'spread';
+  if (c.includes('volume')) return 'volume';
+  if (c.includes('horizon')) return 'horizon';
+  if (c.includes('income') || c.includes('payout')) return 'horizon';
+  return 'identity';
+}
+
+function getStageHero(key, funnel) {
+  const volGate = funnel?.volume_gate_usd || 250000;
+  const depthGate = funnel?.depth_gate_usd || 1000;
+
+  switch (key) {
+    case 'raw':
+      return {
+        param: 'TEST: CANDIDATE DISCOVERY',
+        value: 'Sampling + Liquid Universe',
+      };
+    case 'identity':
+      return {
+        param: 'TEST: CONTRACT & KEYWORDS',
+        value: 'Binary · Mid [0.05, 0.95]',
+      };
+    case 'volume':
+      return {
+        param: 'TEST: 24H TRADING VOLUME',
+        value: `≥ $${Number(volGate).toLocaleString()} / 24h`,
+      };
+    case 'depth':
+      return {
+        param: 'TEST: TOP-3 BID DEPTH',
+        value: `≥ $${Number(depthGate).toLocaleString()} each (YES & NO)`,
+      };
+    case 'spread':
+      return {
+        param: 'TEST: MAX BOOK SPREAD',
+        value: '≤ 0.0600 (6.00%)',
+      };
+    case 'horizon':
+      return {
+        param: 'TEST: HORIZON & PAYOUT',
+        value: '≤ 30.0 days & ≥ $1.50/day',
+      };
+    case 'passed':
+      return {
+        param: 'TEST: PAIR MERGE ARBITRAGE',
+        value: 'Pair Cost ≤ $0.995 ➔ $1.00 USDC',
+      };
+    default:
+      return { param: 'GATE TEST', value: '--' };
+  }
 }
 
 function renderScreener(kpi, scanState) {
@@ -809,72 +868,289 @@ function renderScreener(kpi, scanState) {
     headerGates.style.display = 'block';
   }
 
-  // Build a map of rejection buckets by cause for quick lookup
-  const filterMap = {};
+  // Group rejections by canonical gate
+  const gateRejections = {
+    identity: { count: 0, examples: [], would_fund: 0, traps: 0 },
+    volume: { count: 0, examples: [], would_fund: 0, traps: 0 },
+    depth: { count: 0, examples: [], would_fund: 0, traps: 0 },
+    spread: { count: 0, examples: [], would_fund: 0, traps: 0 },
+    horizon: { count: 0, examples: [], would_fund: 0, traps: 0 },
+  };
+
   for (const f of (funnel.filters || [])) {
-    filterMap[f.cause] = f;
+    const g = categorizeGate(f.cause);
+    if (!gateRejections[g]) {
+      gateRejections[g] = { count: 0, examples: [], would_fund: 0, traps: 0 };
+    }
+    gateRejections[g].count += (f.n || 0);
+    if (f.examples && f.examples.length) {
+      gateRejections[g].examples.push(...f.examples);
+    }
+    gateRejections[g].would_fund += (f.would_fund || 0);
+    gateRejections[g].traps += (f.traps || 0);
   }
 
-  // Render the 7 buckets
+  const counts = funnel.counts || {};
+  const totalRaw = counts.scored || counts.attempted || funnel.raw_count || 0;
+
+  // Calculate sequential progression stage flow
+  let currentPool = totalRaw;
+  const stageFlow = {
+    raw: { in: totalRaw, out: totalRaw, dropped: 0 },
+  };
+
+  const gateOrder = ['identity', 'volume', 'depth', 'spread', 'horizon'];
+  for (const k of gateOrder) {
+    const dropped = gateRejections[k]?.count || 0;
+    const nextPool = Math.max(0, currentPool - dropped);
+    stageFlow[k] = { in: currentPool, out: nextPool, dropped: dropped };
+    currentPool = nextPool;
+  }
+
+  const graduatedList = funnel.graduated || [];
+  const eligibleList = funnel.final || [];
+  stageFlow.passed = { in: currentPool, out: graduatedList.length, dropped: 0 };
+
+  // Render the 7 stages
   board.innerHTML = '';
-  for (const def of BUCKET_DEFS) {
-    let count = 0;
+  for (const def of STAGE_DEFS) {
     let cardsHtml = '';
     let footerHtml = '';
+    let flowHtml = '';
+    let countBadge = '';
+    const hero = getStageHero(def.key, funnel);
 
     if (def.key === 'raw') {
-      count = funnel.raw_count || 0;
-      cardsHtml = `<div class="kanban-empty">${count} markets fetched from venue</div>`;
-    } else if (def.key === 'passed') {
-      const graduated = funnel.graduated || [];
-      count = graduated.length;
-      if (count === 0) {
-        cardsHtml = `<div class="kanban-empty">No markets graduated. The screener hasn't found any qualifying markets.</div>`;
-      } else {
-        for (const m of graduated) {
-          const income = m.pnl !== null && m.pnl !== undefined ? fmtUSD(m.pnl) : '--';
+      const fundedN = counts.funded || (funnel.raw?.rewards || []).length || 0;
+      const spreadN = counts.spread_universe || (funnel.raw?.spread || []).length || 0;
+      countBadge = `<span class="bucket-count-badge info">${totalRaw} TOTAL</span>`;
+      flowHtml = `<div class="kanban-header-flow">
+        <span>Discovery</span>
+        <span class="flow-passed">${totalRaw} to evaluate ➔</span>
+      </div>`;
+
+      // Render raw examples if available
+      const rawRewards = (funnel.raw?.rewards || []).slice(0, 8);
+      const rawSpread = (funnel.raw?.spread || []).slice(0, 8);
+      if (rawRewards.length || rawSpread.length) {
+        for (const r of rawRewards) {
           cardsHtml += `<div class="market-card" role="listitem">
-            <div class="card-title">${esc(m.title || m.slug || m.condition_id?.slice(0,10) || '--')}</div>
-            <div class="card-metric">Fills: <span class="card-fills">${esc(m.fills || 0)}</span> | P&L: <span class="card-income">${income}</span></div>
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span class="card-tag tag-reward">REWARD</span>
+              <span class="card-metric">$${esc(r.rate)}/d</span>
+            </div>
+            <div class="card-title">${esc(r.title || '--')}</div>
+            <div class="card-metric">Resolves: ${r.days !== null && r.days !== undefined ? r.days + 'd' : '--'}</div>
+          </div>`;
+        }
+        for (const s of rawSpread) {
+          cardsHtml += `<div class="market-card" role="listitem">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <span class="card-tag tag-spread">SPREAD</span>
+              <span class="card-metric">Vol: ${fmtUSD(s.volume || 0)}</span>
+            </div>
+            <div class="card-title">${esc(s.title || '--')}</div>
+            <div class="card-metric">Spread: ${s.spread !== null && s.spread !== undefined ? (s.spread * 100).toFixed(1) + '%' : '--'} | ${s.days !== null && s.days !== undefined ? s.days + 'd' : '--'}</div>
+          </div>`;
+        }
+      } else {
+        cardsHtml = `<div class="kanban-empty">
+          <strong style="color:var(--text-primary)">${totalRaw} Candidate Markets</strong>
+          <div style="margin-top:6px;color:var(--text-secondary)">${fundedN} funded rewards + ${spreadN} liquid spread pairs fetched from venue.</div>
+        </div>`;
+      }
+      footerHtml = `<div class="kanban-bucket-footer">${fundedN} Rewards · ${spreadN} Spread pairs</div>`;
+
+    } else if (def.key === 'passed') {
+      const passCount = graduatedList.length;
+      countBadge = `<span class="bucket-count-badge ok">${passCount} ACTIVE</span>`;
+      flowHtml = `<div class="kanban-header-flow">
+        <span>Final Fleet</span>
+        <span class="flow-passed">${passCount} quoting on venue</span>
+      </div>`;
+
+      if (passCount === 0 && eligibleList.length === 0) {
+        cardsHtml = `<div class="kanban-empty">No markets graduated. The screener has not found qualifying markets this cycle.</div>`;
+      } else {
+        // Track rendered IDs
+        const renderedCids = new Set();
+        for (const m of graduatedList) {
+          renderedCids.add(m.condition_id);
+          const income = m.pnl !== null && m.pnl !== undefined ? fmtUSD(m.pnl) : '--';
+          const volStr = m.volume !== null && m.volume !== undefined ? fmtUSD(m.volume) : '--';
+          const spreadStr = m.spread !== null && m.spread !== undefined ? (Number(m.spread) * 100).toFixed(2) + '%' : '--';
+          const daysStr = m.days_to_resolve !== null && m.days_to_resolve !== undefined ? m.days_to_resolve + 'd' : '--';
+          const retStr = m.return_pct_day !== null && m.return_pct_day !== undefined ? m.return_pct_day + '%/d' : (m.est_income ? '$' + Number(m.est_income).toFixed(2) + '/d' : '--');
+          const shortCid = m.condition_id ? (m.condition_id.slice(0, 6) + '...' + m.condition_id.slice(-4)) : '';
+
+          cardsHtml += `<div class="market-card passed-card" role="listitem">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+              <span class="card-tag tag-quoting">QUOTING</span>
+              <span class="mono" style="font-size:9.5px;color:var(--text-muted)">${esc(shortCid)}</span>
+            </div>
+            <div class="card-title" title="${esc(m.title || m.slug || '')}">${esc(m.title || m.slug || '--')}</div>
+            <div class="card-metrics-grid">
+              <div>Fills: <span class="card-fills">${esc(m.fills || 0)}</span></div>
+              <div>P&L: <span class="card-income">${income}</span></div>
+              <div>24h Vol: <span style="color:var(--text-primary)">${volStr}</span></div>
+              <div>Spread: <span style="color:var(--text-primary)">${spreadStr}</span></div>
+              <div>Days: <span style="color:var(--text-primary)">${daysStr}</span></div>
+              <div>Est Ret: <span class="card-ret">${retStr}</span></div>
+            </div>
+          </div>`;
+        }
+
+        // Also render other eligible runners-up if any
+        for (const el of eligibleList) {
+          const cid = el.cid || el.condition_id;
+          if (cid && renderedCids.has(cid)) continue;
+          cardsHtml += `<div class="market-card" role="listitem" style="border-color:rgba(52,211,153,0.2)">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+              <span class="card-tag" style="background:rgba(52,211,153,0.1);color:#34d399">ELIGIBLE</span>
+              <span class="card-metric">${esc(el.source || 'spread')}</span>
+            </div>
+            <div class="card-title" title="${esc(el.title || '')}">${esc(el.title || '--')}</div>
+            <div class="card-metric">Est Ret: <span class="card-ret">${el.ret_day_pct !== null && el.ret_day_pct !== undefined ? el.ret_day_pct + '%/d' : '--'}</span> | Vol: ${fmtUSD(el.volume || 0)}</div>
           </div>`;
         }
       }
+      footerHtml = `<div class="kanban-bucket-footer">Top ${passCount} Quoting Live</div>`;
+
     } else {
-      // Rejection buckets: look up by cause name
-      const filter = filterMap[def.key] || filterMap[def.key + ' spread'];
-      if (filter) {
-        count = filter.n || 0;
-        const examples = filter.examples || [];
+      // Intermediate Gate
+      const gateData = gateRejections[def.key] || { count: 0, examples: [], would_fund: 0, traps: 0 };
+      const flow = stageFlow[def.key] || { in: 0, out: 0, dropped: 0 };
+      const droppedCount = flow.dropped;
+
+      const badgeCls = droppedCount > 0 ? 'alert' : 'ok';
+      countBadge = `<span class="bucket-count-badge ${badgeCls}">${droppedCount} REJECTED</span>`;
+      flowHtml = `<div class="kanban-header-flow">
+        <span class="flow-passed">${flow.out} passed ➔</span>
+        <span class="flow-rejected">${droppedCount} dropped</span>
+      </div>`;
+
+      if (droppedCount === 0) {
+        cardsHtml = `<div class="kanban-empty all-pass">
+          <strong>✓ 100% Passed</strong>
+          <div style="margin-top:6px;color:var(--text-secondary)">All ${flow.in} markets cleared this gate and advanced to next stage.</div>
+        </div>`;
+      } else {
+        const examples = gateData.examples || [];
         if (examples.length === 0) {
-          cardsHtml = `<div class="kanban-empty">All markets passed this gate.</div>`;
+          cardsHtml = `<div class="kanban-empty">${droppedCount} markets failed criteria at this gate.</div>`;
         } else {
           for (const ex of examples) {
             cardsHtml += `<div class="market-card" role="listitem">
-              <div class="card-title">${esc(ex.title || '--')}</div>
-              <div class="card-reason">${esc(ex.reason || '--')}</div>
+              <div class="card-title" title="${esc(ex.title || '')}">${esc(ex.title || '--')}</div>
+              <div class="card-reason">${esc(ex.reason || 'Criteria not met')}</div>
             </div>`;
           }
+          if (droppedCount > examples.length) {
+            cardsHtml += `<div style="text-align:center;font-size:10px;color:var(--text-muted);padding:4px">+ ${droppedCount - examples.length} more rejected markets</div>`;
+          }
         }
-        // Near-miss footer
-        const wouldFund = filter.would_fund;
-        if (wouldFund !== undefined && wouldFund > 0) {
-          footerHtml = `<div class="kanban-bucket-footer">${wouldFund} would clear allocator floor</div>`;
-        }
+      }
+
+      // Near-miss footer
+      if (gateData.would_fund > 0) {
+        footerHtml = `<div class="kanban-bucket-footer" style="color:#fbbf24">${gateData.would_fund} would clear allocator floor</div>`;
       } else {
-        cardsHtml = `<div class="kanban-empty">All markets passed this gate.</div>`;
+        footerHtml = `<div class="kanban-bucket-footer">${flow.out} of ${flow.in} markets advanced</div>`;
       }
     }
 
-    const countBadgeCls = def.key === 'passed' ? 'ok' : (count > 0 && def.cls === 'rejected' ? 'alert' : '');
     board.innerHTML += `<div class="kanban-bucket ${def.cls}" role="list" aria-label="${def.name}">
       <div class="kanban-bucket-header">
-        ${def.name}
-        <span class="bucket-count-badge ${countBadgeCls}">${count}</span>
+        <div class="kanban-header-top">
+          <span>${def.name}</span>
+          ${countBadge}
+        </div>
+        <div class="kanban-bucket-hero ${def.key}">
+          <div class="hero-param-label">${hero.param}</div>
+          <div class="hero-critical-val">${hero.value}</div>
+        </div>
+        ${flowHtml}
       </div>
       <div class="kanban-bucket-body">${cardsHtml}</div>
       ${footerHtml}
     </div>`;
   }
+
+  // Update navigation arrow states after rendering
+  requestAnimationFrame(updateKanbanNavButtons);
+}
+
+/* ── Kanban Carousel Navigation ── */
+function scrollKanban(direction) {
+  const board = document.getElementById('kanban-board');
+  if (!board) return;
+  const bucket = board.querySelector('.kanban-bucket');
+  const step = bucket ? (bucket.offsetWidth + 14) : 334;
+  board.scrollBy({ left: direction * step, behavior: 'smooth' });
+  setTimeout(updateKanbanNavButtons, 350);
+}
+
+function updateKanbanNavButtons() {
+  const board = document.getElementById('kanban-board');
+  const prevBtn = document.getElementById('kanban-nav-prev');
+  const nextBtn = document.getElementById('kanban-nav-next');
+  if (!board || !prevBtn || !nextBtn) return;
+
+  const maxScrollLeft = board.scrollWidth - board.clientWidth;
+  if (maxScrollLeft <= 4) {
+    prevBtn.disabled = true;
+    nextBtn.disabled = true;
+    prevBtn.classList.add('disabled');
+    nextBtn.classList.add('disabled');
+    return;
+  }
+
+  const atStart = board.scrollLeft <= 8;
+  const atEnd = board.scrollLeft >= maxScrollLeft - 8;
+
+  prevBtn.disabled = atStart;
+  nextBtn.disabled = atEnd;
+  prevBtn.classList.toggle('disabled', atStart);
+  nextBtn.classList.toggle('disabled', atEnd);
+}
+
+function initKanbanCarousel() {
+  const board = document.getElementById('kanban-board');
+  const prevBtn = document.getElementById('kanban-nav-prev');
+  const nextBtn = document.getElementById('kanban-nav-next');
+
+  if (prevBtn) {
+    prevBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      scrollKanban(-1);
+    });
+  }
+  if (nextBtn) {
+    nextBtn.addEventListener('click', (e) => {
+      e.preventDefault();
+      scrollKanban(1);
+    });
+  }
+  if (board) {
+    board.addEventListener('scroll', updateKanbanNavButtons, { passive: true });
+  }
+
+  // Keyboard navigation for arrow keys
+  document.addEventListener('keydown', (e) => {
+    const tab3 = document.getElementById('tab-3');
+    if (!tab3 || tab3.hidden) return;
+    if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName)) return;
+
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      scrollKanban(-1);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      scrollKanban(1);
+    }
+  });
+
+  window.addEventListener('resize', updateKanbanNavButtons, { passive: true });
 }
 
 /* ── Poll loop ── */
@@ -922,6 +1198,7 @@ async function pollStatus() {
 }
 
 /* ── Start ── */
+initKanbanCarousel();
 pollStatus();
 renderParameters();
 setInterval(pollStatus, POLL_MS);

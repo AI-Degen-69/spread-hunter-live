@@ -100,7 +100,7 @@ Start the live poll loop to sync order fills from the venue into `live/run/live.
 
 ```bash
 # In a separate terminal under live/:
-python -m engine.order_manager poll --interval 5.0
+python -m engine.order_manager poll --interval 0.5
 ```
 
 ---

@@ -49,7 +49,7 @@ $StackPaths = @{
 $StackCmds = @{
     screener   = "python -m scripts.filter_loop"
     engine     = "python -m engine.order_manager poll --interval 0.5"
-    fleet      = "python -m engine.trader_loop"
+    fleet      = "python -m engine.trader_loop --live --no-reconcile --no-sweep --interval 5"
     guardrail  = "python -m scripts.guardrail_watch"
     dash       = "python -m dashboard.server --port 8799"
 }

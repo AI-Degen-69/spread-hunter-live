@@ -175,13 +175,15 @@ def _open_pr_for_head() -> str | None:
     return str(number) if number is not None else None
 
 
-def _review_count(pr: str) -> int:
+def _reviews(pr: str) -> list[str]:
+    """The review states on a pull request, oldest first."""
     raw = _run(["gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews",
-                "--jq", "length"])
+                "--jq", "[.[].state] | @json"])
     try:
-        return int(raw.strip())
-    except ValueError:
-        return 0
+        states = json.loads(raw.strip() or "[]")
+    except json.JSONDecodeError:
+        return []
+    return [s for s in states if isinstance(s, str)] if isinstance(states, list) else []
 
 
 def _changed_paths(pr: str) -> list[str]:
@@ -248,8 +250,12 @@ def check_push() -> tuple[int, str]:
     pr = _open_pr_for_head()
     if pr is None:
         return 0, ""
-    rounds = _review_count(pr)
-    if rounds >= MAX_REVIEW_ROUNDS:
+    states = _reviews(pr)
+    rounds = len(states)
+    # An approval is not a round of findings. Counting it toward the runaway
+    # threshold blocks the push that lands the fixes an approved review asked
+    # for, which is the opposite of what the stop condition is for.
+    if rounds >= MAX_REVIEW_ROUNDS and states[-1] != "APPROVED":
         return 2, (
             f"BLOCKED: pull request #{pr} has had {rounds} automatic reviews. "
             f"A fourth means stop, not grind ({DOC}, 'Stop condition').\n\n"
@@ -285,23 +291,40 @@ def check_merge(pr: str | None) -> tuple[int, str]:
     )
 
 
-def main(argv: list[str] | None = None) -> int:
-    argv = sys.argv[1:] if argv is None else argv
-    if len(argv) == 2 and argv[0] == "--approve":
-        return record_approval(argv[1])
+def _command_from_stdin() -> str | None:
+    """The Bash command in a PreToolUse payload, or None for anything else.
 
+    Valid JSON of an unexpected shape is still unexpected input, so every
+    branch here returns None and the caller allows the command.
+    """
     try:
         payload = json.load(sys.stdin)
     except (json.JSONDecodeError, ValueError):
-        return 0
-    # Valid JSON of an unexpected shape is still unexpected input: allow it.
+        return None
     if not isinstance(payload, dict) or payload.get("tool_name") != "Bash":
-        return 0
+        return None
     tool_input = payload.get("tool_input")
     if not isinstance(tool_input, dict):
-        return 0
+        return None
     command = tool_input.get("command", "")
     if not isinstance(command, str) or not command.strip():
+        return None
+    return command
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "--approve":
+        # Without the arity check this falls through to reading stdin, and an
+        # operator who forgets the number sees the command hang.
+        if len(argv) != 2:
+            print("usage: git_workflow_guard.py --approve <pr-number>",
+                  file=sys.stderr)
+            return 1
+        return record_approval(argv[1])
+
+    command = _command_from_stdin()
+    if command is None:
         return 0
 
     action, pr = classify(command)

@@ -133,7 +133,7 @@ class TestPush:
 
     def test_push_on_an_early_round_reminds_but_allows(self, guard, monkeypatch):
         monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "15")
-        monkeypatch.setattr(guard, "_review_count", lambda pr: 1)
+        monkeypatch.setattr(guard, "_reviews", lambda pr: ["CHANGES_REQUESTED"])
         code, message = guard.check_push()
         assert code == 0
         assert "ONE commit and push ONCE" in message
@@ -141,11 +141,38 @@ class TestPush:
     def test_push_at_the_third_review_blocks(self, guard, monkeypatch):
         """Three rounds is the runaway guard: a fourth must not just happen."""
         monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "15")
-        monkeypatch.setattr(guard, "_review_count", lambda pr: 3)
+        monkeypatch.setattr(guard, "_reviews",
+                            lambda pr: ["CHANGES_REQUESTED"] * 3)
         code, message = guard.check_push()
         assert code == 2
         assert "BLOCKED" in message
         assert "fourth" in message
+
+    def test_an_approval_is_not_a_runaway_round(self, guard, monkeypatch):
+        """Counting an approval toward the threshold blocks the wrong push.
+
+        It stops the commit that lands the fixes the review asked for, which
+        is the opposite of what the stop condition exists to prevent.
+        """
+        monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "16")
+        monkeypatch.setattr(guard, "_reviews", lambda pr: [
+            "CHANGES_REQUESTED", "CHANGES_REQUESTED", "APPROVED",
+        ])
+        assert guard.check_push()[0] == 0
+
+    def test_an_approval_followed_by_more_findings_still_blocks(self, guard,
+                                                                monkeypatch):
+        monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "16")
+        monkeypatch.setattr(guard, "_reviews", lambda pr: [
+            "APPROVED", "CHANGES_REQUESTED", "CHANGES_REQUESTED",
+        ])
+        assert guard.check_push()[0] == 2
+
+    def test_unreadable_review_states_do_not_block(self, guard, monkeypatch):
+        monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "16")
+        monkeypatch.setattr(guard, "_run", lambda args: "<html>login</html>")
+        assert guard._reviews("16") == []
+        assert guard.check_push()[0] == 0
 
 
 class TestMerge:
@@ -223,6 +250,22 @@ class TestApproval:
         monkeypatch.setattr(guard, "_head_sha", lambda pr: "")
         assert guard.record_approval("15") == 1
 
+    def test_approve_without_a_number_says_so_instead_of_hanging(self):
+        """A bare `--approve` used to fall through to reading standard input.
+
+        The operator saw the command hang until they sent end-of-file, on the
+        one command in this file they are meant to run by hand.
+        """
+        res = subprocess.run(
+            [sys.executable, str(GUARD), "--approve"], input="",
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        assert res.returncode == 1
+        assert "usage" in res.stderr.lower()
+
+    def test_approve_with_extra_arguments_is_rejected(self, guard):
+        assert guard.main(["--approve", "15", "16"]) == 1
+
 
 class TestDegradesToAllow:
     def test_missing_gh_binary_does_not_block(self, guard, monkeypatch):
@@ -233,7 +276,7 @@ class TestDegradesToAllow:
     def test_unparseable_gh_output_does_not_block(self, guard, monkeypatch):
         monkeypatch.setattr(guard, "_run", lambda args: "<html>login</html>")
         assert guard._open_pr_for_head() is None
-        assert guard._review_count("15") == 0
+        assert guard._reviews("15") == []
         assert guard._head_sha("15") == ""
 
     def test_gh_returning_a_list_does_not_block(self, guard, monkeypatch):

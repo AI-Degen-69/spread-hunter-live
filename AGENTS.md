@@ -63,10 +63,12 @@ they get missed. Full rules: [docs/agents/git-workflow.md](docs/agents/git-workf
    risk limits, the merge path or live execution waits for operator sign-off, however
    green the checks are.
 
-A `PreToolUse` hook (`scripts/hooks/git_workflow_guard.py`) enforces rules 1 and 4 at the
-command. It blocks a merge of any PR touching `core_brain/`, `scoring/` or
-`dashboard/server.py` until the operator signs off; record that with
-`python scripts/hooks/git_workflow_guard.py --approve <pr>`. Sign-off is bound to the head
+A `PreToolUse` hook (`scripts/hooks/git_workflow_guard.py`) puts these rules at the
+command. It **reminds** on rule 1, printing the round discipline before a push, and
+**blocks** on rules 3 and 4: a push once the PR has had three automatic reviews, and a
+merge of any PR touching `core_brain/`, `scoring/` or `dashboard/server.py` until the
+operator signs off. Record sign-off with
+`python scripts/hooks/git_workflow_guard.py --approve <pr>`; it is bound to the head
 commit and lapses on the next push.
 
 ## Reference

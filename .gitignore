@@ -61,3 +61,6 @@ Thumbs.db
 
 # MCP state
 .mcp.json
+
+# Antigravity harness state (ECC-managed, regenerate with: ecc install --target antigravity)
+.agent/

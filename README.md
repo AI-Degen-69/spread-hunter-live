@@ -41,19 +41,19 @@ merge is the exit and the P&L event.
 **Engine** (`engine/`)
 - `quotes.py` — the decision layer: where to rest both legs, and why not to
 - `risk.py` — sizing ladder, inventory skew, dollar caps, hard blocks
-- `unhedged_stop_loss.py` — per-market markout state machine + fleet posture (HALTED etc.)
-- `main_spread_hunter_loop.py` — multi-market rotation: decide → plan → submit/cancel (5s cadence)
-- `live_exec.py` — CLI: `status`, `balance`, `decide`, `quote`, `poll`, `merge`, `redeem`,
+- `unhedged_stop_loss.py` — per-market markout state machine + trader posture (HALTED etc.)
+- `trader_loop.py` — multi-market rotation: decide → plan → submit/cancel (5s cadence)
+- `order_manager.py` — CLI: `status`, `balance`, `decide`, `quote`, `poll`, `merge`, `redeem`,
   `complete`, `exit`, `cancel`, `cancel-market`, `cancel-all`, `pairs`, `kpi`, `audit`
-- `single_side_buy_saver.py` — naked-leg rescue: complete the pair, or exit the leg
+- `single_buy_saver.py` — single-buy rescue: complete the pair, or exit the buy
 - `merge_pairs.py` — gasless merge & redemption (ABI, alt-bn128, EIP-712)
-- `order_registry.py` — SQLite order/fill tracking + reconcile (`run/live.db`)
+- `order_registry.py` — SQLite order/fill tracking + reconcile (`data/orders.db`)
 - `audit.py`, `kpi.py`, `account.py`, `cycle_stream.py`, `market_feed.py`, `markets.py`
 
-**Operations dashboard** (`dash/`)
-- `live_dash.py` — ops dashboard on `:8799` with a browser SPA (`dash/static/`)
-- System start/stop endpoints drive the bot stack (screener + engine poll + fleet) through
-  the same code path as the dashboard buttons
+**Operations dashboard** (`dashboard/`)
+- `server.py` — ops dashboard on `:8799` with a browser SPA (`dashboard/static/`)
+- System start/stop endpoints drive the bot stack through
+  the same code path as the dashboard buttons (Market Filter + Order Manager + Trader)
 - Service cards, guardrail health, cycle telemetry ring, account/exposure tiles
 
 **Ops tooling** (`scripts/`)

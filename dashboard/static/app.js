@@ -223,10 +223,10 @@ const EVENT_TRANSLATIONS = {
 
   // Query — account sweep
   'query|sweep_done': 'Read the live wallet balance and open positions from Polymarket. Dashboard tiles are now fresh.',
-  'query|sweep_skipped': 'Skipped the wallet sweep this cycle (not due yet or rate-limited).',
+  'query|sweep_skipped': 'Skipped the wallet sweep: POLY_FUNDER is not set, so the account balance and float marks are not being read.',
   'query|sweep_error': 'Failed to read the wallet from Polymarket. Balance and exposure tiles may be stale.',
   'engine|sweep_done': 'Read the live wallet balance and open positions from Polymarket. Dashboard tiles are now fresh.',
-  'engine|sweep_skipped': 'Skipped the wallet sweep this cycle (not due yet or rate-limited).',
+  'engine|sweep_skipped': 'Skipped the wallet sweep: POLY_FUNDER is not set, so the account balance and float marks are not being read.',
   'engine|sweep_error': 'Failed to read the wallet from Polymarket. Balance and exposure tiles may be stale.',
 
   // Query — pairs management

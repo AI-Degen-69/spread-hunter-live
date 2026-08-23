@@ -572,7 +572,16 @@ function Stop-BotStack {
         return
     }
     if (Test-Path $ProcsFile) {
+        $saved = $null
         try { $saved = Get-Content $ProcsFile -Raw | ConvertFrom-Json } catch { $saved = $null }
+        if ($null -eq $saved) {
+            # A registry we cannot parse is not an empty one. Falling through
+            # would kill nothing, delete the file, and print "stale record
+            # cleared" -- destroying the only record of the live PIDs. Matches
+            # stop_bot() in dashboard/server.py, which refuses the same way.
+            Lsh-Fail "Cannot read $ProcsFile; refusing to report the stack stopped. No process was killed and the file was left in place. Fix or remove it, then stop again."
+            return
+        }
         $killed = $false
         $skipped = $false
         foreach ($name in @("filter", "query", "decide")) {

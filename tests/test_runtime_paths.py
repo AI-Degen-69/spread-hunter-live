@@ -16,6 +16,7 @@ the plain `runtime/`-only lookups the rename shipped with.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -234,6 +235,11 @@ def test_start_refuses_while_the_registry_is_unreadable(tmp_path, monkeypatch):
     """The money case: UNKNOWN must not be treated as permission to start."""
     from dashboard import server
 
+    # start_bot creates .bot_start.lock under LIVE_ROOT before it checks the
+    # status, so this must point at tmp_path -- otherwise the test writes into
+    # the real repository and its stale-lock branch can remove a lock that a
+    # live start owns.
+    monkeypatch.setattr(server, "LIVE_ROOT", tmp_path)
     monkeypatch.setattr(
         server, "get_system_status",
         lambda: {"bot_state": "UNKNOWN", "registry_path": "runtime/processes.json"},
@@ -328,3 +334,48 @@ def test_idempotency_guard_still_allows_an_unseen_condition(tmp_path, monkeypatc
     monkeypatch.setattr(order_manager, "RUN", tmp_path / "runtime")
 
     order_manager._check_idempotency_guard("0xabc")  # must not raise
+
+
+# ── --no-live must mean --no-live, wherever it appears ──
+
+@pytest.mark.parametrize("argv", [
+    ["--no-live", "merge", "0xabc", "--amount", "1"],
+    ["merge", "0xabc", "--amount", "1", "--no-live"],
+])
+def test_no_live_wins_from_either_side_of_the_subcommand(argv, monkeypatch):
+    """`--no-live merge 0xabc` used to go LIVE.
+
+    Each subparser redefined `--live` with `default=True`, and argparse applies
+    the subparser default AFTER the parent has parsed, so a `--no-live` typed
+    before the subcommand was silently overwritten back to True. An operator
+    asking for a dry run got a real on-chain merge.
+    """
+    from core_brain import order_manager
+
+    captured = {}
+    monkeypatch.setattr(order_manager, "merge", lambda *a, **k: captured.update(k))
+    monkeypatch.setattr(sys, "argv", ["order_manager", *argv])
+
+    try:
+        order_manager.main()
+    except SystemExit:
+        pass
+
+    assert captured.get("live") is False
+
+
+def test_live_is_still_the_default(monkeypatch):
+    """The safety rail is unchanged: no flag at all means LIVE."""
+    from core_brain import order_manager
+
+    captured = {}
+    monkeypatch.setattr(order_manager, "merge", lambda *a, **k: captured.update(k))
+    monkeypatch.setattr(sys, "argv",
+                        ["order_manager", "merge", "0xabc", "--amount", "1"])
+
+    try:
+        order_manager.main()
+    except SystemExit:
+        pass
+
+    assert captured.get("live") is True

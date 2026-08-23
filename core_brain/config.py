@@ -131,11 +131,16 @@ class MakerConfig:
     # return None for every side, and nothing else changes.
     enable_hard_blocks: bool = True
 
-    # HARD CEILINGS on order and total notional. These are the same values
-    # previously hardcoded as module constants in core_brain/venue.py
-    # (MAX_ORDER_USD=25.0, MAX_TOTAL_USD=100.0). Consolidated into MakerConfig
-    # so the dashboard's /api/parameters endpoint reads one config object,
-    # not two. 0 disables the rule, same as max_naked_usd above.
+    # HARD CEILINGS on order and total notional, mirrored here so the
+    # dashboard's /api/parameters endpoint reads one config object, not two.
+    #
+    # THE VALUE THAT BLOCKS A LIVE ORDER IS core_brain/venue.py, NOT THIS ONE.
+    # `trader_loop._enforce_caps` imports MAX_ORDER_USD and MAX_TOTAL_USD from
+    # core_brain.venue and checks against those constants; nothing in the live
+    # path reads the two fields below. Keep them equal to the venue constants,
+    # and change venue.py when you mean to change the limit -- editing only
+    # these fields moves the number the dashboard displays and not the number
+    # that refuses the order. 0 disables the rule, same as max_naked_usd above.
     max_order_usd: float = 25.0
     max_total_usd: float = 100.0
 

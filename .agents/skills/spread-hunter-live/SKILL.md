@@ -21,7 +21,7 @@ description: Development conventions and patterns for spread-hunter-live. Python
 | Package | Role |
 |---------|------|
 | `core_brain/` | execution core — order registry, fills, pairs, risk, merge |
-| `strategy/` | signal and sizing logic |
+| `scoring/` | scoring, allocation and selection rules the Market Filter uses |
 | `dashboard/` | FastAPI dashboard + static assets |
 | `scripts/` | operator tooling and one-off maintenance |
 | `tests/` | pytest suite, mirrors module names |

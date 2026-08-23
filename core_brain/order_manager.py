@@ -1753,12 +1753,17 @@ def _supervise_watcher(proc, db_path, last_restart_ts, log_fn=None,
     per `restart_interval_s` so a crash-loop cannot spin the CPU; throttled
     checks are silent. Never raises.
     """
-    if proc is None or proc.poll() is None:
+    if proc is not None and proc.poll() is None:
         return proc, last_restart_ts
-    rc = proc.returncode
     if time.time() - last_restart_ts < restart_interval_s:
         return proc, last_restart_ts
-    msg = f"[POLL] guardrail watcher died (rc={rc}); restarting"
+    if proc is None:
+        # The initial spawn failed. Leaving it at None disables the guardrail
+        # for the whole poll session, which is the silent failure the watcher
+        # exists to prevent -- retry on the same throttle as a dead child.
+        msg = "[POLL] guardrail watcher is not running; starting"
+    else:
+        msg = f"[POLL] guardrail watcher died (rc={proc.returncode}); restarting"
     print(msg, file=sys.stderr)
     if log_fn is not None:
         try:
@@ -1912,13 +1917,19 @@ def poll(
         if watcher_proc is not None:
             watcher_last_restart = time.time()
             _log_event(f"[POLL] guardrail watcher started (pid={watcher_proc.pid})")
+        else:
+            # Leave watcher_last_restart at 0.0 so the first supervision pass
+            # retries immediately rather than waiting out the throttle.
+            _log_event("[POLL] guardrail watcher failed to start; will retry")
 
     while not stop_requested:
         cycle += 1
         cycle_start = time.time()
         now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
-        if watcher_proc is not None:
+        if watch_guardrails and not once and not injected_client:
+            # Called even when watcher_proc is None: a transient Popen failure
+            # at startup must not disable the guardrail for the session.
             watcher_proc, watcher_last_restart = _supervise_watcher(
                 watcher_proc, db_p, watcher_last_restart, log_fn=_log_event)
 
@@ -2940,18 +2951,21 @@ def main() -> None:
     q.add_argument("--expiration", type=int, default=None,
                    help="Expiration timestamp (UTC epoch seconds) required when --tif GTD.")
     q.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
-    q.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
-                  help="send to venue (default: True)")
+    q.add_argument("--live", action=argparse.BooleanOptionalAction,
+               default=argparse.SUPPRESS,
+               help="send to venue (default: True). --no-live works before or after the subcommand.")
     canc = sub.add_parser("cancel", help="Cancel a single active order by venue order ID.")
     canc.add_argument("order_id", help="Venue order ID to cancel")
     canc.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
-    canc.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
-                      help="send to venue (default: True)")
+    canc.add_argument("--live", action=argparse.BooleanOptionalAction,
+                  default=argparse.SUPPRESS,
+                  help="send to venue (default: True). --no-live works before or after the subcommand.")
     cm = sub.add_parser("cancel-market", help="Cancel all active orders for a condition ID.")
     cm.add_argument("condition_id", help="Condition ID to cancel orders for")
     cm.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
-    cm.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
-                    help="send to venue (default: True)")
+    cm.add_argument("--live", action=argparse.BooleanOptionalAction,
+                default=argparse.SUPPRESS,
+                help="send to venue (default: True). --no-live works before or after the subcommand.")
     r = sub.add_parser("redeem", help="Gasless redemption of winning positions via Relayer.")
     r.add_argument("condition_id", help="Condition ID to redeem")
     r.add_argument("--index-sets", default="1,2", help="Comma-separated index sets (default: 1,2)")
@@ -2960,8 +2974,9 @@ def main() -> None:
                    help="Bypass RPC resolution guard if RPC endpoints are unreachable (does not bypass denom == 0).")
     r.add_argument("--force", action="store_true",
                    help="Bypass idempotency guard against prior pending/submitted/interrupted orders.")
-    r.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
-                  help="send to venue (default: True)")
+    r.add_argument("--live", action=argparse.BooleanOptionalAction,
+               default=argparse.SUPPRESS,
+               help="send to venue (default: True). --no-live works before or after the subcommand.")
     m = sub.add_parser("merge", help="Gasless merge of full outcome sets via Relayer.")
     m.add_argument("condition_id", help="Condition ID to merge")
     m.add_argument("--amount", type=float, required=True, help="Number of shares / pairs to merge")
@@ -2969,8 +2984,9 @@ def main() -> None:
     m.add_argument("--collateral", default=USDC_E_CONTRACT, help="Collateral token (default: USDC.e)")
     m.add_argument("--force", action="store_true",
                    help="Bypass idempotency guard against prior pending/submitted/interrupted orders.")
-    m.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
-                  help="send to venue (default: True)")
+    m.add_argument("--live", action=argparse.BooleanOptionalAction,
+               default=argparse.SUPPRESS,
+               help="send to venue (default: True). --no-live works before or after the subcommand.")
     # A recurring series (such as btc-up-or-down-5m) is chosen for probe as a
     # LATENCY FIXTURE because it is always mid-window and continually regenerates,
     # not because it represents the traded universe.
@@ -2990,8 +3006,9 @@ def main() -> None:
     p.add_argument("--max-complement-bid", type=float, default=0.85, help="Max allowed complement best bid (default: 0.85)")
     p.add_argument("--max-loss", type=float, default=1.00, help="Max cumulative probe loss in USD before abort (default: 1.00)")
     p.add_argument("--max-fills", type=int, default=1, help="Max allowable fills before abort (default: 1)")
-    p.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
-                  help="send to venue (default: True)")
+    p.add_argument("--live", action=argparse.BooleanOptionalAction,
+               default=argparse.SUPPRESS,
+               help="send to venue (default: True). --no-live works before or after the subcommand.")
     pl = sub.add_parser("poll", help="Poll CLOB and reconcile orders and fills.")
     pl.add_argument("--interval", type=float, default=0.5, help="Cadence in seconds (default: 0.5)")
     pl.add_argument("--once", action="store_true", help="Reconcile once and exit")
@@ -3010,8 +3027,9 @@ def main() -> None:
                     help="Act without the Data API registry/venue cross-check. Only when the endpoint is down.")
     ex.add_argument("--force", action="store_true",
                     help="Bypass idempotency guard against prior pending/submitted/interrupted orders.")
-    ex.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
-                    help="send to venue (default: True)")
+    ex.add_argument("--live", action=argparse.BooleanOptionalAction,
+                default=argparse.SUPPRESS,
+                help="send to venue (default: True). --no-live works before or after the subcommand.")
     cp = sub.add_parser("complete", help="Stage 4: cross the book to complete a one-sided pair.")
     cp.add_argument("pair_id", help="pair_id as recorded in the order registry")
     cp.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
@@ -3019,8 +3037,9 @@ def main() -> None:
                     help="Act without the Data API registry/venue cross-check. Only when the endpoint is down.")
     cp.add_argument("--force", action="store_true",
                     help="Bypass idempotency guard against prior pending/submitted/interrupted orders.")
-    cp.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
-                    help="send to venue (default: True)")
+    cp.add_argument("--live", action=argparse.BooleanOptionalAction,
+                default=argparse.SUPPRESS,
+                help="send to venue (default: True). --no-live works before or after the subcommand.")
     pr = sub.add_parser("pairs", help="List pair_ids in the registry with held sizes.")
     pr.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     dec = sub.add_parser("decide", help="Read-only quote decision for graduated markets using live venue books.")
@@ -3043,8 +3062,9 @@ def main() -> None:
     asw.add_argument("--funder", default=None, help="Funder address (default: POLY_FUNDER)")
     asw.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     c = sub.add_parser("cancel-all")
-    c.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
-                  help="send to venue (default: True)")
+    c.add_argument("--live", action=argparse.BooleanOptionalAction,
+               default=argparse.SUPPRESS,
+               help="send to venue (default: True). --no-live works before or after the subcommand.")
     a = ap.parse_args()
 
     is_live = bool(getattr(a, "live", True))

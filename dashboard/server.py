@@ -141,10 +141,10 @@ def resolve_sweep_interval() -> float | None:
 
 
 def _env_file() -> Path | None:
-    """The .env file engine.order_manager loads, found without importing it.
+    """The .env file core_brain.order_manager loads, found without importing it.
 
-    Mirrors engine.order_manager._find_env_file: the nearest .env walking up from
-    live/engine/, stopping at the AGENTS.md boundary. The dashboard never
+    Mirrors core_brain.order_manager._find_env_file: the nearest .env walking up
+    from core_brain/, stopping at the AGENTS.md boundary. The dashboard never
     loads the whole file -- only LIVE_SWEEP_INTERVAL is read or written -- so
     the signing key and L2 credentials never enter this process.
     """

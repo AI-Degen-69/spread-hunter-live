@@ -65,7 +65,7 @@ merge is the exit and the P&L event.
 
 ## Repository layout
 
-```
+```text
 spread-hunter-live/
   core_brain/             Core trading & execution engine
   dashboard/              Operations dashboard (:8799) + SPA

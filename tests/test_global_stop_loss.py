@@ -236,3 +236,81 @@ def test_heartbeat_written_each_check(tmp_path):
                            db_path=tmp_path / "live.db")
     quiet.check()
     assert not quiet_hb.exists()
+
+
+def test_watcher_follows_the_ring_across_the_rename(tmp_path, monkeypatch):
+    """A watcher started while only run/ existed must see runtime/ events.
+
+    Binding the ring path once at construction meant every event written after
+    the filter switched to runtime/ was invisible to the guardrail -- the
+    repeat-exit signature it exists to catch would go unreported.
+    """
+    import scripts.global_stop_loss as gsl
+
+    legacy = tmp_path / "run"
+    current = tmp_path / "runtime"
+    legacy.mkdir()
+    current.mkdir()
+    (legacy / "cycle_events.jsonl").write_text("", encoding="utf-8")
+    monkeypatch.setattr(gsl, "LIVE_ROOT", tmp_path)
+
+    watch = gsl.GuardrailWatch(heartbeat_path=None)
+    assert watch.current_ring_path() == legacy / "cycle_events.jsonl"
+
+    (current / "cycle_events.jsonl").write_text("", encoding="utf-8")
+    assert watch.current_ring_path() == current / "cycle_events.jsonl"
+
+
+def test_watcher_honours_an_explicit_ring_path(tmp_path):
+    """--ring pins the file; only the default re-resolves."""
+    import scripts.global_stop_loss as gsl
+
+    pinned = tmp_path / "pinned.jsonl"
+    watch = gsl.GuardrailWatch(ring_path=pinned, heartbeat_path=None)
+
+    assert watch.current_ring_path() == pinned
+
+
+def test_a_failed_initial_watcher_start_is_retried(monkeypatch):
+    """One transient Popen failure must not disable the guardrail for the run.
+
+    `_supervise_watcher` used to return immediately on `proc is None`, so a
+    watcher that never started stayed None for the whole poll session and the
+    over-cap and repeat-exit alarms were simply off.
+    """
+    from core_brain import order_manager
+
+    spawned = []
+
+    class _FakeProc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(order_manager, "_spawn_global_stop_losser",
+                        lambda db_path: spawned.append(db_path) or _FakeProc())
+
+    proc, last_restart = order_manager._supervise_watcher(
+        None, "data/orders.db", last_restart_ts=0.0)
+
+    assert spawned == ["data/orders.db"]
+    assert isinstance(proc, _FakeProc)
+    assert last_restart > 0.0
+
+
+def test_the_retry_respects_the_throttle(monkeypatch):
+    """A crash loop must not spin: a recent attempt is not retried."""
+    import time
+
+    from core_brain import order_manager
+
+    spawned = []
+    monkeypatch.setattr(order_manager, "_spawn_global_stop_losser",
+                        lambda db_path: spawned.append(db_path))
+
+    proc, last_restart = order_manager._supervise_watcher(
+        None, "data/orders.db", last_restart_ts=time.time())
+
+    assert spawned == []
+    assert proc is None

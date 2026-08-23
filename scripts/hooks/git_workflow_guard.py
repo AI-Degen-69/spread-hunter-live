@@ -184,14 +184,34 @@ def _reviews(pr: str) -> list[str]:
     Only the review bot's own reviews. A human review is not a round, and
     counting one would trip the runaway block on a pull request a person had
     merely commented on.
+
+    `--paginate` matters here rather than being tidiness: the endpoint returns
+    30 reviews a page, and a pull request past that count is precisely the
+    runaway this guard exists to stop. Reading one page would undercount it
+    into silence. `--slurp` gives a list of page-lists and cannot be combined
+    with `--jq`, so the filtering happens below.
     """
-    raw = _run(["gh", "api", f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews",
-                "--jq", f'[.[] | select(.user.login == "{REVIEW_BOT}") | .state] | @json'])
+    raw = _run(["gh", "api", "--paginate", "--slurp",
+                f"repos/{{owner}}/{{repo}}/pulls/{pr}/reviews"])
     try:
-        states = json.loads(raw.strip() or "[]")
+        pages = json.loads(raw.strip() or "[]")
     except json.JSONDecodeError:
         return []
-    return [s for s in states if isinstance(s, str)] if isinstance(states, list) else []
+    if not isinstance(pages, list):
+        return []
+
+    states: list[str] = []
+    for page in pages:
+        for review in page if isinstance(page, list) else []:
+            if not isinstance(review, dict):
+                continue
+            user = review.get("user")
+            if not isinstance(user, dict) or user.get("login") != REVIEW_BOT:
+                continue
+            state = review.get("state")
+            if isinstance(state, str):
+                states.append(state)
+    return states
 
 
 def _changed_paths(pr: str) -> list[str]:

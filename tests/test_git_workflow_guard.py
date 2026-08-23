@@ -188,16 +188,46 @@ class TestPush:
 
     def test_only_the_review_bot_counts(self, guard, monkeypatch):
         """A person requesting changes is not an automatic review round."""
+        page = [
+            {"user": {"login": guard.REVIEW_BOT}, "state": "CHANGES_REQUESTED"},
+            {"user": {"login": "a-human"}, "state": "CHANGES_REQUESTED"},
+            {"user": {"login": guard.REVIEW_BOT}, "state": "APPROVED"},
+        ]
+        monkeypatch.setattr(guard, "_run", lambda args: json.dumps([page]))
+        assert guard._reviews("16") == ["CHANGES_REQUESTED", "APPROVED"]
+
+    def test_every_page_of_reviews_is_read(self, guard, monkeypatch):
+        """The endpoint returns 30 reviews a page.
+
+        A pull request past that count is exactly the runaway this guard is
+        for, so reading one page would undercount it into silence.
+        """
         captured: list[list[str]] = []
+        bot = {"user": {"login": guard.REVIEW_BOT}, "state": "CHANGES_REQUESTED"}
+        pages = [[bot] * 30, [bot] * 5]
 
         def fake_run(args):
             captured.append(args)
-            return '["CHANGES_REQUESTED","CHANGES_REQUESTED"]'
+            return json.dumps(pages)
 
         monkeypatch.setattr(guard, "_run", fake_run)
-        assert guard._reviews("16") == ["CHANGES_REQUESTED"] * 2
-        jq = next(a for a in captured[0] if "select" in a)
-        assert f'.user.login == "{guard.REVIEW_BOT}"' in jq
+        assert len(guard._reviews("16")) == 35
+        assert "--paginate" in captured[0]
+        # gh rejects --slurp alongside --jq, so the filtering is done in Python.
+        assert "--jq" not in captured[0]
+
+    @pytest.mark.parametrize("payload", [
+        '{"not": "a list"}',
+        '[{"no": "user"}]',
+        '[[{"user": null, "state": "CHANGES_REQUESTED"}]]',
+        '[[{"user": {"login": "coderabbitai[bot]"}, "state": 5}]]',
+        '[["not a review object"]]',
+        '["a page that is not a list"]',
+    ])
+    def test_unexpected_review_payloads_count_as_no_rounds(self, guard,
+                                                           monkeypatch, payload):
+        monkeypatch.setattr(guard, "_run", lambda args: payload)
+        assert guard._reviews("16") == []
 
     def test_unreadable_review_states_do_not_block(self, guard, monkeypatch):
         monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "16")

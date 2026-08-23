@@ -213,6 +213,10 @@ class TestPush:
         monkeypatch.setattr(guard, "_run", fake_run)
         assert len(guard._reviews("16")) == 35
         assert "--paginate" in captured[0]
+        # Without --slurp, --paginate emits one JSON value per page rather than
+        # a single array. The parse then fails and _reviews returns [], which
+        # reads as no rounds and silently disables the block.
+        assert "--slurp" in captured[0]
         # gh rejects --slurp alongside --jq, so the filtering is done in Python.
         assert "--jq" not in captured[0]
 

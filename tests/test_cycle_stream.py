@@ -78,8 +78,13 @@ class TestRingFile:
         # Q3: only the query process owns rotation. Decide appends must never
         # trigger a rewrite, so a concurrent query rotation cannot lose them.
         ring = tmp_path / "cycle_events.jsonl"
+        # phase="quoting" + action="decide" also writes a cycle_intent row, so
+        # db_path has to point into tmp_path. Without it the row lands in the
+        # production registry, which conftest now blocks outright.
+        db = tmp_path / "live.db"
         for i in range(1, 511):
-            emit(i, "quoting", "decide", service="decide", ring_path=ring)
+            emit(i, "quoting", "decide", service="decide", ring_path=ring,
+                 db_path=db)
         assert len(_parse_lines(ring)) == 510
 
     def test_emit_never_raises(self, tmp_path, capsys):

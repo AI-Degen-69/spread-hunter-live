@@ -67,7 +67,7 @@ python -m engine.order_manager balance
 # 2. Start the telemetry dashboard in a dedicated terminal
 python -m dashboard.server --port 8799
 ```
-Open `http://localhost:8799` in your browser. Verify the dashboard header reports `DB: .../live/run/live.db` and telemetry status is green/idle.
+Open `http://localhost:8799` in your browser. Verify the dashboard header reports `DB: .../data/orders.db` and telemetry status is green/idle.
 
 ---
 
@@ -91,7 +91,7 @@ python -m engine.order_manager quote <condition_id> --price <bid_price> --size <
 
 ## 3. Telemetry & Reconciliation Monitoring
 
-Start the live poll loop to sync order fills from the venue into `live/run/live.db`.
+Start the live poll loop to sync order fills from the venue into `data/orders.db`.
 
 > **Not yet exercised.** Every other command in this runbook was run in dry form during
 > the Milestone 2 verification. `poll` was not. Run it once against the chosen market
@@ -167,5 +167,5 @@ The Owner monitors `http://localhost:8799` throughout the cycle.
 Halt execution and pull all quotes (`cancel-all --live`) if:
 1. **Unhedged leg exceeds time threshold:** A single leg remains filled with no complement fill for > 30 seconds and `complete` fails to fill.
 2. **Telemetry Staleness:** Dashboard or poll loop reports `STALE (>30s)` or venue Data API becomes unreachable.
-3. **Unexpected fills or balance mismatch:** Venue balances deviate from `live.db` registry tracking by > $0.05.
+3. **Unexpected fills or balance mismatch:** Venue balances deviate from the `data/orders.db` registry by > $0.05.
 4. **Adverse Price Movement:** The complete pair cost (filled-leg cost plus opposing ask) reaches or exceeds the configured `max_pair_cost` of $0.995, making pair completion unprofitable after gas.

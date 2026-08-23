@@ -1,9 +1,8 @@
 """Live order and fill registry backed by SQLite.
 
 Stage 2 Architecture Constraints:
-- Stored in data/orders.db. A legacy run/live.db is still honoured when data/orders.db
-  does not exist yet, so a host carrying both files must be migrated before the two can
-  drift; see DEFAULT_DB_PATH below for the exact precedence.
+- Stored in data/orders.db, the only registry path. Every module resolves it through
+  DEFAULT_DB_PATH below rather than building its own.
 - orders.id is a local uuid4 string written BEFORE submitting to the venue.
 - orders.order_id is the venue order id, unique and nullable, attached after POST response.
 - size_matched is strictly derived from SUM(fills.size), never stored as a mutable column in orders.
@@ -27,11 +26,11 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 LIVE_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB_PATH = (
-    LIVE_ROOT / "data" / "orders.db"
-    if (LIVE_ROOT / "data" / "orders.db").exists() or not (LIVE_ROOT / "run" / "live.db").exists()
-    else LIVE_ROOT / "run" / "live.db"
-)
+# The one and only registry path. There is no fallback: a per-process choice
+# between two files let the Order Manager, the Trader and the rescue path bind
+# different databases depending on start order, which hides fills and leaves a
+# single buy unmanaged. Legacy data/orders.db is retired, not consulted.
+DEFAULT_DB_PATH = LIVE_ROOT / "data" / "orders.db"
 BUSY_TIMEOUT_SEC = 5.0
 
 # 30 seconds match window: covers HTTP roundtrip and CLOB ingestion skew

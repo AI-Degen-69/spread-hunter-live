@@ -1,7 +1,7 @@
 """live/engine/audit.py - Three-way audit comparing Registry, Venue, and Chain views.
 
 Compares:
-1. Local Registry View (live/run/live.db: orders, fills, size_matched)
+1. Local Registry View (data/orders.db: orders, fills, size_matched)
 2. Venue CLOB View (Polymarket CLOB API: get_order, get_open_orders, get_trades)
 3. On-Chain State (Polygon CTF ERC-1155 token balances via RPC, plus relayer merge logs)
 
@@ -293,7 +293,7 @@ def format_audit_report(res: AuditResult) -> str:
         f"PAIR ID:         {res.pair_id or 'all-pairs-for-condition'}",
         f"RESULT:          {'AGREE' if res.agree else 'DIVERGENCE'}",
         "=" * 80,
-        "1. REGISTRY VIEW (live/run/live.db):",
+        "1. REGISTRY VIEW (data/orders.db):",
         f"   UP Filled:    {res.registry_up_filled:.4f} shares",
         f"   DOWN Filled:  {res.registry_dn_filled:.4f} shares",
         "",

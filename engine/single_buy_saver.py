@@ -25,7 +25,7 @@ already happened. If the other leg filled, the pair is complete and worth $1.00
 at merge, and market-selling one leg converts that into a realized loss -- the
 worst outcome available here.
 
-The registry cannot answer that question. Fills reach `run/live.db` only through
+The registry cannot answer that question. Fills reach `data/orders.db` only through
 `reconcile_orders` in the poll loop, so a match from seconds ago is invisible
 there until the next cycle -- exactly the window this step covers. An earlier
 version of this module read the registry and claimed to detect the race; it
@@ -263,7 +263,7 @@ def _venue_extra(client, registry: OrderRegistry, orders: list,
 def _venue_matched(client, orders: list, refusal: type = PairExitRefused) -> float:
     """Total matched size for these orders, read from the venue right now.
 
-    The registry cannot answer this question. Fills reach `run/live.db` only
+    The registry cannot answer this question. Fills reach `data/orders.db` only
     through `reconcile_orders` in the poll loop, so a match that landed seconds
     ago is invisible there until the next cycle -- which is precisely the window
     this read exists to cover.
@@ -613,7 +613,7 @@ def exit_single_buy(
 
     # 2. Re-read from the VENUE, not from the registry.
     #
-    #    load_pair reads run/live.db, and fills only reach that file through
+    #    load_pair reads data/orders.db, and fills only reach that file through
     #    reconcile_orders in the poll loop -- so a match that completed the light
     #    leg during the cancel is invisible there until the next cycle. Reading
     #    the registry here would confirm what we already believed and sell into

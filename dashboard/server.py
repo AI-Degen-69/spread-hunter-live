@@ -10,7 +10,7 @@ Lifts proven UI components from the paper-run dashboards:
 - Req 5: Run selector with multi-run isolation from `server/spread_dash.py:181`
 
 Telemetry only: reads SQLite orders, fills, and reconcile_lock directly
-from `live/run/live.db` via read-only URI mode:
+from `data/orders.db` via read-only URI mode:
 `sqlite3.connect('file:<path>?mode=ro', uri=True)`.
 
 Zero venue network calls. Zero credentials needed.
@@ -800,7 +800,7 @@ def set_sweep_interval(raw: str | None) -> dict:
 
 
 def reset_database(custom_path: str | Path | None = None) -> dict:
-    """Safely archive the existing live.db and initialize a fresh, clean database."""
+    """Safely archive the existing orders.db and initialize a fresh, clean database."""
     from engine.order_registry import OrderRegistry
     import shutil
     import datetime
@@ -892,7 +892,7 @@ def api_system_set_sweep_interval(request: Request, seconds: str | None = None):
 
 @app.post("/api/system/reset-db")
 def api_system_reset_db(request: Request):
-    """Archive current database and initialize a fresh clean live.db."""
+    """Archive current database and initialize a fresh clean orders.db."""
     _authorize_control(request)
     return JSONResponse(reset_database())
 
@@ -976,7 +976,7 @@ def api_system_reset(request: Request):
     This is the "clean run" button. It does, in order:
     1. Stop the bot stack (screener, engine, fleet, guardrail)
     2. Cancel all open orders on the venue (so nothing is resting)
-    3. Archive + wipe live.db (fresh registry: 0 PnL, 0 fills, 0 closes)
+    3. Archive + wipe orders.db (fresh registry: 0 PnL, 0 fills, 0 closes)
     4. Clear run state files (cycle_events, heartbeats, live_procs)
     5. Snapshot the live Polymarket wallet as starting capital
     6. Venue-sync open positions into the fresh DB (so the dashboard shows
@@ -1578,7 +1578,7 @@ def main():
     parser = argparse.ArgumentParser(description="Spread Hunter Live Execution Monitor")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to bind (default: 8799)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host interface (default: 127.0.0.1)")
-    parser.add_argument("--db", type=str, default=None, help="Path to live.db SQLite file")
+    parser.add_argument("--db", type=str, default=None, help="Path to orders.db SQLite file")
     args = parser.parse_args()
 
     if args.db:

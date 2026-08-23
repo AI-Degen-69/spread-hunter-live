@@ -34,8 +34,9 @@ LIVE_ROOT = Path(__file__).resolve().parent.parent
 if str(LIVE_ROOT) not in sys.path:
     sys.path.insert(0, str(LIVE_ROOT))
 
+from engine.order_registry import DEFAULT_DB_PATH as DEFAULT_DB  # noqa: E402
+
 DEFAULT_RING = LIVE_ROOT / "run" / "cycle_events.jsonl"
-DEFAULT_DB = LIVE_ROOT / "run" / "live.db"
 DEFAULT_ALERTS_LOG = LIVE_ROOT / "run" / "guardrail_alerts.log"
 DEFAULT_HEARTBEAT = LIVE_ROOT / "run" / "guardrail_watch_heartbeat.json"
 

@@ -1,7 +1,7 @@
 """Append-only cycle telemetry stream and intent logger for the live engine.
 
 Writes a compact NDJSON ring to `live/run/cycle_events.jsonl` (max 500 lines with atomic
-rotation) and logs cycle decisions to `cycle_intent` in `live.db`.
+rotation) and logs cycle decisions to `cycle_intent` in `orders.db`.
 
 Designed for zero latency impact on the core loop:
 - Fire-and-forget: never raises an exception out of `emit()`.
@@ -27,7 +27,11 @@ _APPEND_LOCK = threading.Lock()
 
 LIVE_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RING_PATH = LIVE_ROOT / "run" / "cycle_events.jsonl"
-DEFAULT_DB_PATH = LIVE_ROOT / "run" / "live.db"
+
+# One registry, one path. This module used to hardcode data/orders.db while every
+# other caller resolved data/orders.db through order_registry, so cycle_intent
+# rows landed in a database the dashboard never read.
+from engine.order_registry import DEFAULT_DB_PATH  # noqa: E402
 
 MAX_LINES = 500
 KEEP_LINES = 400

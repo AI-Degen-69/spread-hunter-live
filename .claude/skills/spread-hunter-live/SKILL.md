@@ -20,7 +20,7 @@ description: Development conventions and patterns for spread-hunter-live. Python
 
 | Package | Role |
 |---------|------|
-| `engine/` | execution core — order registry, fills, pairs, risk, settlement |
+| `engine/` | execution core — order registry, fills, pairs, risk, merge |
 | `strategy/` | signal and sizing logic |
 | `dash/` | FastAPI dashboard + static assets |
 | `scripts/` | operator tooling and one-off maintenance |

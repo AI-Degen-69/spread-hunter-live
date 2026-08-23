@@ -57,10 +57,10 @@ merge is the exit and the P&L event.
 - Service cards, guardrail health, cycle telemetry ring, account/exposure tiles
 
 **Ops tooling** (`scripts/`)
-- `rank_markets.py` — the ranker funnel that graduates the universe
-- `rerank_loop.py` — continuous screener loop feeding `run/markets.json`
+- `filter_markets.py` — the filter funnel that graduates the universe
+- `filter_loop.py` — continuous market filter loop feeding `run/markets.json`
 - `guardrail_watch.py` — watchdog: over-cap pairs & repeat naked-leg exits
-- `live-spread-hunter-menu.ps1` — PowerShell control center: start/stop/status for the
+- `spread-hunter-menu.ps1` — PowerShell control center: start/stop/status for the
   dashboard + bot stack, with a themed, color-coded status view
 
 ## Repository layout

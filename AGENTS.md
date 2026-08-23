@@ -159,10 +159,13 @@ python -m pytest -q
 ## Safety Rails
 
 1. **LIVE is the default:** This is the real-money execution repo. Every subcommand reaches the venue by default. Use `--no-live` for dry-run preview.
-2. **Closing commands are pre-approved:** `exit`, `complete`, `merge`, `redeem`, `cancel`, `cancel-market`, `cancel-all` reduce exposure. Cancelling pulls resting orders only — a filled leg still needs `complete` then `merge`, or `exit`.
-3. **Opening commands require explicit supervision:** `quote`, the Trader loop, and the dashboard's **START** button all rest real funds — START launches `engine.trader_loop --live`, so a click on the dashboard is a live order path like any command. Propose it; the operator runs it.
+2. **Closing commands are pre-approved:** `exit`, `merge`, `redeem`, `cancel`, `cancel-market`, `cancel-all` reduce exposure. Cancelling pulls resting orders only — a leg that already filled is still open exposure.
+3. **Opening commands require explicit supervision.** Four things spend money: `quote`, `complete`, the Trader loop, and the dashboard's **START** button.
+   - `complete` buys the missing side. It removes the risk of a single buy, but it does so by spending, so it belongs here and not with the closing commands.
+   - START calls `start_bot()`, which launches `engine.trader_loop --live`. A click on the dashboard is a live order path exactly like a typed command.
+   - Propose the command; the operator runs it.
 4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (`engine/config.py`).
-5. **`data/orders.db` is production state.** Read it; never rewrite or delete it.
+5. **`data/orders.db` is the registry, and the only one.** Every module resolves it through `engine.order_registry.DEFAULT_DB_PATH`. Read it; never rewrite or delete it.
 
 ## Verifying a change
 
@@ -183,7 +186,7 @@ cheapest route that actually proves the change:
   **Trader** card → poll cadence reads `0.5s`.
 - **Live, with real money:** this repo trades for real, and a change to quoting,
   filling or merging is only proven when a real order behaves. Say so, and give the
-  smallest test that settles it: one couple at the venue minimum, inside
+  smallest test that settles it: one pair at the venue minimum, inside
   `MAX_ORDER_USD` / `MAX_TOTAL_USD`, on a graduated market from `run/markets.json`.
 
 Rules for the block:

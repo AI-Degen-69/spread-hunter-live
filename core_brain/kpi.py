@@ -341,6 +341,12 @@ def _funnel_from_pipeline(
         {
             "cause": r.get("cause") or "other",
             "n": int(r.get("n") or 0),
+            # Near-miss counters: how many of this bucket's rejects the
+            # allocator would still have funded, and how many of those were
+            # empty-book mirages. The dashboard's near-miss footer reads
+            # these, so dropping them here silently disabled it.
+            "would_fund": int(r.get("would_fund") or 0),
+            "traps": int(r.get("traps") or 0),
             "examples": [
                 {"title": e.get("title") or "", "reason": e.get("reason") or ""}
                 for e in (r.get("examples") or [])
@@ -373,8 +379,15 @@ def _funnel_from_pipeline(
         m = by_mkt.get(cid, {})
         graduated.append({
             "condition_id": cid,
-            "slug": s.get("slug") or "",
+            "slug": s.get("slug") or s.get("market_slug") or "",
             "title": s.get("title") or s.get("question") or "",
+            "volume": s.get("volume_24h") or s.get("volume"),
+            "spread": s.get("spread"),
+            "days_to_resolve": s.get("days_to_resolve"),
+            "source": s.get("source") or "spread",
+            "est_income": s.get("est_income"),
+            "est_capital": s.get("est_capital"),
+            "return_pct_day": s.get("return_pct_day"),
             "fills": m.get("fills_count", 0),
             "pnl": m.get("realized_pnl", 0.0),
         })
@@ -386,13 +399,26 @@ def _funnel_from_pipeline(
 
     return {
         "raw_count": raw_count,
+        "counts": counts,
         "filters": filters,
         "final_count": int(counts.get("eligible") or 0),
         "graduated": graduated,
+        "raw": snap.get("raw"),
+        "final": snap.get("final") or [],
+        "picked": snap.get("picked") or [],
         "source": "screener",
         "snapshot_age": snapshot_age,
         "census": snap.get("census") or "",
         "gates": snap.get("gates") or "",
+        "depth_gate_usd": snap.get("depth_gate_usd"),
+        "volume_gate_usd": snap.get("volume_gate_usd"),
+        "trial_depth_usd": snap.get("trial_depth_usd"),
+        "trial_volume_usd": snap.get("trial_volume_usd"),
+        "spread_gate": snap.get("spread_gate"),
+        "horizon_gate_days": snap.get("horizon_gate_days"),
+        "reward_min_income_usd_day": snap.get("reward_min_income_usd_day"),
+        "spread_min_income_usd_day": snap.get("spread_min_income_usd_day"),
+        "max_pair_cost": snap.get("max_pair_cost"),
     }
 
 
@@ -890,7 +916,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # The account, as the venue reports it. `starting_capital` above is a
     # paper-run constant that nobody deposited; these fields are the balance
     # and P&L the account holder sees on Polymarket, written by
-    # `engine.order_manager account-sweep` and read here from SQLite.
+    # `core_brain.order_manager account-sweep` and read here from SQLite.
     # ------------------------------------------------------------------
     sorted_account_marks = sorted(
         [am for am in all_account_marks if am.get("ts") is not None],

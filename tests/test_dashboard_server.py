@@ -1273,9 +1273,12 @@ def test_html_has_screener_tab_button():
 
 
 def test_html_has_kanban_board_container():
-    """The HTML has the kanban board container."""
+    """The HTML has the kanban board container and carousel navigation arrows."""
     html = _read_static("index.html")
     assert 'kanban-board' in html
+    assert 'kanban-carousel-container' in html
+    assert 'kanban-nav-prev' in html
+    assert 'kanban-nav-next' in html
     assert 'screener-header' in html
     assert 'scan-state-pill' in html
     assert 'scan-snapshot-age' in html
@@ -1312,21 +1315,115 @@ def test_app_js_has_render_screener():
     assert 'No screener data yet' in app_js
     # Near-miss footer
     assert 'would_fund' in app_js or 'would_clear' in app_js
+    # Categorization and flow progression
+    assert 'categorizeGate' in app_js
+    assert 'stageFlow' in app_js
+    assert 'getStageHero' in app_js
+    assert 'kanban-bucket-hero' in app_js
+    assert 'passed-card' in app_js
+    assert 'card-metrics-grid' in app_js
+    # Carousel navigation
+    assert 'scrollKanban' in app_js
+    assert 'updateKanbanNavButtons' in app_js
+    assert 'initKanbanCarousel' in app_js
+    assert 'ArrowLeft' in app_js
+    assert 'ArrowRight' in app_js
     # 3-tab switching (tab-btn-3 is constructed dynamically)
     assert 'tab3' in app_js
     assert "'tab-btn-' + which" in app_js or 'tab-btn-1' in app_js
 
 
+def test_app_js_reads_every_gate_bar_from_the_funnel():
+    """No gate threshold is hardcoded in the hero blocks.
+
+    The panel that states the money gates has to state the ones the screener
+    actually ran, so a config change cannot leave it claiming an old number.
+    """
+    app_js = _read_static("app.js")
+    for key in ('volume_gate_usd', 'depth_gate_usd', 'spread_gate',
+                'horizon_gate_days', 'reward_min_income_usd_day',
+                'spread_min_income_usd_day', 'max_pair_cost'):
+        assert key in app_js, key
+    # The literals these replaced must be gone.
+    assert '0.0600 (6.00%)' not in app_js
+    assert '30.0 days' not in app_js
+    assert '$1.50/day' not in app_js
+    assert '$0.995' not in app_js
+
+
+def test_app_js_states_the_payout_floor_per_market_source():
+    """One universal payout bar would call a passing spread market a failure."""
+    app_js = _read_static("app.js")
+    assert 'rewardIncome' in app_js
+    assert 'spreadIncome' in app_js
+    assert 'rewards ≥ $' in app_js or 'rewards ≥ $' in app_js
+    assert 'spread > $' in app_js
+
+
+def test_app_js_does_not_fabricate_sequential_gate_flow():
+    """The ranker stops at the first failure and not in board order.
+
+    Subtracting each gate's rejections from a running pool would report a
+    market refused on depth as having passed volume, so every advanced count
+    after the first gate would be invented. Each stage states its own refusals
+    against the scored total instead.
+    """
+    app_js = _read_static("app.js")
+    assert 'flow.rejected' in app_js
+    assert 'flow.scored' in app_js
+    # The running-pool arithmetic and every claim built on it are gone.
+    assert 'currentPool' not in app_js
+    assert 'flow.out' not in app_js
+    assert 'flow.in' not in app_js
+    assert 'markets advanced' not in app_js
+    assert 'advanced to next stage' not in app_js
+
+
+def test_app_js_preserves_kanban_scroll_across_renders():
+    """A poll must not yank a scrolled operator back to the first stage."""
+    app_js = _read_static("app.js")
+    assert 'prevScrollLeft' in app_js
+    assert 'board.scrollLeft = prevScrollLeft' in app_js
+    # One assignment, not seven reparses: `board.innerHTML +=` is gone.
+    assert 'board.innerHTML +=' not in app_js
+    assert 'boardHtml' in app_js
+
+
+def test_app_js_escapes_snapshot_derived_values():
+    """Snapshot fields are escaped before they reach the page."""
+    app_js = _read_static("app.js")
+    assert 'esc(m.days_to_resolve)' in app_js
+    assert 'esc(m.return_pct_day)' in app_js
+    assert 'esc(el.ret_day_pct)' in app_js
+    assert 'esc(r.days)' in app_js
+    assert 'esc(s.days)' in app_js
+    assert 'aria-label="${esc(def.name)}"' in app_js
+
+
+def test_app_js_honours_reduced_motion_when_scrolling():
+    """An explicit scroll behavior overrides the CSS, so JS checks too."""
+    app_js = _read_static("app.js")
+    assert 'prefers-reduced-motion: reduce' in app_js
+    assert "reduceMotion ? 'auto' : 'smooth'" in app_js
+
+
 def test_styles_css_has_kanban_styles():
     """CSS has styles for the kanban board, buckets, cards, and badges."""
     css = _read_static("styles.css")
+    assert '.kanban-carousel-container' in css
     assert '.kanban-board' in css
+    assert '.kanban-nav-btn' in css
     assert '.kanban-bucket' in css
     assert '.kanban-bucket-header' in css
+    assert '.kanban-bucket-hero' in css
+    assert '.hero-param-label' in css
+    assert '.hero-critical-val' in css
     assert '.kanban-bucket-body' in css
     assert '.market-card' in css
+    assert '.passed-card' in css
     assert '.bucket-count-badge' in css
     assert '.kanban-empty' in css
+    assert '.kanban-header-flow' in css
     # Bucket color states
     assert '.kanban-bucket.passed' in css
     assert '.kanban-bucket.rejected' in css
@@ -1334,8 +1431,16 @@ def test_styles_css_has_kanban_styles():
     # Card elements
     assert '.card-title' in css or 'card-title' in css
     assert '.card-reason' in css or 'card-reason' in css
-    # Scroll snap for responsive
+    # Scroll snap and smooth scrolling for carousel
     assert 'scroll-snap' in css
+    assert 'scroll-behavior: smooth' in css
+    # The nav arrows clear their outline, so they must draw their own focus ring.
+    assert '.kanban-nav-btn:focus-visible' in css
+    # Motion is opt-out.
+    assert '@media (prefers-reduced-motion: reduce)' in css
+    # `word-break: break-word` is deprecated; stylelint flags it.
+    assert 'word-break: break-word' not in css
+    assert 'overflow-wrap: anywhere' in css
 
     # Event ticker translation styles
     assert '.ticker-translation' in css

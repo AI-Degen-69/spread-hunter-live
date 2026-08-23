@@ -40,6 +40,19 @@ LIVE_ROOT = Path(__file__).resolve().parent.parent
 # the live suite never sees -- it runs with live/ as the working directory.
 if str(LIVE_ROOT) not in sys.path:
     sys.path.insert(0, str(LIVE_ROOT))
+
+# Runtime state moved run/ -> runtime/ and some of its files were renamed. The
+# page must still see a stack that was started before that move: a registry it
+# cannot find reads as STOPPED, and START would then launch a second live
+# Trader beside the running one. resolve_runtime_file falls back to the old
+# path while only the old file exists. See core_brain/runtime_paths.py.
+from core_brain.runtime_paths import (  # noqa: E402
+    legacy_runtime_file,
+    resolve_runtime_file,
+    runtime_file,
+    service_entry,
+)
+
 REPO_ROOT = LIVE_ROOT
 DEFAULT_PORT = 8799
 # The port actually bound. main() overwrites it when --port is given; the status
@@ -79,20 +92,24 @@ def set_guardrail_heartbeat_override(path: Path | str | None) -> None:
 def resolve_ring_path() -> Path:
     if _ACTIVE_RING_OVERRIDE is not None:
         return _ACTIVE_RING_OVERRIDE
-    return LIVE_ROOT / "runtime" / CYCLE_RING_NAME
+    return resolve_runtime_file(CYCLE_RING_NAME, root=LIVE_ROOT)
 
 
 def resolve_heartbeat_path() -> Path:
     if _ACTIVE_HEARTBEAT_OVERRIDE is not None:
         return _ACTIVE_HEARTBEAT_OVERRIDE
-    return LIVE_ROOT / "runtime" / "live_poll_heartbeat.json"
+    return resolve_runtime_file("live_poll_heartbeat.json", root=LIVE_ROOT)
 
 
 def resolve_guardrail_heartbeat_path() -> Path:
-    """The watcher's self-report file (live/scripts/global_stop_loss.py)."""
+    """The watcher's self-report file (live/scripts/global_stop_loss.py).
+
+    Falls back to the pre-rename guardrail_watch_heartbeat.json so a watcher
+    started before the rename does not read as a dead safety monitor.
+    """
     if _ACTIVE_GUARDRAIL_HB_OVERRIDE is not None:
         return _ACTIVE_GUARDRAIL_HB_OVERRIDE
-    return LIVE_ROOT / "runtime" / "global_stop_loss_heartbeat.json"
+    return resolve_runtime_file("global_stop_loss_heartbeat.json", root=LIVE_ROOT)
 
 
 def resolve_db_path(custom_path: str | Path | None = None) -> Path:
@@ -424,7 +441,7 @@ def _is_pid_alive(pid: int | None, started_at: float | None = None) -> bool:
 
 def get_system_status() -> dict:
     """Return live running status for 3 sub-services (Market Filter, Query Polymarket, Decide & Execute) and Telemetry."""
-    procs_file = LIVE_ROOT / "runtime" / "processes.json"
+    procs_file = resolve_runtime_file("processes.json", root=LIVE_ROOT)
     saved_procs: dict[str, Any] = {}
     if procs_file.exists():
         try:
@@ -432,15 +449,19 @@ def get_system_status() -> dict:
         except Exception:
             saved_procs = {}
 
-    filter_info = saved_procs.get("filter", {})
+    # service_entry accepts the pre-rename keys (screener/engine/fleet) so a
+    # stack started before the rename is still reported as RUNNING. Without
+    # that, start_bot's "already running" guard would wave through a second
+    # live Trader.
+    filter_info = service_entry(saved_procs, "filter")
     filter_pid = filter_info.get("pid")
     filter_running = _is_pid_alive(filter_pid, filter_info.get("started_at"))
 
-    query_info = saved_procs.get("query", {})
+    query_info = service_entry(saved_procs, "query")
     query_pid = query_info.get("pid")
     query_running = _is_pid_alive(query_pid, query_info.get("started_at"))
 
-    decide_info = saved_procs.get("decide", {})
+    decide_info = service_entry(saved_procs, "decide")
     decide_pid = decide_info.get("pid")
     decide_running = _is_pid_alive(decide_pid, decide_info.get("started_at"))
 
@@ -512,7 +533,7 @@ def get_starting_capital() -> float | None:
     Returns the account_value_usd captured at bot-start time, or None if
     no snapshot exists (bot never started, or venue was unreachable).
     """
-    procs_file = LIVE_ROOT / "runtime" / "processes.json"
+    procs_file = resolve_runtime_file("processes.json", root=LIVE_ROOT)
     if not procs_file.exists():
         return None
     try:
@@ -534,7 +555,7 @@ def start_bot() -> dict:
     # direct POST all bypass button state -- and live_procs.json only remembers
     # the newest PIDs, so stop_bot could never reach the first pair.
     # Interprocess lock prevents concurrent start_bot calls from racing.
-    lock_file = LIVE_ROOT / "runtime" / ".bot_start.lock"
+    lock_file = runtime_file(".bot_start.lock", root=LIVE_ROOT)
     lock_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Acquire exclusive lock by atomic file creation.
@@ -608,7 +629,7 @@ def start_bot() -> dict:
                 "status": current,
             }
 
-        procs_file = LIVE_ROOT / "runtime" / "processes.json"
+        procs_file = runtime_file("processes.json", root=LIVE_ROOT)
         procs_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Derive a stable run_id so fleet/exec/dash share one session id.
@@ -721,9 +742,14 @@ def start_bot() -> dict:
 
 
 def stop_bot() -> dict:
-    """Terminate background Filter, Query, and Decide loops."""
+    """Terminate background Filter, Query, and Decide loops.
+
+    Reads through resolve_runtime_file, so a stack recorded in the pre-rename
+    run/live_procs.json is still reachable. The loop below walks whatever keys
+    the file holds, which covers the old screener/engine/fleet names too.
+    """
     import subprocess
-    procs_file = LIVE_ROOT / "runtime" / "processes.json"
+    procs_file = resolve_runtime_file("processes.json", root=LIVE_ROOT)
     if procs_file.exists():
         try:
             saved_procs = json.loads(procs_file.read_text(encoding="utf-8"))
@@ -999,15 +1025,18 @@ def api_system_reset(request: Request):
         return JSONResponse(reset_result, status_code=409)
     steps.append(f"db: {reset_result['message']}")
 
-    # 4. Clear run state files (ring buffer, heartbeats, processes)
-    run_dir = LIVE_ROOT / "runtime"
+    # 4. Clear runtime state files (ring buffer, heartbeats, processes).
+    #    Both the current runtime/ name and the pre-rename run/ name, or
+    #    "clean run ready" would leave state the fallback reader still finds.
     for fname in ["cycle_events.jsonl", "live_poll_heartbeat.json",
                   "global_stop_loss_heartbeat.json", "live_orders.json",
-                  "processes.json", "live_procs.json"]:
-        try:
-            (run_dir / fname).unlink(missing_ok=True)
-        except Exception:
-            pass
+                  "processes.json"]:
+        for target in (runtime_file(fname, root=LIVE_ROOT),
+                       legacy_runtime_file(fname, root=LIVE_ROOT)):
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
     steps.append("run: state files cleared")
 
     # 5. Snapshot the live Polymarket wallet as starting capital.
@@ -1030,7 +1059,7 @@ def api_system_reset(request: Request):
 
     # Write starting capital to processes.json so get_starting_capital() can
     # read it on the next poll — even if the bot hasn't been started yet.
-    procs_file = LIVE_ROOT / "runtime" / "processes.json"
+    procs_file = runtime_file("processes.json", root=LIVE_ROOT)
     procs_file.parent.mkdir(parents=True, exist_ok=True)
     procs_data = {}
     if starting_capital is not None:

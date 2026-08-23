@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
 from core_brain.config import load as load_cfg
+from core_brain.runtime_paths import resolve_runtime_file
 
 _CFG = load_cfg()
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -202,7 +203,7 @@ def _resolve_market_meta(cid: str, closes: list[dict], quotes: list[dict]) -> di
     
     # Try reading runtime/markets.json from repo root (written by ranker)
     try:
-        feed_path = REPO_ROOT / "runtime" / "markets.json"
+        feed_path = resolve_runtime_file("markets.json", root=REPO_ROOT)
         if feed_path.exists():
             feed = json.loads(feed_path.read_text(encoding="utf-8"))
             for row in feed if isinstance(feed, list) else []:
@@ -323,7 +324,7 @@ def _funnel_from_pipeline(
     Returns:
         Optional[dict[str, Any]]: Funnel data containing counts, rejection filters, graduated markets, and snapshot metadata; None when the ranker hasn't written a snapshot yet (caller falls back to [...]
     """
-    pp = Path(pipeline_path) if pipeline_path is not None else (REPO_ROOT / "runtime" / "pipeline.json")
+    pp = Path(pipeline_path) if pipeline_path is not None else resolve_runtime_file("pipeline.json", root=REPO_ROOT)
     if not pp.is_file():
         return None
     try:
@@ -350,7 +351,7 @@ def _funnel_from_pipeline(
     ]
 
     graduated: list[dict[str, Any]] = []
-    mp = Path(markets_path) if markets_path is not None else (REPO_ROOT / "runtime" / "markets.json")
+    mp = Path(markets_path) if markets_path is not None else resolve_runtime_file("markets.json", root=REPO_ROOT)
     specs: list = []
     if mp.is_file():
         try:

@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional
 
+from core_brain.runtime_paths import resolve_runtime_file, runtime_file
+
 LIVE_ROOT = Path(__file__).resolve().parent.parent
 # The one and only registry path. There is no fallback: a per-process choice
 # between two files let the Order Manager, the Trader and the rescue path bind
@@ -62,23 +64,28 @@ def _resolve_run_id() -> str:
     Priority:
     1. SH_RUN_ID env var (explicit override, set by start_bot)
     2. live/runtime/.current_run_id lock file, if it was written in the last 12h
+       (or the pre-rename live/run/.current_run_id, while only that one exists —
+       a process started before the rename must keep tagging its fills with the
+       same run_id, or the dashboard's run selector splits one run into two)
     3. New UUID — generates and writes the lock file so other processes pick it up
     """
     env_id = os.environ.get("SH_RUN_ID")
     if env_id:
         return env_id
 
-    lock_file = LIVE_ROOT / "runtime" / ".current_run_id"
+    read_lock = resolve_runtime_file(".current_run_id", root=LIVE_ROOT)
     try:
-        if lock_file.exists():
-            mtime = lock_file.stat().st_mtime
+        if read_lock.exists():
+            mtime = read_lock.stat().st_mtime
             if time.time() - mtime < 43200:  # 12h
-                content = lock_file.read_text().strip()
+                content = read_lock.read_text().strip()
                 if content:  # Validate non-empty before trusting
                     return content
     except Exception:
         pass
 
+    # A new id is always published to the current path, never the legacy one.
+    lock_file = runtime_file(".current_run_id", root=LIVE_ROOT)
     new_id = f"run-{uuid.uuid4().hex[:12]}"
     try:
         lock_file.parent.mkdir(parents=True, exist_ok=True)

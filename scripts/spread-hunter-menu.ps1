@@ -9,14 +9,14 @@
 #   .\scripts\spread-hunter-menu.ps1 status   # dashboard + every assisting process
 #   .\scripts\spread-hunter-menu.ps1 open     # open the dashboard in the browser
 #
-# The bot stack (screener / engine-poll / fleet) is started and stopped through
-# the dashboard's own /api/system/start|stop endpoints -- the same code path as
-# the dashboard's START/STOP buttons (interprocess lock, starting-capital
-# snapshot, shared run_id). The dashboard process itself is owned by this
-# script via runtime/live-dash.pids.json, mirroring the old checkout's convention.
+# The bot stack (Market Filter / Query Polymarket / Decide & Execute) is started
+# and stopped through the dashboard's own /api/system/start|stop endpoints --
+# the same code path as the dashboard's START/STOP buttons (interprocess lock,
+# starting-capital snapshot, shared run_id). The dashboard process itself is
+# owned by this script via runtime/live-dash.pids.json.
 #
-# NOTE: "start" launches the fleet, which rests REAL maker bids. That is an
-# opening command and requires explicit supervision (AGENTS.md).
+# NOTE: "start" launches Decide & Execute, which rests REAL maker bids. That is
+# an opening command and requires explicit supervision (AGENTS.md).
 
 [CmdletBinding()]
 param(
@@ -30,11 +30,50 @@ $ProjectPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $LivePort    = 8799
 $DashUrl     = "http://127.0.0.1:$LivePort"
 $RunDir      = Join-Path $ProjectPath "runtime"
+$LegacyRunDir = Join-Path $ProjectPath "run"
+
+# Runtime state moved run/ -> runtime/ and some files were renamed with it. A
+# stack started before that move still records itself under the old names, and
+# a menu that cannot see it prints STOPPED while real bids are resting. Read
+# through this: current path when it exists, pre-rename path while only that
+# one does, current path otherwise. Mirrors core_brain/runtime_paths.py.
+function Resolve-RuntimeFile {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string]$LegacyName
+    )
+    $current = Join-Path $RunDir $Name
+    if (Test-Path $current) { return $current }
+    if (-not $LegacyName) { $LegacyName = $Name }
+    $legacy = Join-Path $LegacyRunDir $LegacyName
+    if (Test-Path $legacy) { return $legacy }
+    return $current
+}
+
+# The dashboard PID file is menu-owned and rewritten on every start, so it is
+# not resolved: a stale pre-rename copy only ever meant "not owned by menu".
 $DashPidFile = Join-Path $RunDir "live-dash.pids.json"
-$ProcsFile   = Join-Path $RunDir "processes.json"
+$ProcsFile   = Resolve-RuntimeFile -Name "processes.json" -LegacyName "live_procs.json"
 $OutLog      = Join-Path $RunDir "live_dash.out.log"
 $ErrLog      = Join-Path $RunDir "live_dash.err.log"
-$HbFile      = Join-Path $RunDir "global_stop_loss_heartbeat.json"
+$HbFile      = Resolve-RuntimeFile -Name "global_stop_loss_heartbeat.json" -LegacyName "guardrail_watch_heartbeat.json"
+
+# Process keys were renamed with the file. Read both names.
+$LegacyServiceKeys = @{ filter = "screener"; query = "engine"; decide = "fleet" }
+
+function Get-ServiceEntry {
+    <# The recorded process entry for a service, accepting its pre-rename key. #>
+    param(
+        [Parameter(Mandatory)]$Saved,
+        [Parameter(Mandatory)][string]$Key
+    )
+    if (-not $Saved) { return $null }
+    $entry = $Saved.$Key
+    if ($entry) { return $entry }
+    $legacyKey = $LegacyServiceKeys[$Key]
+    if ($legacyKey) { return $Saved.$legacyKey }
+    return $null
+}
 
 # Module map: each stack process -> its source file (relative to the repo root).
 $StackPaths = @{
@@ -513,7 +552,7 @@ function Stop-BotStack {
         try { $saved = Get-Content $ProcsFile -Raw | ConvertFrom-Json } catch { $saved = $null }
         $killed = $false
         foreach ($name in @("filter", "query", "decide")) {
-            $info = if ($saved) { $saved.$name } else { $null }
+            $info = if ($saved) { Get-ServiceEntry -Saved $saved -Key $name } else { $null }
             if ($info -and $info.pid -and (Test-PidAlive -ProcessId $info.pid)) {
                 # Validate started_at before killing
                 $shouldKill = $false
@@ -595,7 +634,7 @@ function Show-Status {
         $rows = @()
         if ($saved) {
             foreach ($name in @("filter", "query", "decide")) {
-                $info = $saved.$name
+                $info = Get-ServiceEntry -Saved $saved -Key $name
                 $running = [bool]($info -and $info.pid -and (Test-PidAlive -ProcessId $info.pid))
                 $label = @{
                     filter     = "Market Filter"
@@ -677,7 +716,7 @@ function Show-ScreenerAndFeed {
     $strategyCfg = Join-Path $ProjectPath "scoring\config.py"
     $modulesOk = ((Test-Path $rerank) -and (Test-Path $ranker) -and (Test-Path $strategyCfg))
 
-    $feed = Join-Path $ProjectPath "runtime\markets.json"
+    $feed = Resolve-RuntimeFile -Name "markets.json"
     $feedExists = Test-Path $feed
     $ageSec = if ($feedExists) { [int]((Get-Date) - (Get-Item $feed).LastWriteTime).TotalSeconds } else { $null }
     $count = "?"
@@ -702,7 +741,9 @@ function Show-ScreenerAndFeed {
     $feedDetail = if (-not $feedExists) { "Run: python -m scripts.filter_loop" }
                   elseif ($feedStatus -eq "STALE") { "{0} market(s) · {1} old · Run: python -m scripts.filter_loop" -f $count, (Format-AgeSec $ageSec) }
                   else { "{0} market(s) · {1} old" -f $count, (Format-AgeSec $ageSec) }
-    Write-FileRow -Label "Universe feed" -Status $feedStatus -Path "runtime/markets.json" -Dynamic $feedDetail
+    # Show the path actually read, so a pre-rename run/markets.json is visible.
+    $feedRel = ($feed.Substring($ProjectPath.Length).Trim("\", "/")) -replace "\\", "/"
+    Write-FileRow -Label "Universe feed" -Status $feedStatus -Path $feedRel -Dynamic $feedDetail
 }
 
 function Show-CheckoutIdentity {

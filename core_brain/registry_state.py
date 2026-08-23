@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from core_brain.runtime_paths import resolve_runtime_file
+
 # live/, one level up from live/engine/. Same tree-boundary rule as live_exec:
 # `engine` must resolve inside live/ and nowhere else.
 LIVE_ROOT = Path(__file__).resolve().parent.parent
@@ -43,7 +45,7 @@ def _market_identity(condition_id: str, closes_by_cid: dict) -> dict:
     if not condition_id:
         return out
     try:
-        feed = json.loads((REPO_ROOT / "runtime" / "markets.json").read_text(encoding="utf-8"))
+        feed = json.loads(resolve_runtime_file("markets.json", root=REPO_ROOT).read_text(encoding="utf-8"))
     except Exception:
         feed = []
     for row in feed if isinstance(feed, list) else []:

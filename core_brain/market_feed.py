@@ -12,10 +12,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from core_brain.runtime_paths import resolve_runtime_file
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 LIVE_ROOT = PROJECT_ROOT
 REPO_ROOT = PROJECT_ROOT
 DEFAULT_MARKETS_PATH = PROJECT_ROOT / "runtime" / "markets.json"
+
+
+def default_markets_path() -> Path:
+    """The feed to read now: DEFAULT_MARKETS_PATH when it exists, otherwise the
+    pre-rename run/markets.json while the filter has not written the new one.
+
+    Resolved per call, not once at import: the Trader is a long-running process
+    and must pick up runtime/markets.json the moment the filter writes it.
+    Without the fallback the Trader quotes nothing for a whole filter cycle
+    after the rename, because its entire universe still sits in run/.
+    """
+    if DEFAULT_MARKETS_PATH.exists():
+        return DEFAULT_MARKETS_PATH
+    return resolve_runtime_file("markets.json", root=PROJECT_ROOT)
 
 # Default maximum age before a feed file is considered stale (e.g. 24 hours).
 DEFAULT_MAX_STALENESS_SEC: float = 86400.0
@@ -67,7 +83,7 @@ def load_graduated_markets(
 
     max_age_sec defaults to DEFAULT_MAX_STALENESS_SEC (24h); 0 or None opt out.
     """
-    target = Path(path) if path is not None else DEFAULT_MARKETS_PATH
+    target = Path(path) if path is not None else default_markets_path()
 
     if not target.is_file():
         raise MarketFeedAbsentError(

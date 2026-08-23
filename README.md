@@ -68,10 +68,11 @@ merge is the exit and the P&L event.
 ```
 spread-hunter-live/
   engine/                 Core trading & execution engine
-  dash/                   Operations dashboard (:8799) + SPA
-  scripts/                Ranker, screener loop, watchdog, PowerShell control center
-  strategy/               Simulation-side modules (fork source for engine/config.py)
-  run/                    Runtime state (live.db registry, markets.json, logs — not committed)
+  dashboard/              Operations dashboard (:8799) + SPA
+  scripts/                Market Filter, filter loop, watchdog, PowerShell control center
+  strategy/               Scoring, allocation and selection rules the Market Filter uses
+  data/                   Order registry (orders.db — not committed)
+  run/                    Market universe, logs and cycle telemetry (not committed)
   tests/                  Full hermetic unit & integration test suite
 ```
 

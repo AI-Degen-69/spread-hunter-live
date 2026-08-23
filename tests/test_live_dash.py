@@ -937,7 +937,7 @@ def test_start_bot_spawns_screener_engine_and_fleet(monkeypatch, tmp_path):
     assert any("scripts.rerank_loop" in c for c in cmds), cmds
     assert any("engine.live_exec" in c and "poll" in c for c in cmds), cmds
 
-    fleet_cmd = next(c for c in cmds if "engine.live_fleet" in c)
+    fleet_cmd = next(c for c in cmds if "engine.main_spread_hunter_loop" in c)
     assert "--live" in fleet_cmd
     assert "--no-reconcile" in fleet_cmd
     assert "--no-sweep" in fleet_cmd

@@ -50,25 +50,23 @@ class MakerConfig:
     #
     # What this field actually selects is WHERE THE QUOTE IS PRICED FROM:
     #
-    # "pair"    : price off the ASK -- rest one tick under it. MEASURED DEAD over
-    #             60 markets: that puts every quote ~half a spread ABOVE mid, so
-    #             the pair costs 1.00 + spread by construction. The book runs at
-    #             101% all window; there is nothing to capture. Unreachable in
-    #             production and must stay that way.
-    # "rewards" : price off the MID -- rest both legs at mid - offset. The name is
-    #             historical (it dates from the rebate-farming phase) and is kept
-    #             only because changing the literal is a behaviour-adjacent edit
-    #             across the fleet and the test suite. READ IT AS "from mid":
-    #             because mid_up + mid_dn ~ 1.00, resting `offset` under mid on
-    #             both sides assembles the pair at ~1.00 - 2*offset, which is
-    #             exactly how a sub-$1.00 pair gets built. It is the correct
-    #             mechanism for spread capture, under the wrong name.
+    # "pair"           : price off the ASK -- rest one tick under it. MEASURED DEAD over
+    #                    60 markets: that puts every quote ~half a spread ABOVE mid, so
+    #                    the pair costs 1.00 + spread by construction. The book runs at
+    #                    101% all window; there is nothing to capture. Unreachable in
+    #                    production and must stay that way.
+    # "spread_capture" : price off the MID -- rest both legs at mid - offset. Formerly
+    #                    called "rewards". READ IT AS "from mid":
+    #                    because mid_up + mid_dn ~ 1.00, resting `offset` under mid on
+    #                    both sides assembles the pair at ~1.00 - 2*offset, which is
+    #                    exactly how a sub-$1.00 pair gets built. It is the correct
+    #                    mechanism for spread capture.
     #
     # The reward SCORE, S(v, s) = ((v - s)/v)^2 * size with v = rewardsMaxSpread,
     # still shapes the offset tradeoff (closer to mid scores more but fills more
     # adversely) and is reported in the quote reason. It does not size anything --
     # see `quotes.reward_score`, whose only caller formats a log string.
-    objective: str = "rewards"
+    objective: str = "spread_capture"
 
     # How far below mid to rest, in price units. This is the whole tradeoff:
     # score is quadratic in closeness (0.5c -> ~16% of market score, 2c -> ~7%,

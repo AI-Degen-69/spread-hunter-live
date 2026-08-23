@@ -7,12 +7,6 @@
       "source_sha256": "ab0eb347a34545bae7ce14cffab0ad134055e491b325d3cad3f89a860ad8aa72",
       "why": "Leaf config -- live tuning parameters diverge from simulation: bankroll_usd=100.0, quote_shares=0 (dollar-sized), min_quote_shares=5 (venue min_size), max_naked_usd=6.0, couple_risk_frac=0.01, min_couple_usd=6.0."
     },
-    "live/engine/gate.py": {
-      "forked_from": "strategy/gate.py",
-      "at_commit": "b4c4e61f07ed0a9a53c6dbdf0bf224746b7e2fc5",
-      "source_sha256": "eca6e1efd655f99dcddc7cfc0b083b04adb52116d4493e71e5b1ae42b858eeed",
-      "why": "Leaf module -- quality gate and fleet posture state machine -- so live/ decision layer carries its own copy."
-    },
     "live/engine/kpi.py": {
       "forked_from": "strategy/kpi.py",
       "at_commit": "c2b91152a55850937a0166d2a45a33a57eeb789c",

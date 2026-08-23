@@ -84,7 +84,7 @@ if str(ROOT) not in sys.path:
 
 # Settlement primitives (ABI encoding, id derivation, EIP-712 signing) live in
 # engine.settlement; the relayer/RPC submit path stays here with the CLI verbs.
-from engine.settlement import (
+from engine.merge_pairs import (
     CTF_CONTRACT,
     USDC_E_CONTRACT,
     ZERO_BYTES32,
@@ -342,7 +342,7 @@ def pairs(db_path: str | Path | None = None) -> None:
     operator skips at the moment it matters.
     """
     from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH, get_connection
-    from engine.live_pairs import load_pair, PairExitRefused
+    from engine.single_side_buy_saver import load_pair, PairExitRefused
 
     db = Path(db_path) if db_path else DEFAULT_DB_PATH
     registry = OrderRegistry(db_path=db)
@@ -2005,7 +2005,7 @@ def poll(
         # loop either.
         try:
             from engine.config import load as _load_cfg
-            from engine.live_pairs import auto_manage_pairs
+            from engine.single_side_buy_saver import auto_manage_pairs
             for pr in auto_manage_pairs(
                 client, registry, _load_cfg(), funder=funder,
             ):
@@ -2094,7 +2094,7 @@ def exit_pair(pair_id: str, live: bool, db_path: str | Path | None = None,
     Data API is down and the operator has decided to act anyway, and it says so
     on the record.
     """
-    from engine.live_pairs import (
+    from engine.single_side_buy_saver import (
         exit_naked_leg, fetch_positions, load_pair, PairExitRefused,
     )
     from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH
@@ -2197,7 +2197,7 @@ def complete_pair_cmd(pair_id: str, live: bool, db_path: str | Path | None = Non
     cross that would push the pair to or past max_pair_cost -- that case
     belongs to `exit`, and this path must not do the stop-loss's job badly.
     """
-    from engine.live_pairs import (
+    from engine.single_side_buy_saver import (
         complete_pair, fetch_positions, load_pair, PairCompletionRefused,
         PairExitRefused,
     )

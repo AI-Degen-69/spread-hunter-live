@@ -74,7 +74,7 @@ string and feeds no sizing decision.
 
 A pair assembled **over $1.00** is a booked loss on an instrument that pays exactly
 $1.00. A **one-sided fill** is a directional bet nobody decided to take. Everything in
-`risk.py`, `gate.py` and `live_pairs.py` exists to prevent those two states.
+`risk.py`, `unhedged_stop_loss.py` and `single_side_buy_saver.py` exists to prevent those two states.
 
 ## Layout
 
@@ -83,11 +83,11 @@ spread-hunter-live/
   engine/                 Core trading & execution engine
     quotes.py             THE decision layer: where to rest both legs, and why not to
     risk.py               Sizing ladder, inventory skew, dollar caps, hard blocks
-    gate.py               Per-market markout state machine + fleet posture
-    live_fleet.py         Multi-market rotation: decide -> plan -> submit/cancel
+    unhedged_stop_loss.py Per-market markout state machine + fleet posture
+    main_spread_hunter_loop.py Multi-market rotation: decide -> plan -> submit/cancel
     live_exec.py          CLI: status, quote, poll, merge, redeem, exit, cancel
-    live_pairs.py         Naked-leg rescue (U35): complete the pair, or exit the leg
-    settlement.py         Gasless merge & redemption (ABI, alt-bn128, EIP-712)
+    single_side_buy_saver.py Naked-leg rescue (U35): complete the pair, or exit the leg
+    merge_pairs.py        Gasless merge & redemption (ABI, alt-bn128, EIP-712)
     order_registry.py     SQLite order/fill tracking + reconcile (run/live.db)
     registry_state.py     Read side of the registry; what the dashboard renders
     market_feed.py        Reads the ranker's graduated universe (run/markets.json)

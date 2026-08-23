@@ -27,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
-from engine import config, gate, risk
+from engine import config, risk, unhedged_stop_loss
 from engine.config import MakerConfig
 
 
@@ -113,7 +113,7 @@ def quote_resting_price(
     mid = mid_price(bb, ba)
     if mid is None:
         return None, None, None, 1.0
-    base = gate.offset_for(getattr(cfg, "gate_state", gate.NORMAL),
+    base = unhedged_stop_loss.offset_for(getattr(cfg, "gate_state", unhedged_stop_loss.NORMAL),
                            cfg.reward_offset, cfg.widen_offset)
     provisional = round(mid - base, 4)
     skew = risk.skew_offset(cfg, inv, side)
@@ -186,7 +186,7 @@ def _decide_quotes_from_mid(
     # A market that kept picking us off AFTER we widened is not mispriced, it
     # is toxic. Giving up the rent is the point: rent is worth ~$50/day across
     # the fleet, and the exposure a bad market builds is worth multiples of it.
-    if getattr(cfg, "gate_state", gate.NORMAL) == gate.EXITED:
+    if getattr(cfg, "gate_state", unhedged_stop_loss.NORMAL) == unhedged_stop_loss.EXITED:
         return [], "market exited: fills still lost money after widening"
 
     # PER-MARKET FILL CAP. This check has existed in `decide_quotes` since the
@@ -294,7 +294,7 @@ def _decide_quotes_from_mid(
 
         # THE FLEET CIRCUIT BREAKER (U6).
         if imbalance > 0 and getattr(cfg, "fleet_posture",
-                                     gate.NORMAL) == gate.HALTED:
+                                     unhedged_stop_loss.NORMAL) == unhedged_stop_loss.HALTED:
             blocked.append(
                 f"{side}: fleet HALTED on pooled markout -- no new naked "
                 f"exposure until the fleet's fills stop losing money")
@@ -386,7 +386,7 @@ def decide_quotes(
     the caller could not work it out, in which case the timing rule is SKIPPED
     rather than guessed -- a missing clock must not silently gate every quote.
     """
-    if cfg.objective == "rewards":
+    if cfg.objective in ("spread_capture", "rewards"):
         intents, why = _decide_quotes_from_mid(cfg, up_book, down_book, inv,
                                                t_remaining)
         return _require_two_sided(cfg, inv, intents, why)

@@ -1790,7 +1790,7 @@ def registry_naked_usd(registry) -> float:
     longer carries. A partially-exited pair is skipped whole rather than
     over-stated, which is the safe direction for a risk figure.
     """
-    from engine.live_pairs import load_pair, PairExitRefused
+    from engine.single_side_buy_saver import load_pair, PairExitRefused
 
     with registry._conn() as conn:
         closed_cids = {

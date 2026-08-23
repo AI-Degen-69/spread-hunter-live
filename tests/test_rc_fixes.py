@@ -23,14 +23,14 @@ from pathlib import Path
 
 import pytest
 
-from engine import live_pairs as lp
+from engine import single_side_buy_saver as lp
 from engine import risk
 from engine.config import MakerConfig
 from engine.order_registry import (
     CloseRecord, FillRecord, OrderRecord, OrderRegistry, QuoteRecord,
 )
 from engine.quotes import Inventory, decide_quotes
-from engine.live_pairs import auto_manage_pairs
+from engine.single_side_buy_saver import auto_manage_pairs
 
 MAX_PAIR_COST = 0.995
 TOK_UP = "tok-up"

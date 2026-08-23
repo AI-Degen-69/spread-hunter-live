@@ -29,7 +29,7 @@ from typing import Any, Callable, Optional
 from engine.quotes import Inventory, QuoteIntent, evaluate_market_quote
 from engine.cycle_stream import emit as _emit_cycle_event
 
-log = logging.getLogger("live_fleet")
+log = logging.getLogger("main_spread_hunter_loop")
 
 LIVE_ROOT = Path(__file__).resolve().parent.parent
 REPO_ROOT = LIVE_ROOT
@@ -113,7 +113,7 @@ def _market_cfg(base, spec: Any):
         return base
     return replace(
         base,
-        objective="rewards",
+        objective="spread_capture",
         min_quote_shares=int(spec.get("min_size", base.min_quote_shares)),
         quote_shares=int(spec.get("shares", base.quote_shares)),
         max_spread_from_mid=float(
@@ -589,7 +589,7 @@ def _fleet_state(registry, cfg) -> dict:
     keeps the previous cycle's values -- never resetting a live cap to open on
     a bad read.
     """
-    from engine.gate import fleet_posture
+    from engine.unhedged_stop_loss import fleet_posture
     from engine.markout import fleet_stats
     from engine.order_registry import (
         registry_committed_usd, registry_naked_usd,

@@ -41,12 +41,12 @@ merge is the exit and the P&L event.
 **Engine** (`engine/`)
 - `quotes.py` — the decision layer: where to rest both legs, and why not to
 - `risk.py` — sizing ladder, inventory skew, dollar caps, hard blocks
-- `gate.py` — per-market markout state machine + fleet posture (HALTED etc.)
-- `live_fleet.py` — multi-market rotation: decide → plan → submit/cancel (5s cadence)
+- `unhedged_stop_loss.py` — per-market markout state machine + fleet posture (HALTED etc.)
+- `main_spread_hunter_loop.py` — multi-market rotation: decide → plan → submit/cancel (5s cadence)
 - `live_exec.py` — CLI: `status`, `balance`, `decide`, `quote`, `poll`, `merge`, `redeem`,
   `complete`, `exit`, `cancel`, `cancel-market`, `cancel-all`, `pairs`, `kpi`, `audit`
-- `live_pairs.py` — naked-leg rescue: complete the pair, or exit the leg
-- `settlement.py` — gasless merge & redemption (ABI, alt-bn128, EIP-712)
+- `single_side_buy_saver.py` — naked-leg rescue: complete the pair, or exit the leg
+- `merge_pairs.py` — gasless merge & redemption (ABI, alt-bn128, EIP-712)
 - `order_registry.py` — SQLite order/fill tracking + reconcile (`run/live.db`)
 - `audit.py`, `kpi.py`, `account.py`, `cycle_stream.py`, `market_feed.py`, `markets.py`
 

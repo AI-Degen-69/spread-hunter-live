@@ -4,7 +4,7 @@ import pytest
 from engine.config import MakerConfig
 from engine.order_registry import OrderRecord, OrderRegistry, FillRecord, inventory_from_registry
 from engine.quotes import Inventory, QuoteIntent, decide_quotes, mid_price
-from engine import gate, risk
+from engine import risk, unhedged_stop_loss
 
 
 def test_mid_price_calculation():

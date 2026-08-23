@@ -19,7 +19,7 @@ import pytest
 from engine.order_registry import (
     OrderRegistry, OrderRecord, FillRecord, QuoteRecord,
 )
-from engine import live_pairs as lp
+from engine import single_side_buy_saver as lp
 
 
 MAX_PAIR_COST = 0.995
@@ -748,7 +748,7 @@ def test_route_to_merge_does_not_leave_the_condition_blocked(
                 "condition_id": COND, "cancelled": [light.order_id], "size": 0.0}
 
     monkeypatch.setattr(live_exec, "exit_naked_leg", fake_exit, raising=False)
-    monkeypatch.setattr("engine.live_pairs.exit_naked_leg", fake_exit)
+    monkeypatch.setattr("engine.single_side_buy_saver.exit_naked_leg", fake_exit)
 
     live_exec.exit_pair(pair_id, live=True, db_path=registry.db_path,
                         skip_positions_check=True)
@@ -771,7 +771,7 @@ def test_a_real_exit_does_hold_the_condition(registry: OrderRegistry, tmp_path,
         return {"action": "exited", "pair_id": pair_id, "condition_id": COND,
                 "size": 10.0, "cancelled": []}
 
-    monkeypatch.setattr("engine.live_pairs.exit_naked_leg", fake_exit)
+    monkeypatch.setattr("engine.single_side_buy_saver.exit_naked_leg", fake_exit)
 
     live_exec.exit_pair(pair_id, live=True, db_path=registry.db_path,
                         skip_positions_check=True)
@@ -804,7 +804,7 @@ def test_complete_pair_cmd_runs_end_to_end_and_holds_after_a_cross(
         return {"action": "completed", "pair_id": pair_id, "condition_id": COND,
                 "size": 10.0, "notional": 3.0}
 
-    monkeypatch.setattr("engine.live_pairs.complete_pair", fake_complete)
+    monkeypatch.setattr("engine.single_side_buy_saver.complete_pair", fake_complete)
 
     live_exec.complete_pair_cmd(pair_id, live=True, db_path=registry.db_path,
                                 skip_positions_check=True)
@@ -829,7 +829,7 @@ def test_complete_pair_cmd_does_not_hold_the_condition_when_nothing_crossed(
         return {"action": "balanced", "pair_id": pair_id, "condition_id": COND,
                 "size": 0.0}
 
-    monkeypatch.setattr("engine.live_pairs.complete_pair", fake_complete)
+    monkeypatch.setattr("engine.single_side_buy_saver.complete_pair", fake_complete)
 
     live_exec.complete_pair_cmd(pair_id, live=True, db_path=registry.db_path,
                                 skip_positions_check=True)

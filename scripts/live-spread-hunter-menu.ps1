@@ -44,7 +44,7 @@ $StackPaths = @{
     supervisor = "engine/live_exec.py"   # the engine poll loop doubles as supervisor
     screener   = "scripts/rerank_loop.py"
     engine     = "engine/live_exec.py"
-    fleet      = "engine/live_fleet.py"
+    fleet      = "engine/main_spread_hunter_loop.py"
     guardrail  = "scripts/guardrail_watch.py"
     dash       = "dash/live_dash.py"
 }
@@ -606,7 +606,7 @@ function Show-CheckoutIdentity {
     # the launched processes get it via -WorkingDirectory, but a python -c
     # inherits the shell's cwd, which some hosts (profile-set locations) do
     # not forward. cwd is printed so failures stay diagnosable.
-    $code = "import sys; sys.path.insert(0, r'$ProjectPath'); import os, dash.live_dash as d, engine.live_fleet as f, scripts.rerank_loop as r, scripts.rank_markets as k; print('cwd=' + os.getcwd()); print(os.path.dirname(d.__file__)); print(os.path.dirname(f.__file__)); print(r.__file__); print(k.__file__)"
+    $code = "import sys; sys.path.insert(0, r'$ProjectPath'); import os, dash.live_dash as d, engine.main_spread_hunter_loop as f, scripts.rerank_loop as r, scripts.rank_markets as k; print('cwd=' + os.getcwd()); print(os.path.dirname(d.__file__)); print(os.path.dirname(f.__file__)); print(r.__file__); print(k.__file__)"
     $raw = @()
     try { $raw = @(& python -c $code 2>&1) } catch {}
     if ($raw.Count -lt 4) {
@@ -622,7 +622,7 @@ function Show-CheckoutIdentity {
         if ($tail) { Write-StatusLine -Label "Diagnostic" -Detail $tail -DetailStyle Warning }
         return
     }
-    $labels = @("dash.live_dash", "engine.live_fleet", "scripts.rerank_loop", "scripts.rank_markets")
+    $labels = @("dash.live_dash", "engine.main_spread_hunter_loop", "scripts.rerank_loop", "scripts.rank_markets")
     for ($i = 0; $i -lt 4; $i++) {
         $p = $paths[$i].Trim()
         if ($p -like "$ProjectPath*") {

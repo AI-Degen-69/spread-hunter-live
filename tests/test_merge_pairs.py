@@ -12,7 +12,7 @@ import pytest
 from eth_account import Account
 from eth_utils import keccak
 
-import engine.settlement as s
+import engine.merge_pairs as s
 
 
 def test_encode_redeem_positions():

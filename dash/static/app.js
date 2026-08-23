@@ -312,7 +312,7 @@ const SERVICE_DEFS = [
     desc: 'Scans 500+ Polymarket binary markets and screens down to 8 graduated pairs.' },
   { key: 'engine', name: 'Engine Poll Loop', cmd: 'python -m engine.live_exec poll --interval 5',
     desc: 'Polls CLOB every 5s, reconciles fills, executes account sweeps.' },
-  { key: 'fleet', name: 'Quoting Fleet', cmd: 'python -m engine.live_fleet loop',
+  { key: 'fleet', name: 'Quoting Fleet', cmd: 'python -m engine.main_spread_hunter_loop loop',
     desc: 'Evaluates two-sided pricing, computes size ladders, submits maker bids.' },
   { key: 'guardrail', name: 'Guardrail Watchdog', cmd: 'python -m scripts.guardrail_watch',
     desc: 'Continuous risk monitor enforcing hard exposure and inventory limits.',

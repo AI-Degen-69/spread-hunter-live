@@ -659,7 +659,7 @@ def start_bot() -> dict:
         # --no-sweep: a second reconcile loop would contend on the reconcile lock
         # and double the venue reads poll already makes.
         p_fleet = subprocess.Popen(
-            [sys.executable, "-m", "engine.live_fleet", "--live",
+            [sys.executable, "-m", "engine.main_spread_hunter_loop", "--live",
              "--no-reconcile", "--no-sweep", "--interval", "5"],
             cwd=str(LIVE_ROOT),
             stdout=subprocess.DEVNULL,

@@ -40,7 +40,7 @@ def _deferred_engine_imports() -> set[str]:
 def test_deferred_imports_are_discovered():
     """Guard the regex: if it silently matches nothing, the tests below pass vacuously."""
     names = _deferred_engine_imports()
-    assert {"order_registry", "markets", "live_pairs", "config"} <= names, names
+    assert {"order_registry", "markets", "single_side_buy_saver", "config"} <= names, names
 
 
 # The two ways this module is actually launched. `-m` from live/ is the

@@ -3,7 +3,7 @@
 ABI encoding for the ConditionalTokens contract, collection/position id
 derivation over alt_bn128, and EIP-712 batch signing. Pure computation only —
 no I/O, no venue calls. The relayer submit path and the payout-denominator RPC
-read stay in engine.order_manager next to the CLI verbs that use them.
+read stay in core_brain.order_manager next to the CLI verbs that use them.
 
 Extracted from core_brain.order_manager (Session 62-era code, previously the one
 3,370-line module). Signatures are unchanged; this is relocation for locality,

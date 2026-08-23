@@ -18,6 +18,10 @@
 # NOTE: "start" launches Decide & Execute, which rests REAL maker bids. That is
 # an opening command and requires explicit supervision (AGENTS.md).
 
+#Requires -Version 7.0
+# PowerShell 7 (pwsh) is required. This file is UTF-8 without a BOM and
+# contains box-drawing characters that Windows PowerShell 5.1 misdecodes.
+
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
@@ -57,6 +61,21 @@ $ProcsFile   = Resolve-RuntimeFile -Name "processes.json" -LegacyName "live_proc
 $OutLog      = Join-Path $RunDir "live_dash.out.log"
 $ErrLog      = Join-Path $RunDir "live_dash.err.log"
 $HbFile      = Resolve-RuntimeFile -Name "global_stop_loss_heartbeat.json" -LegacyName "guardrail_watch_heartbeat.json"
+
+# `started_at` in the process file is a NUMERIC Unix timestamp -- start_bot()
+# writes `time.time()`. [datetime]::Parse() throws on that, and the stop path
+# below treats a throw as "skip the kill" and then deletes the process file, so
+# a live stack would be orphaned with no registry left to find it by.
+function ConvertTo-RecordedStart {
+    <# The recorded process start as a DateTime, or $null when unusable. #>
+    param($StartedAt)
+    if ($null -eq $StartedAt -or "$StartedAt" -eq "") { return $null }
+    $numeric = 0.0
+    if ([double]::TryParse("$StartedAt", [ref]$numeric)) {
+        return [DateTimeOffset]::FromUnixTimeMilliseconds([int64]($numeric * 1000)).LocalDateTime
+    }
+    try { return [datetime]::Parse("$StartedAt") } catch { return $null }
+}
 
 # Process keys were renamed with the file. Read both names.
 $LegacyServiceKeys = @{ filter = "screener"; query = "engine"; decide = "fleet" }
@@ -553,8 +572,18 @@ function Stop-BotStack {
         return
     }
     if (Test-Path $ProcsFile) {
+        $saved = $null
         try { $saved = Get-Content $ProcsFile -Raw | ConvertFrom-Json } catch { $saved = $null }
+        if ($null -eq $saved) {
+            # A registry we cannot parse is not an empty one. Falling through
+            # would kill nothing, delete the file, and print "stale record
+            # cleared" -- destroying the only record of the live PIDs. Matches
+            # stop_bot() in dashboard/server.py, which refuses the same way.
+            Lsh-Fail "Cannot read $ProcsFile; refusing to report the stack stopped. No process was killed and the file was left in place. Fix or remove it, then stop again."
+            return
+        }
         $killed = $false
+        $skipped = $false
         foreach ($name in @("filter", "query", "decide")) {
             $info = if ($saved) { Get-ServiceEntry -Saved $saved -Key $name } else { $null }
             if ($info -and $info.pid -and (Test-PidAlive -ProcessId $info.pid)) {
@@ -562,21 +591,29 @@ function Stop-BotStack {
                 $shouldKill = $false
                 if (-not $info.started_at) {
                     # No start time: skip this kill
+                    $skipped = $true
                     Lsh-Warn "$name (PID $($info.pid)) has no started_at; skipping kill"
                 } else {
-                    try {
-                        $recordedStart = [datetime]::Parse([string]$info.started_at)
-                        $proc = Get-Process -Id $info.pid -ErrorAction Stop
-                        $actualStart = $proc.StartTime
-                        $tolerance = [timespan]::FromSeconds(60)
-                        if ([math]::Abs(($actualStart - $recordedStart).TotalSeconds) -le $tolerance.TotalSeconds) {
-                            $shouldKill = $true
-                        } else {
-                            Lsh-Warn "$name (PID $($info.pid)) start time mismatch; skipping kill (recorded: $recordedStart, actual: $actualStart)"
+                    $recordedStart = ConvertTo-RecordedStart -StartedAt $info.started_at
+                    if ($null -eq $recordedStart) {
+                        $skipped = $true
+                        Lsh-Warn "$name (PID $($info.pid)) has an unreadable started_at; skipping kill"
+                    } else {
+                        try {
+                            $proc = Get-Process -Id $info.pid -ErrorAction Stop
+                            $actualStart = $proc.StartTime
+                            $tolerance = [timespan]::FromSeconds(60)
+                            if ([math]::Abs(($actualStart - $recordedStart).TotalSeconds) -le $tolerance.TotalSeconds) {
+                                $shouldKill = $true
+                            } else {
+                                $skipped = $true
+                                Lsh-Warn "$name (PID $($info.pid)) start time mismatch; skipping kill (recorded: $recordedStart, actual: $actualStart)"
+                            }
+                        } catch {
+                            # If we can't get start time, skip kill
+                            $skipped = $true
+                            Lsh-Warn "$name (PID $($info.pid)) start time unavailable; skipping kill"
                         }
-                    } catch {
-                        # If we can't get start time, skip kill
-                        Lsh-Warn "$name (PID $($info.pid)) start time unavailable; skipping kill"
                     }
                 }
                 if ($shouldKill) {
@@ -586,9 +623,16 @@ function Stop-BotStack {
                 }
             }
         }
-        Remove-Item $ProcsFile -ErrorAction SilentlyContinue
-        if ($killed) { Lsh-Ok "Bot stack processes killed from recorded PIDs." }
-        else         { Lsh-Warn "processes.json exists but no process is alive (stale record cleared)." }
+        if ($skipped) {
+            # Keep the record. Deleting it here is how a live stack becomes
+            # unreachable: the PIDs would be gone and a later start would see
+            # STOPPED and launch a second Decide & Execute beside this one.
+            Lsh-Fail "Left one or more recorded processes running; keeping $ProcsFile. Stop them by PID, then re-run."
+        } else {
+            Remove-Item $ProcsFile -ErrorAction SilentlyContinue
+            if ($killed) { Lsh-Ok "Bot stack processes killed from recorded PIDs." }
+            else         { Lsh-Warn "processes.json exists but no process is alive (stale record cleared)." }
+        }
     } else {
         Lsh-Warn "No bot stack is running (no processes.json)."
     }

@@ -16,6 +16,7 @@ the plain `runtime/`-only lookups the rename shipped with.
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -184,3 +185,197 @@ def test_dashboard_sees_a_stack_started_before_the_rename(tmp_path, monkeypatch)
     assert status["bot_state"] == "RUNNING"
     assert status["services"]["decide"]["running"] is True
     assert status["services"]["decide"]["pid"] == os.getpid()
+
+
+# ── fail closed on an unreadable process registry ──
+
+def _write_registry(tmp_path, text: str):
+    (tmp_path / "runtime").mkdir(exist_ok=True)
+    (tmp_path / "run").mkdir(exist_ok=True)
+    (tmp_path / "runtime" / "processes.json").write_text(text, encoding="utf-8")
+
+
+def test_unreadable_registry_reports_unknown_not_stopped(tmp_path, monkeypatch):
+    """A half-written registry must never read as 'nothing is running'."""
+    from dashboard import server
+
+    _write_registry(tmp_path, '{"decide": {"pid": 4242')  # truncated mid-write
+    monkeypatch.setattr(server, "LIVE_ROOT", tmp_path)
+
+    status = server.get_system_status()
+
+    assert status["bot_state"] == "UNKNOWN"
+    assert status["registry_unreadable"] is True
+
+
+def test_registry_holding_a_list_reports_unknown(tmp_path, monkeypatch):
+    """`saved_procs.get(...)` would explode on a list; treat it as unreadable."""
+    from dashboard import server
+
+    _write_registry(tmp_path, "[]")
+    monkeypatch.setattr(server, "LIVE_ROOT", tmp_path)
+
+    assert server.get_system_status()["bot_state"] == "UNKNOWN"
+
+
+def test_readable_empty_registry_is_stopped(tmp_path, monkeypatch):
+    """An empty object is a real answer: nothing recorded, nothing running."""
+    from dashboard import server
+
+    _write_registry(tmp_path, "{}")
+    monkeypatch.setattr(server, "LIVE_ROOT", tmp_path)
+
+    status = server.get_system_status()
+
+    assert status["bot_state"] == "STOPPED"
+    assert status["registry_unreadable"] is False
+
+
+def test_start_refuses_while_the_registry_is_unreadable(tmp_path, monkeypatch):
+    """The money case: UNKNOWN must not be treated as permission to start."""
+    from dashboard import server
+
+    # start_bot creates .bot_start.lock under LIVE_ROOT before it checks the
+    # status, so this must point at tmp_path -- otherwise the test writes into
+    # the real repository and its stale-lock branch can remove a lock that a
+    # live start owns.
+    monkeypatch.setattr(server, "LIVE_ROOT", tmp_path)
+    monkeypatch.setattr(
+        server, "get_system_status",
+        lambda: {"bot_state": "UNKNOWN", "registry_path": "runtime/processes.json"},
+    )
+
+    result = server.start_bot()
+
+    assert result["ok"] is False
+    assert "refusing to start" in result["message"].lower()
+    assert "runtime/processes.json" in result["message"]
+
+
+def test_reset_refuses_while_the_registry_is_unreadable(tmp_path, monkeypatch):
+    """Unlinking the registry DB under a live writer loses every later write."""
+    from dashboard import server
+
+    monkeypatch.setattr(server, "get_system_status", lambda: {"bot_state": "UNKNOWN"})
+
+    result = server.reset_database(custom_path=tmp_path / "orders.db")
+
+    assert result["ok"] is False
+    assert "state is unknown" in result["message"]
+
+
+# ── STOP and reset must not report a stack down that they never reached ──
+
+def test_stop_refuses_on_an_unreadable_registry(tmp_path, monkeypatch):
+    """Reporting 'stopped' here lets the reset archive the DB under a live writer."""
+    from dashboard import server
+
+    _write_registry(tmp_path, '{"decide": {"pid": 4242')
+    procs_file = tmp_path / "runtime" / "processes.json"
+    monkeypatch.setattr(server, "LIVE_ROOT", tmp_path)
+
+    result = server.stop_bot()
+
+    assert result["ok"] is False
+    assert "cannot read the process file" in result["message"].lower()
+    # The record survives: it is the only way back to the running PIDs.
+    assert procs_file.exists()
+
+
+def test_stop_clears_a_readable_registry(tmp_path, monkeypatch):
+    """The normal path is unchanged: readable registry, record removed."""
+    from dashboard import server
+
+    _write_registry(tmp_path, '{"decide": {"pid": 999999999, "started_at": 1.0}}')
+    procs_file = tmp_path / "runtime" / "processes.json"
+    monkeypatch.setattr(server, "LIVE_ROOT", tmp_path)
+
+    result = server.stop_bot()
+
+    assert result["ok"] is True
+    assert not procs_file.exists()
+
+
+def test_idempotency_guard_reads_the_pre_rename_order_log(tmp_path, monkeypatch):
+    """A merge recorded before the rename must still block a second one.
+
+    Missing that row is a duplicate on-chain settlement for a condition that
+    is already in flight.
+    """
+    from core_brain import order_manager
+
+    (tmp_path / "runtime").mkdir()
+    legacy_dir = tmp_path / "run"
+    legacy_dir.mkdir()
+    (legacy_dir / "live_orders.json").write_text(
+        json.dumps([{"id": "merge-1", "condition_id": "0xABC", "status": "submitted"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(order_manager, "ROOT", tmp_path)
+    monkeypatch.setattr(order_manager, "RUN", tmp_path / "runtime")
+
+    with pytest.raises(SystemExit) as excinfo:
+        order_manager._check_idempotency_guard("0xabc")
+
+    assert "merge-1" in str(excinfo.value)
+
+
+def test_idempotency_guard_still_allows_an_unseen_condition(tmp_path, monkeypatch):
+    from core_brain import order_manager
+
+    (tmp_path / "runtime").mkdir()
+    legacy_dir = tmp_path / "run"
+    legacy_dir.mkdir()
+    (legacy_dir / "live_orders.json").write_text(
+        json.dumps([{"id": "merge-1", "condition_id": "0xABC", "status": "confirmed"}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(order_manager, "ROOT", tmp_path)
+    monkeypatch.setattr(order_manager, "RUN", tmp_path / "runtime")
+
+    order_manager._check_idempotency_guard("0xabc")  # must not raise
+
+
+# ── --no-live must mean --no-live, wherever it appears ──
+
+@pytest.mark.parametrize("argv", [
+    ["--no-live", "merge", "0xabc", "--amount", "1"],
+    ["merge", "0xabc", "--amount", "1", "--no-live"],
+])
+def test_no_live_wins_from_either_side_of_the_subcommand(argv, monkeypatch):
+    """`--no-live merge 0xabc` used to go LIVE.
+
+    Each subparser redefined `--live` with `default=True`, and argparse applies
+    the subparser default AFTER the parent has parsed, so a `--no-live` typed
+    before the subcommand was silently overwritten back to True. An operator
+    asking for a dry run got a real on-chain merge.
+    """
+    from core_brain import order_manager
+
+    captured = {}
+    monkeypatch.setattr(order_manager, "merge", lambda *a, **k: captured.update(k))
+    monkeypatch.setattr(sys, "argv", ["order_manager", *argv])
+
+    try:
+        order_manager.main()
+    except SystemExit:
+        pass
+
+    assert captured.get("live") is False
+
+
+def test_live_is_still_the_default(monkeypatch):
+    """The safety rail is unchanged: no flag at all means LIVE."""
+    from core_brain import order_manager
+
+    captured = {}
+    monkeypatch.setattr(order_manager, "merge", lambda *a, **k: captured.update(k))
+    monkeypatch.setattr(sys, "argv",
+                        ["order_manager", "merge", "0xabc", "--amount", "1"])
+
+    try:
+        order_manager.main()
+    except SystemExit:
+        pass
+
+    assert captured.get("live") is True

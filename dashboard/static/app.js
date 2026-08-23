@@ -209,7 +209,9 @@ const sseReconnect = document.getElementById('sse-reconnect');
 const EVENT_TRANSLATIONS = {
   // Filter
   'filter|rerank_done': 'Finished scanning all Polymarket markets and updated the graduated list.',
+  'filter|rerank_error': 'Market scan failed. The graduated list was not updated, so Decide & Execute keeps quoting the previous universe.',
   'screener|rerank_done': 'Finished scanning all Polymarket markets and updated the graduated list.',
+  'screener|rerank_error': 'Market scan failed. The graduated list was not updated, so Decide & Execute keeps quoting the previous universe.',
 
   // Query — reconciliation
   'query|reconcile_ok': 'Checked the venue for new fills on our orders. All synced up.',
@@ -221,10 +223,10 @@ const EVENT_TRANSLATIONS = {
 
   // Query — account sweep
   'query|sweep_done': 'Read the live wallet balance and open positions from Polymarket. Dashboard tiles are now fresh.',
-  'query|sweep_skipped': 'Skipped the wallet sweep this cycle (not due yet or rate-limited).',
+  'query|sweep_skipped': 'Skipped the wallet sweep: POLY_FUNDER is not set, so the account balance and float marks are not being read.',
   'query|sweep_error': 'Failed to read the wallet from Polymarket. Balance and exposure tiles may be stale.',
   'engine|sweep_done': 'Read the live wallet balance and open positions from Polymarket. Dashboard tiles are now fresh.',
-  'engine|sweep_skipped': 'Skipped the wallet sweep this cycle (not due yet or rate-limited).',
+  'engine|sweep_skipped': 'Skipped the wallet sweep: POLY_FUNDER is not set, so the account balance and float marks are not being read.',
   'engine|sweep_error': 'Failed to read the wallet from Polymarket. Balance and exposure tiles may be stale.',
 
   // Query — pairs management
@@ -401,14 +403,14 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
         // Individual stop - uses per-service control
         await controlFetch('/api/system/stop');
       } else {
-        // Starting live trading requires explicit typed confirmation
-        if (svc === 'decide' || svc === 'fleet') {
-          const confirmed = prompt('Type START to confirm starting live Decide & Execute:');
-          if (confirmed !== 'START') {
-            return;
-          }
+        // /api/system/start is atomic: it launches Filter, Query AND the live
+        // Decide & Execute loop together. Every toggle therefore starts live
+        // trading, whichever card was clicked, so the typed confirmation sits
+        // outside the service check rather than only on the decide card.
+        const confirmed = prompt('This starts the whole stack, including live Decide & Execute, which rests REAL maker bids. Type START to confirm:');
+        if (confirmed !== 'START') {
+          return;
         }
-        // Atomic start
         await controlFetch('/api/system/start');
       }
       pollStatus();

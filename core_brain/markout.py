@@ -1,4 +1,4 @@
-"""live/engine/markout.py - Out-of-band adverse selection sampler for live trading.
+"""core_brain/markout.py - Out-of-band adverse selection sampler for live trading.
 
 Measures mid-price movement post-fill at the standard markout horizons:
   mid_h0: 300s (5m)

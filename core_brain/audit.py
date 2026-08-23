@@ -1,4 +1,4 @@
-"""live/engine/audit.py - Three-way audit comparing Registry, Venue, and Chain views.
+"""core_brain/audit.py - Three-way audit comparing Registry, Venue, and Chain views.
 
 Compares:
 1. Local Registry View (data/orders.db: orders, fills, size_matched)

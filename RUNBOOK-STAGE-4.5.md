@@ -124,6 +124,12 @@ python -m core_brain.order_manager merge <condition_id> --amount <shares> --live
 If one leg fills while the complement leg remains unfilled:
 
 ### Scenario A: Attempt Cross Completion (Target combined cost < $1.00)
+
+> **Owner approval required.** `complete` BUYS the missing side. It removes the
+> risk of a single buy, but it does so by spending real funds, so it is an
+> opening command and not a closing one (AGENTS.md, Safety Rails). Propose the
+> command; the Owner runs it.
+
 ```bash
 # Attempt to cross the opposing book to lock in complete pair
 python -m core_brain.order_manager complete <pair_id> --live

@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 @dataclass(frozen=True)
 class MakerConfig:
     # LEGACY. The rolling 5-minute BTC series this project started on, kept only
-    # because `engine/markets.py` and the `probe` latency harness still resolve a
+    # because `core_brain/markets.py` and the `probe` latency harness still resolve a
     # live window from it. THE FLEET DOES NOT TRADE THIS. The live universe is the
     # Market Filter's graduated list in runtime/markets.json -- liquid sports, esports, macro
     # and political markets under `select_max_days_to_resolve` -- and 5-min BTC was
@@ -131,11 +131,16 @@ class MakerConfig:
     # return None for every side, and nothing else changes.
     enable_hard_blocks: bool = True
 
-    # HARD CEILINGS on order and total notional. These are the same values
-    # previously hardcoded as module constants in engine/venue.py
-    # (MAX_ORDER_USD=25.0, MAX_TOTAL_USD=100.0). Consolidated into MakerConfig
-    # so the dashboard's /api/parameters endpoint reads one config object,
-    # not two. 0 disables the rule, same as max_naked_usd above.
+    # HARD CEILINGS on order and total notional, mirrored here so the
+    # dashboard's /api/parameters endpoint reads one config object, not two.
+    #
+    # THE VALUE THAT BLOCKS A LIVE ORDER IS core_brain/venue.py, NOT THIS ONE.
+    # `trader_loop._enforce_caps` imports MAX_ORDER_USD and MAX_TOTAL_USD from
+    # core_brain.venue and checks against those constants; nothing in the live
+    # path reads the two fields below. Keep them equal to the venue constants,
+    # and change venue.py when you mean to change the limit -- editing only
+    # these fields moves the number the dashboard displays and not the number
+    # that refuses the order. 0 disables the rule, same as max_naked_usd above.
     max_order_usd: float = 25.0
     max_total_usd: float = 100.0
 
@@ -251,7 +256,7 @@ class MakerConfig:
     # the Market Filter's scoring uses. The trading path has no allocator: the
     # Trader quotes whatever runtime/markets.json lists and sizes each couple from
     # `couple_allocation_usd`. Grep confirms no reference to these three
-    # anywhere in engine/ or dashboard/. The live capital bounds that DO bind
+    # anywhere in core_brain/ or dashboard/. The live capital bounds that DO bind
     # are `max_naked_usd`,
     # `max_fleet_naked_usd` and `max_committed_usd`.
     #

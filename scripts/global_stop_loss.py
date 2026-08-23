@@ -35,8 +35,19 @@ if str(LIVE_ROOT) not in sys.path:
     sys.path.insert(0, str(LIVE_ROOT))
 
 from core_brain.order_registry import DEFAULT_DB_PATH as DEFAULT_DB  # noqa: E402
+from core_brain.runtime_paths import resolve_runtime_file  # noqa: E402
 
-DEFAULT_RING = LIVE_ROOT / "runtime" / "cycle_events.jsonl"
+# Read side: a pre-rename process can still be filling run/cycle_events.jsonl,
+# and a watcher reading an empty runtime/ ring would miss the repeat-exit
+# signature it exists to catch. Alerts and the heartbeat stay on runtime/.
+#
+# A sentinel, not a path. Binding a path at import time is wrong for a
+# long-running watcher: if run/cycle_events.jsonl exists at startup the watcher
+# would hold that path forever, and every event written to runtime/ afterwards
+# would be invisible to it. `RESOLVE_RING_EACH_CHECK` means "ask again", and
+# GuardrailWatch.check() re-resolves on every pass.
+RESOLVE_RING_EACH_CHECK = None
+DEFAULT_RING = RESOLVE_RING_EACH_CHECK
 DEFAULT_ALERTS_LOG = LIVE_ROOT / "runtime" / "global_stop_loss_alerts.log"
 DEFAULT_HEARTBEAT = LIVE_ROOT / "runtime" / "global_stop_loss_heartbeat.json"
 
@@ -116,14 +127,15 @@ class GuardrailWatch:
     it clears (either signature) or grows (repeat-exit count increasing)."""
 
     def __init__(self, alerts_log: Path | str = DEFAULT_ALERTS_LOG,
-                 ring_path: Path | str = DEFAULT_RING,
+                 ring_path: Path | str | None = RESOLVE_RING_EACH_CHECK,
                  db_path: Path | str = DEFAULT_DB,
                  cap: float = 0.995, window_s: float = 900.0,
                  heartbeat_path: Path | str | None = None):
         """heartbeat_path=None disables the heartbeat (test default); the CLI
         main() passes DEFAULT_HEARTBEAT so production self-reports."""
         self.alerts_log = Path(alerts_log)
-        self.ring_path = Path(ring_path)
+        # None means "re-resolve on every check" -- see RESOLVE_RING_EACH_CHECK.
+        self.ring_path = Path(ring_path) if ring_path is not None else None
         self.db_path = Path(db_path)
         self.cap = cap
         self.window_s = window_s
@@ -182,12 +194,23 @@ class GuardrailWatch:
         except Exception as exc:
             print(f"guardrail: ring emit failed: {exc}", file=sys.stderr)
 
+    def current_ring_path(self) -> Path:
+        """The ring to read right now.
+
+        A fixed path when one was given. Otherwise resolved on every call, so a
+        watcher started while only run/cycle_events.jsonl existed follows the
+        events across to runtime/ the moment the new file appears.
+        """
+        if self.ring_path is not None:
+            return self.ring_path
+        return resolve_runtime_file("cycle_events.jsonl", root=LIVE_ROOT)
+
     def check(self) -> None:
         self.cycle += 1
         now = time.time()
 
         from core_brain.cycle_stream import read_ring
-        events = read_ring(self.ring_path, tail=0)
+        events = read_ring(self.current_ring_path(), tail=0)
 
         # Repeat-exit: alert on growth; re-arm once the pair leaves the
         # window. Without the prune a pair alerted at count 2 stays "known"
@@ -232,7 +255,10 @@ def main() -> None:
     ap.add_argument("--cap", type=float, default=0.995,
                     help="pair-cost alert threshold (default 0.995)")
     ap.add_argument("--db", default=str(DEFAULT_DB))
-    ap.add_argument("--ring", default=str(DEFAULT_RING))
+    # Default None, not a path: the watcher re-resolves the ring on every check
+    # so it follows the events across the run/ -> runtime/ rename mid-session.
+    ap.add_argument("--ring", default=RESOLVE_RING_EACH_CHECK,
+                    help="read a specific ring file instead of resolving it each check")
     ap.add_argument("--alerts-log", default=str(DEFAULT_ALERTS_LOG))
     ap.add_argument("--once", action="store_true",
                     help="run a single check and exit (cron/tests)")

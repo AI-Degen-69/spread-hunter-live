@@ -81,8 +81,8 @@
 - Test: `tests/test_main_spread_hunter_loop.py`, `tests/test_main_spread_hunter_loop_state.py`
 
 **Interfaces:**
-- `python -m core_brain.trader_loop loop`
-- `python -m core_brain.trader_loop decide`
+- `python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5`
+- `python -m core_brain.order_manager decide --all --no-live`
 
 - [ ] **Step 1: Create `engine/trader_loop.py` and shim `engine/main_spread_hunter_loop.py`**
 - [ ] **Step 2: Update dashboard supervisor commands and menu stack map**

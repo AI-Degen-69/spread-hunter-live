@@ -66,7 +66,7 @@ merge is the exit and the P&L event.
 
 ## Repository layout
 
-```
+```text
 spread-hunter-live/
   core_brain/             Core trading & execution engine
   dashboard/              Operations dashboard (:8799) + SPA
@@ -74,7 +74,7 @@ spread-hunter-live/
   scoring/                Scoring, allocation and selection rules the Market Filter uses
   strategy/               Signal and sizing logic
   data/                   Order registry (orders.db — not committed)
-  runtime/                Market universe, logs and cycle telemetry (not committed)
+  runtime/                Market universe, process file, logs and cycle telemetry (not committed)
   tests/                  Full hermetic unit & integration test suite
 ```
 
@@ -113,13 +113,13 @@ dry-run preview.
 | `poll --interval 0.5` | Reconcile fills from the venue into `data/orders.db` |
 | `merge <condition_id> --amount N` | Merge UP+DOWN pairs back to USDC (the exit) |
 | `redeem <condition_id>` | Gasless redemption of resolved positions |
-| `complete <pair_id>` | Cross the book to complete a one-sided pair |
+| `complete <pair_id>` | Cross the book to complete a one-sided pair (spends -- opening command) |
 | `exit <pair_id>` | Stop-loss exit of a single buy |
 | `cancel` / `cancel-market` / `cancel-all` | Pull resting orders |
 
 **Bot stack** — the dashboard's START/STOP buttons (or the PowerShell menu) launch the
-Market Filter loop, the Order Manager poll loop, and the Trader. The Trader rests real
-maker bids: verify dashboard state before starting.
+Market Filter (`filter`), Query Polymarket (`query`) and Decide & Execute (`decide`).
+Decide & Execute rests real maker bids: verify dashboard state before starting.
 
 **PowerShell control center** — `.\scripts\spread-hunter-menu.ps1` offers
 `start` / `stop` / `status` / `open`. The `status` view shows the dashboard, every stack
@@ -134,10 +134,12 @@ cycle: pre-flight checks, order placement gates, settlement, and emergency seque
 1. **LIVE is the default.** This is the real-money execution repo. Every subcommand reaches
    the venue by default. Use `--no-live` for dry-run preview.
 2. **Closing commands are pre-approved:** `exit`, `merge`, `redeem`, `cancel`,
-   `cancel-market`, `cancel-all` reduce exposure.
+   `cancel-market`, `cancel-all` reduce exposure. Cancelling pulls resting orders only --
+   a leg that already filled is still open exposure.
 3. **Opening commands require explicit supervision:** `quote`, `complete`, the Trader loop
-   and the dashboard's START button all spend money. `complete` removes risk, but it does
-   so by buying, so it is supervised. See [docs/agents/safety.md](docs/agents/safety.md).
+   and the dashboard's START button all rest or spend real funds. `complete` buys the
+   missing side: it removes the risk of a single buy, but it does so by spending, so it is
+   an opening command and not a closing one.
 4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (in `core_brain/venue.py`).
 
 ## Docs

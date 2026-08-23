@@ -69,6 +69,23 @@ def _market_identity(condition_id: str, closes_by_cid: dict) -> dict:
     return out
 
 
+def get_readonly_connection(db_path: Path | str):
+    """Open a strictly read-only connection to the registry database.
+
+    Returns None if the database does not exist or connection fails.
+    """
+    path = Path(db_path)
+    if not path.exists():
+        return None
+    uri = f"file:{path.resolve().as_posix()}?mode=ro"
+    try:
+        con = sqlite3.connect(uri, uri=True, timeout=2.0)
+        con.row_factory = sqlite3.Row
+        return con
+    except Exception:
+        return None
+
+
 def summarize_state(db_path: Path | str, now: float | None = None) -> dict[str, Any]:
     """Read the live registry database in read-only URI mode and summarize state.
 
@@ -110,12 +127,9 @@ def summarize_state(db_path: Path | str, now: float | None = None) -> dict[str, 
         return empty_payload
 
     # Strictly read-only connection
-    uri = f"file:{path.resolve().as_posix()}?mode=ro"
-    try:
-        con = sqlite3.connect(uri, uri=True, timeout=2.0)
-        con.row_factory = sqlite3.Row
-    except Exception as e:
-        empty_payload["message"] = f"Failed to connect in read-only mode: {e}"
+    con = get_readonly_connection(db_path)
+    if con is None:
+        empty_payload["message"] = "Failed to connect in read-only mode"
         return empty_payload
 
     try:

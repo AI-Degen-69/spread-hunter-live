@@ -81,7 +81,7 @@ Open `http://localhost:8799` in your browser. Verify the dashboard header report
 
 ```bash
 # 1. Run dry-run quote first to verify prices, ticks, and condition parameters
-python -m engine.live_exec quote <condition_id> --price <bid_price> --size <shares>
+python -m engine.live_exec quote <condition_id> --price <bid_price> --size <shares> --no-live
 
 # 2. ONLY AFTER OWNER APPROVAL: Post live resting bids on the CLOB
 python -m engine.live_exec quote <condition_id> --price <bid_price> --size <shares> --live
@@ -168,4 +168,4 @@ Halt execution and pull all quotes (`cancel-all --live`) if:
 1. **Unhedged leg exceeds time threshold:** A single leg remains filled with no complement fill for > 30 seconds and `complete` fails to fill.
 2. **Telemetry Staleness:** Dashboard or poll loop reports `STALE (>30s)` or venue Data API becomes unreachable.
 3. **Unexpected fills or balance mismatch:** Venue balances deviate from `live.db` registry tracking by > $0.05.
-4. **Adverse Price Movement:** Opposing ask rises beyond `max_pair_cost` threshold ($0.985), making pair completion unprofitable.
+4. **Adverse Price Movement:** The complete pair cost (filled-leg cost plus opposing ask) reaches or exceeds the configured `max_pair_cost` of $0.995, making pair completion unprofitable after gas.

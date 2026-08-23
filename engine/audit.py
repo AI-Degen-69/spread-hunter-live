@@ -49,10 +49,14 @@ class AuditResult:
     details: dict[str, Any] = field(default_factory=dict)
 
 
-def get_onchain_erc1155_balance(token_id: str, owner_addr: str) -> float:
-    """Read ERC-1155 balance directly from Polygon RPC with endpoint fallback."""
+def get_onchain_erc1155_balance(token_id: str, owner_addr: str) -> float | None:
+    """Read ERC-1155 balance directly from Polygon RPC with endpoint fallback.
+
+    Returns None when owner_addr is empty or all RPC endpoints fail.
+    Returns 0.0 for a confirmed zero balance.
+    """
     if not token_id or not owner_addr or owner_addr == "0x" + "0" * 40:
-        return 0.0
+        return None
     calldata = "0x00fdd58e" + owner_addr[2:].lower().rjust(64, "0") + hex(int(token_id))[2:].rjust(64, "0")
     payload = json.dumps({
         "jsonrpc": "2.0",
@@ -70,18 +74,24 @@ def get_onchain_erc1155_balance(token_id: str, owner_addr: str) -> float:
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
                 res = json.loads(resp.read().decode())
-                if "result" in res and res["result"] and res["result"] != "0x":
+                if "result" in res:
+                    if not res["result"] or res["result"] == "0x":
+                        return 0.0
                     return float(Decimal(int(res["result"], 16)) / Decimal(10**6))
         except Exception:
             continue
-    return 0.0
+    return None
 
 
-def read_merged_amount_from_logs(condition_id: str, orders_log_path: Optional[Path] = None) -> float:
-    """Sum executed merge amounts for this condition_id from live_orders.json."""
+def read_merged_amount_from_logs(condition_id: str, orders_log_path: Optional[Path] = None) -> float | None:
+    """Sum executed merge amounts for this condition_id from live_orders.json.
+
+    Returns None when the log file is missing or unreadable.
+    Returns 0.0 when no merges are found for this condition.
+    """
     path = orders_log_path or (LIVE_ROOT / "run" / "live_orders.json")
     if not path.is_file():
-        return 0.0
+        return None
     try:
         with open(path, "r") as f:
             entries = json.load(f)
@@ -108,7 +118,7 @@ def read_merged_amount_from_logs(condition_id: str, orders_log_path: Optional[Pa
                         total_merged += float(amt_dec)
         return total_merged
     except Exception:
-        return 0.0
+        return None
 
 
 def audit_three_way(
@@ -216,16 +226,28 @@ def audit_three_way(
         )
 
     # Check On-Chain Balance vs Expected Remaining Position
-    if abs(chain_up_bal - expected_chain_up) > SIZE_EPS:
-        divergences.append(
-            f"UP on-chain balance divergence: Chain has {chain_up_bal:.4f} sh, Expected {expected_chain_up:.4f} sh "
-            f"(Filled {reg_up_filled:.4f} - Merged {merged_amount:.4f})"
-        )
-    if abs(chain_dn_bal - expected_chain_dn) > SIZE_EPS:
-        divergences.append(
-            f"DOWN on-chain balance divergence: Chain has {chain_dn_bal:.4f} sh, Expected {expected_chain_dn:.4f} sh "
-            f"(Filled {reg_dn_filled:.4f} - Merged {merged_amount:.4f})"
-        )
+    # None means unmeasured; skip divergence check rather than treating as zero
+    if chain_up_bal is not None and merged_amount is not None:
+        if abs(chain_up_bal - expected_chain_up) > SIZE_EPS:
+            divergences.append(
+                f"UP on-chain balance divergence: Chain has {chain_up_bal:.4f} sh, Expected {expected_chain_up:.4f} sh "
+                f"(Filled {reg_up_filled:.4f} - Merged {merged_amount:.4f})"
+            )
+    elif chain_up_bal is None:
+        divergences.append("UP on-chain balance unmeasured (all RPC endpoints failed or empty owner)")
+    elif merged_amount is None:
+        divergences.append("UP merge amount unmeasured (log file missing or unreadable)")
+
+    if chain_dn_bal is not None and merged_amount is not None:
+        if abs(chain_dn_bal - expected_chain_dn) > SIZE_EPS:
+            divergences.append(
+                f"DOWN on-chain balance divergence: Chain has {chain_dn_bal:.4f} sh, Expected {expected_chain_dn:.4f} sh "
+                f"(Filled {reg_dn_filled:.4f} - Merged {merged_amount:.4f})"
+            )
+    elif chain_dn_bal is None:
+        divergences.append("DOWN on-chain balance unmeasured (all RPC endpoints failed or empty owner)")
+    elif merged_amount is None:
+        divergences.append("DOWN merge amount unmeasured (log file missing or unreadable)")
 
     # Check Order Status agreement
     for od in order_details:

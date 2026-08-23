@@ -354,13 +354,11 @@ def hard_block(cfg, inv, side: str, price: float,
     from the exposure arms only -- never from the cap that exists to stop a
     pair that cannot be profitable.
     """
-    if not getattr(cfg, "enable_hard_blocks", True):
-        return None
-
     other = OTHER[side]
 
-    # THE PAIR-COST CAP is evaluated up front so it can bind on the LIGHT side
-    # too. R4 exempts the light side from the exposure arms because buying the
+    # THE PAIR-COST CAP is evaluated BEFORE enable_hard_blocks so it always
+    # rejects pairs at or above max_pair_cost, regardless of the flag.
+    # R4 exempts the light side from the exposure arms because buying the
     # light side REDUCES exposure -- but the pair-cost arm is not an exposure
     # bound. A light-side fill that assembles the pair at/over `max_pair_cost`
     # is a booked loss on an instrument that pays exactly $1.00; "reduces
@@ -379,6 +377,10 @@ def hard_block(cfg, inv, side: str, price: float,
 
     if _shares(inv, side) < _shares(inv, other):
         return pair_cost_block
+
+    # enable_hard_blocks gates only the exposure and price-band arms below
+    if not getattr(cfg, "enable_hard_blocks", True):
+        return None
 
     hedge = book_health(hedge_book, cfg)
     if not hedge.ok:

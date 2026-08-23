@@ -172,10 +172,16 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("db_path", help="Registry DB to seed (created if missing)")
+    parser.add_argument("--force", action="store_true",
+                        help="Allow deleting existing database (required for destructive run)")
     args = parser.parse_args()
 
     db_path = Path(args.db_path)
     if db_path.exists():
+        if not args.force:
+            print(f"ERROR: {db_path} exists. Use --force to delete and recreate it.")
+            import sys
+            sys.exit(1)
         db_path.unlink()
     reg = OrderRegistry(db_path)
     run_id = seed(reg)

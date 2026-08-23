@@ -174,9 +174,10 @@ class GuardrailWatch:
                   file=sys.stderr)
         try:
             from engine.cycle_stream import emit
-            emit(self.cycle, "settling", "guardrail_alert",
+            emit(service="guardrail", cycle=self.cycle, phase="settling",
+                 action="guardrail_alert",
                  reason=kind, extra={"subject": subject, "detail": detail},
-                 ring_path=self.ring_path)
+                 ring_path=self.ring_path, disable_rotation=True)
         except Exception as exc:
             print(f"guardrail: ring emit failed: {exc}", file=sys.stderr)
 

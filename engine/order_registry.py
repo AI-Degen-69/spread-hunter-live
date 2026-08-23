@@ -415,9 +415,30 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_closes_cid_tx'"
     ).fetchone()
     if not idx_check:
-        conn.execute(
-            "CREATE UNIQUE INDEX idx_closes_cid_tx ON closes(condition_id, tx_hash)"
-        )
+        # Remove duplicate rows before creating unique index
+        try:
+            conn.execute("""
+                DELETE FROM closes
+                WHERE id NOT IN (
+                    SELECT MIN(id)
+                    FROM closes
+                    WHERE tx_hash IS NOT NULL
+                    GROUP BY condition_id, tx_hash
+                )
+                AND tx_hash IS NOT NULL
+            """)
+            conn.commit()
+        except Exception:
+            # If deduplication fails, continue anyway - index creation may fail but migration continues
+            pass
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX idx_closes_cid_tx ON closes(condition_id, tx_hash)"
+            )
+        except Exception:
+            # If index creation fails (e.g., still have duplicates), continue without it
+            # rather than blocking get_connection from opening the database
+            pass
 
     conn.commit()
 
@@ -435,9 +456,11 @@ def get_connection(db_path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
 
     try:
         st = os.stat(path)
-        file_id = (st.st_ino, st.st_ctime_ns, st.st_mtime_ns)
+        # Use only stable replacement-detection attributes (st_ino and st_ctime_ns)
+        # Exclude st_mtime_ns which changes on normal writes
+        file_id = (st.st_ino, st.st_ctime_ns)
     except OSError:
-        file_id = (0, 0, 0)
+        file_id = (0, 0)
 
     if _schema_ready.get(path) != file_id:
         try:
@@ -1750,6 +1773,7 @@ def inventory_from_registry(
                 if up_c is not None and dn_c is not None:
                     inv.up_cost = max(0.0, inv.up_cost - float(up_c))
                     inv.down_cost = max(0.0, inv.down_cost - float(dn_c))
+        conn.close()
     return inv
 
 

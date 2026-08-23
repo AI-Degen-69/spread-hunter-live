@@ -177,9 +177,14 @@ class LiveFillEngine:
         # rested on the venue.
         unattributed = size
         exact = [o for o in self.orders if order_id and o.order_id == order_id]
-        candidates = exact or [
-            o for o in self.orders if o.token_id == token_id and o.side == side
-        ]
+        # Only use token_id/side fallback when no order_id was supplied
+        if order_id and not exact:
+            # Supplied order_id with no matching order produces no candidates
+            candidates = []
+        else:
+            candidates = exact or [
+                o for o in self.orders if o.token_id == token_id and o.side == side
+            ]
         for o in candidates:
             if unattributed <= 1e-9:
                 break

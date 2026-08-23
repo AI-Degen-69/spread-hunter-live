@@ -218,8 +218,9 @@ def test_reconcile_lock_status(temp_db):
 
 def test_read_only_enforcement(temp_db):
     """Verifies that the registry read connection is strictly read-only and cannot write."""
-    uri = f"file:{temp_db.resolve().as_posix()}?mode=ro"
-    con = sqlite3.connect(uri, uri=True)
+    from engine.registry_state import get_readonly_connection
+    con = get_readonly_connection(temp_db)
+    assert con is not None, "Failed to get readonly connection"
     cur = con.cursor()
     with pytest.raises(sqlite3.OperationalError, match="readonly"):
         cur.execute("INSERT INTO reconcile_lock (id, holder, acquired_ts) VALUES (1, 'hack', 1000)")

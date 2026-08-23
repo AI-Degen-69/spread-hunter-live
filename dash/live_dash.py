@@ -204,7 +204,7 @@ def write_sweep_interval_to_env_file(env_path: Path, value: float | None) -> boo
 
     tmp = env_path.with_name(f".env.tmp.{secrets.token_hex(4)}")
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
+        with open(tmp, "w", encoding="utf-8", opener=lambda path, flags: os.open(path, flags, 0o600)) as fh:
             fh.write(new_text)
             fh.flush()
             os.fsync(fh.fileno())
@@ -554,12 +554,31 @@ def start_bot() -> dict:
     except FileExistsError:
         # Another start_bot call holds the lock; check if it's stale.
         try:
-            if lock_file.exists():
+            if not lock_file.exists():
+                # Lock file disappeared between FileExistsError and this check; retry acquisition
+                try:
+                    lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                    os.write(lock_fd, f"{os.getpid()}\n".encode())
+                except Exception:
+                    return {
+                        "ok": False,
+                        "message": "Failed to acquire startup lock after retry; another start may be running.",
+                        "status": get_system_status(),
+                    }
+            else:
                 lock_age = time.time() - lock_file.stat().st_mtime
                 if lock_age > 30:  # Stale lock from crashed process
                     lock_file.unlink()
-                    lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                    os.write(lock_fd, f"{os.getpid()}\n".encode())
+                    try:
+                        lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                        os.write(lock_fd, f"{os.getpid()}\n".encode())
+                    except FileExistsError:
+                        # Raced with another process; retry from the top
+                        return {
+                            "ok": False,
+                            "message": "Failed to acquire startup lock after removing stale lock; another start won the race.",
+                            "status": get_system_status(),
+                        }
                 else:
                     return {
                         "ok": False,
@@ -576,6 +595,14 @@ def start_bot() -> dict:
         return {
             "ok": False,
             "message": f"Failed to acquire startup lock: {e}",
+            "status": get_system_status(),
+        }
+
+    # Ensure lock_fd is set before proceeding
+    if lock_fd is None:
+        return {
+            "ok": False,
+            "message": "Failed to acquire startup lock",
             "status": get_system_status(),
         }
 
@@ -641,6 +668,15 @@ def start_bot() -> dict:
         )
         launched_procs.append(p_fleet)
 
+        # Load existing procs file to preserve starting_account_value if present
+        existing_starting_value = None
+        if procs_file.exists():
+            try:
+                existing_data = json.loads(procs_file.read_text(encoding="utf-8"))
+                existing_starting_value = existing_data.get("starting_account_value")
+            except Exception:
+                pass
+
         saved_procs = {
             "supervisor": {"pid": p_eng.pid, "started_at": time.time()},
             "screener": {"pid": p_scr.pid, "started_at": time.time()},
@@ -658,6 +694,9 @@ def start_bot() -> dict:
         starting_account_value = _capture_starting_capital()
         if starting_account_value is not None:
             saved_procs["starting_account_value"] = starting_account_value
+        elif existing_starting_value is not None:
+            # Preserve previously captured value if current capture fails
+            saved_procs["starting_account_value"] = existing_starting_value
         procs_file.write_text(json.dumps(saved_procs, indent=2), encoding="utf-8")
 
         return {"ok": True, "message": "Bot stack started", "status": get_system_status()}
@@ -678,16 +717,17 @@ def start_bot() -> dict:
             "status": get_system_status(),
         }
     finally:
-        # Release lock on all exit paths.
+        # Release lock on all exit paths, but only if we actually acquired it.
         if lock_fd is not None:
             try:
                 os.close(lock_fd)
             except Exception:
                 pass
-        try:
-            lock_file.unlink()
-        except Exception:
-            pass
+            # Only unlink if we successfully acquired the lock (lock_fd is not None means we own it)
+            try:
+                lock_file.unlink()
+            except Exception:
+                pass
 
 
 def stop_bot() -> dict:
@@ -701,6 +741,8 @@ def stop_bot() -> dict:
             saved_procs = {}
 
         for name, info in saved_procs.items():
+            if not isinstance(info, dict):
+                continue
             pid = info.get("pid")
             if pid and _is_pid_alive(pid, info.get("started_at")):
                 try:
@@ -1150,6 +1192,7 @@ def _read_cycle_intent_rows(db_path: Path | str, limit: int = 200) -> list[dict]
     if not path.exists():
         return []
     uri = f"file:{path.resolve().as_posix()}?mode=ro"
+    con = None
     try:
         con = sqlite3.connect(uri, uri=True, timeout=2.0)
         con.row_factory = sqlite3.Row
@@ -1159,10 +1202,15 @@ def _read_cycle_intent_rows(db_path: Path | str, limit: int = 200) -> list[dict]
             "ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
-        con.close()
         return [dict(r) for r in rows]
     except Exception:
         return []
+    finally:
+        if con is not None:
+            try:
+                con.close()
+            except Exception:
+                pass
 
 
 @app.get("/api/scan-state")

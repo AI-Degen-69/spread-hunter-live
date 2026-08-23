@@ -42,8 +42,11 @@ class DummyClobClient:
         return self._trades
 
 
-def test_schema_migrations_and_run_id(tmp_path):
+def test_schema_migrations_and_run_id(tmp_path, monkeypatch):
     db_file = tmp_path / "test_reg.db"
+    # Isolate run ID changes by patching LIVE_ROOT to tmp_path
+    monkeypatch.setenv("SH_RUN_ID", "test-run-12345")
+    previous_run_id = get_run_id()
     set_run_id("test-run-12345")
 
     reg = OrderRegistry(db_file)
@@ -62,6 +65,9 @@ def test_schema_migrations_and_run_id(tmp_path):
         cols_closes = {row["name"] for row in conn.execute("PRAGMA table_info(closes)").fetchall()}
         assert "tx_hash" in cols_closes
         assert "run_id" in cols_closes
+
+    # Restore previous run ID
+    set_run_id(previous_run_id)
 
 
 def test_reconcile_records_venue_match_time_and_recorded_ts(tmp_path):

@@ -72,8 +72,29 @@ def _pid_is_running(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-        return True
+        if sys.platform == "win32":
+            # Use psutil for non-destructive check on Windows
+            try:
+                import psutil
+                return psutil.pid_exists(pid)
+            except ImportError:
+                # Fallback to OpenProcess if psutil unavailable
+                import ctypes
+                from ctypes import wintypes
+                SYNCHRONIZE = 0x00100000
+                k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+                k32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+                k32.OpenProcess.restype = wintypes.HANDLE
+                k32.CloseHandle.argtypes = [wintypes.HANDLE]
+                k32.CloseHandle.restype = wintypes.BOOL
+                handle = k32.OpenProcess(SYNCHRONIZE, False, pid)
+                if handle:
+                    k32.CloseHandle(handle)
+                    return True
+                return False
+        else:
+            os.kill(pid, 0)
+            return True
     except (OSError, ProcessLookupError, ValueError):
         return False
 

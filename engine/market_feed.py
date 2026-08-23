@@ -57,13 +57,15 @@ class GraduatedMarket:
 
 def load_graduated_markets(
     path: Path | str | None = None,
-    max_age_sec: Optional[float] = None,
+    max_age_sec: Optional[float] = DEFAULT_MAX_STALENESS_SEC,
 ) -> list[GraduatedMarket]:
     """Read graduated markets from run/markets.json with staleness and existence checks.
 
     Raises `MarketFeedAbsentError` if file is missing.
     Raises `MarketFeedStaleError` if file mtime exceeds `max_age_sec`.
     Raises `MarketFeedError` if file is empty or malformed.
+
+    max_age_sec defaults to DEFAULT_MAX_STALENESS_SEC (24h); 0 or None opt out.
     """
     target = Path(path) if path is not None else DEFAULT_MARKETS_PATH
 
@@ -80,6 +82,7 @@ def load_graduated_markets(
     if stat.st_size == 0:
         raise MarketFeedError(f"graduated markets feed at {target} is empty (0 bytes)")
 
+    # 0 or None disables the staleness check
     if max_age_sec is not None and max_age_sec > 0:
         age = time.time() - stat.st_mtime
         if age > max_age_sec:

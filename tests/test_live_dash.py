@@ -1050,10 +1050,26 @@ def test_cycle_stream_sse_replays_tail_and_follows_appends(tmp_path):
     deadline = time.time() + 3.0
     saw_follow = False
     while time.time() < deadline:
-        if '"action": "decide"' in next(gen):
-            saw_follow = True
+        try:
+            # Bound each next() call with a timeout
+            import signal
+            def timeout_handler(signum, frame):
+                raise TimeoutError("next() timed out")
+            if hasattr(signal, 'SIGALRM'):
+                signal.signal(signal.SIGALRM, timeout_handler)
+                signal.alarm(1)
+            line = next(gen)
+            if hasattr(signal, 'SIGALRM'):
+                signal.alarm(0)
+            if '"action": "decide"' in line:
+                saw_follow = True
+                break
+        except (TimeoutError, StopIteration):
             break
-    gen.close()
+    try:
+        gen.close()
+    except Exception:
+        pass
     assert saw_follow
 
 

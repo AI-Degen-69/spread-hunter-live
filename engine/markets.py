@@ -177,7 +177,7 @@ def market_meta(condition_id: str) -> dict:
     except Exception:
         return {}
     rw = m.get("rewards") or {}
-    slug = m.get("market_slug") or ""
+    slug = _sanitize_slug(m.get("market_slug") or "")
     return {
         "question": m.get("question") or condition_id[:12],
         "slug": slug,

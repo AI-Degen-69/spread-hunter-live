@@ -24,7 +24,8 @@
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]
-    [string]$Action = ""
+    [string]$Action = "",
+    [switch]$Yes
 )
 
 $ErrorActionPreference = "Stop"
@@ -105,9 +106,9 @@ function Lsh-Fail   { param([string]$Msg) Write-ProfileError -Message $Msg }
 
 # ── Process / port primitives ──
 function Test-PidAlive {
-    param([int]$Pid)
-    if (-not $Pid) { return $false }
-    try { Get-Process -Id $Pid -ErrorAction Stop | Out-Null; return $true } catch { return $false }
+    param([int]$ProcessId)
+    if (-not $ProcessId) { return $false }
+    try { Get-Process -Id $ProcessId -ErrorAction Stop | Out-Null; return $true } catch { return $false }
 }
 
 function Test-LivePort {
@@ -427,10 +428,33 @@ function Stop-BotStack {
         $killed = $false
         foreach ($name in @("supervisor", "screener", "engine", "fleet")) {
             $info = if ($saved) { $saved.$name } else { $null }
-            if ($info -and $info.pid -and (Test-PidAlive $info.pid)) {
-                Lsh-Step "Killing $name (PID $($info.pid))..."
-                taskkill /F /T /PID $info.pid 2>$null | Out-Null
-                $killed = $true
+            if ($info -and $info.pid -and (Test-PidAlive -ProcessId $info.pid)) {
+                # Validate started_at before killing
+                $shouldKill = $false
+                if (-not $info.started_at) {
+                    # No start time: skip this kill
+                    Lsh-Warn "$name (PID $($info.pid)) has no started_at; skipping kill"
+                } else {
+                    try {
+                        $recordedStart = [datetime]::Parse([string]$info.started_at)
+                        $proc = Get-Process -Id $info.pid -ErrorAction Stop
+                        $actualStart = $proc.StartTime
+                        $tolerance = [timespan]::FromSeconds(60)
+                        if ([math]::Abs(($actualStart - $recordedStart).TotalSeconds) -le $tolerance.TotalSeconds) {
+                            $shouldKill = $true
+                        } else {
+                            Lsh-Warn "$name (PID $($info.pid)) start time mismatch; skipping kill (recorded: $recordedStart, actual: $actualStart)"
+                        }
+                    } catch {
+                        # If we can't get start time, skip kill
+                        Lsh-Warn "$name (PID $($info.pid)) start time unavailable; skipping kill"
+                    }
+                }
+                if ($shouldKill) {
+                    Lsh-Step "Killing $name (PID $($info.pid))..."
+                    taskkill /F /T /PID $info.pid 2>$null | Out-Null
+                    $killed = $true
+                }
             }
         }
         Remove-Item $ProcsFile -ErrorAction SilentlyContinue
@@ -487,7 +511,7 @@ function Show-Status {
         if ($saved) {
             foreach ($name in @("supervisor", "screener", "engine", "fleet")) {
                 $info = $saved.$name
-                $running = [bool]($info -and $info.pid -and (Test-PidAlive $info.pid))
+                $running = [bool]($info -and $info.pid -and (Test-PidAlive -ProcessId $info.pid))
                 $label = @{
                     supervisor = "Supervisor"
                     screener   = "Screener (rerank)"
@@ -635,6 +659,13 @@ function Invoke-LiveAction {
     param([string]$Key)
     switch ($Key) {
         "1" {
+            # Require typed confirmation for menu-driven start
+            Write-Host ""
+            $confirm = Read-Host "Type START to confirm starting the bot stack (or any other key to cancel)"
+            if ($confirm -ne "START") {
+                Lsh-Warn "Start cancelled."
+                return
+            }
             if (Start-Dashboard) { Start-BotStack }
         }
         "2" {
@@ -665,6 +696,14 @@ if ($Action -ne "") {
     }
     $key = $Action.Trim().ToLower()
     if ($actionMap.ContainsKey($key)) { $key = $actionMap[$key] }
+
+    # Require -Yes flag for non-interactive start
+    if ($key -eq "1" -and -not $Yes) {
+        Write-Host "ERROR: Non-interactive start requires explicit -Yes flag" -ForegroundColor Red
+        Write-Host "Usage: .\scripts\live-spread-hunter-menu.ps1 start -Yes"
+        exit 1
+    }
+
     Invoke-LiveAction $key
     exit 0
 }

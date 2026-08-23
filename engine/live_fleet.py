@@ -415,6 +415,9 @@ def _submit_intents(client, registry, market, intents, cfg) -> int:
                 f"leg {i.side} ${i.price * i.size:.2f} exceeds "
                 f"MAX_ORDER_USD ${MAX_ORDER_USD:.2f}")
     already = open_notional(client)
+    if already is None:
+        raise RuntimeError(
+            "Cannot check MAX_TOTAL_USD cap: venue open_orders unreachable")
     if already + total_cost > MAX_TOTAL_USD:
         raise RuntimeError(
             f"open ${already:.2f} + ${total_cost:.2f} exceeds "
@@ -462,9 +465,41 @@ def _submit_intents(client, registry, market, intents, cfg) -> int:
         resp_list = (resp if isinstance(resp, list)
                      else [resp] if isinstance(resp, dict) else [])
 
+        # Validate response structure and asset identity before mapping to local_legs
+        if len(resp_list) != len(local_legs):
+            # Response count mismatch: refuse to map by position
+            for leg in local_legs:
+                registry.update_order_status(
+                    leg["local_id"], status="cancelled", last_polled_ts=now_ms)
+            raise RuntimeError(
+                f"post_orders response count mismatch: sent {len(local_legs)} legs, "
+                f"got {len(resp_list)} responses; refusing to attach IDs by position")
+
         extracted = []
         for idx, leg in enumerate(local_legs):
             item = resp_list[idx] if idx < len(resp_list) else None
+            if item is None:
+                extracted.append(None)
+                continue
+
+            # Validate asset_id matches the token we submitted
+            resp_token = None
+            if isinstance(item, dict):
+                resp_token = item.get("asset_id") or item.get("token_id") or item.get("assetId")
+            else:
+                resp_token = (getattr(item, "asset_id", None) or
+                             getattr(item, "token_id", None) or
+                             getattr(item, "assetId", None))
+
+            if resp_token and str(resp_token) != leg["token_id"]:
+                # Asset identity mismatch: response is for wrong token
+                for leg_inner in local_legs:
+                    registry.update_order_status(
+                        leg_inner["local_id"], status="cancelled", last_polled_ts=now_ms)
+                raise RuntimeError(
+                    f"Asset identity mismatch at position {idx}: sent token {leg['token_id']}, "
+                    f"response carries {resp_token}; refusing to attach wrong ID")
+
             extracted.append(venue_order_id(item))
 
         ok = sum(1 for v in extracted if v is not None)
@@ -670,3 +705,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         seam,
         interval=a.interval, once=a.once, live=a.live, markets=specs,
     )
+    return 0 if results else 1
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(main())

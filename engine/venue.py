@@ -36,7 +36,9 @@ def _patch_sdk_user_agent():
         import py_clob_client_v2.http_helpers.helpers as _h
     except ModuleNotFoundError:
         return  # SDK not installed (test/dev env); skip the UA patch
-    _orig = _h._overload_headers
+    _orig = getattr(_h, '_overload_headers', None)
+    if _orig is None:
+        return  # SDK version does not provide _overload_headers
 
     def _patched(method, headers):
         headers = _orig(method, headers)
@@ -121,15 +123,19 @@ def api_creds_from_env():
     return ApiCreds(api_key=api_key, api_secret=secret, api_passphrase=passphrase)
 
 
-def open_notional(c) -> float:
-    """Dollars currently committed in open resting orders on the venue."""
+def open_notional(c) -> float | None:
+    """Dollars currently committed in open resting orders on the venue.
+
+    Returns None when get_open_orders fails, so cap checks do not treat
+    an unreachable venue as available headroom.
+    """
     try:
         orders = c.get_open_orders() or []
         return sum(float(o.get("price", 0) or 0)
                    * float(o.get("original_size", 0) or 0)
                    for o in orders)
     except Exception:
-        return 0.0
+        return None
 
 
 def venue_order_id(resp) -> str | None:

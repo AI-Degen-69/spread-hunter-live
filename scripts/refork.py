@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         if Path(live_rel).name in pulls:
-            shutil.copyfile(source, REPO_ROOT / live_rel)
+            shutil.copyfile(source, LIVE_ROOT / live_rel)
             print(f"PULLED   {entry['forked_from']} -> {live_rel}")
 
         new_sha = normalised_sha256(source)

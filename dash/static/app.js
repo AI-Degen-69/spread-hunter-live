@@ -380,9 +380,16 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
       const svc = t.dataset.svc;
       const isOn = t.classList.contains('on');
       if (isOn) {
-        // Individual stop (T4: screener/fleet only)
+        // Individual stop - uses per-service control
         await controlFetch('/api/system/stop');
       } else {
+        // Starting live fleet quoting requires explicit typed confirmation
+        if (svc === 'fleet') {
+          const confirmed = prompt('Type START to confirm starting the live quoting fleet:');
+          if (confirmed !== 'START') {
+            return;
+          }
+        }
         // Atomic start
         await controlFetch('/api/system/start');
       }
@@ -524,7 +531,7 @@ function fmtSide(side) {
   return s === 'BUY' ? 'BUY' : s === 'SELL' ? 'SELL' : s;
 }
 
-function fmtAge(sec) {
+function fmtOrderAge(sec) {
   if (sec === null || sec === undefined) return '--';
   if (sec < 60) return sec + 's';
   if (sec < 3600) return Math.floor(sec / 60) + 'm';
@@ -604,7 +611,7 @@ function renderExpandedOrders(orders, fills, showCancelled) {
       <td class="mono">${esc(o.size_remaining !== null && o.size_remaining !== undefined ? o.size_remaining : '--')}</td>
       <td><span class="pill ${statusCls}">${fmtOrderStatus(o.status)}</span></td>
       <td class="mono" style="font-size:10px;color:var(--text-muted)">${esc(o.pair_id ? o.pair_id.slice(0,12) : '--')}</td>
-      <td class="mono" style="font-size:11px;color:var(--text-secondary)">${fmtAge(o.age_sec)}</td>
+      <td class="mono" style="font-size:11px;color:var(--text-secondary)">${fmtOrderAge(o.age_sec)}</td>
       <td class="mono">${fillCount > 0 ? fillCount : '--'}</td>
     </tr>`;
   }
@@ -651,7 +658,6 @@ function renderMarkets(kpi, state) {
         ${badgeHtml}
       </td>
       <td class="mono">${fmtUSD(m.total_cost)}</td>
-      <td class="mono">${esc(m.realized_pnl !== null && m.realized_pnl !== undefined ? fmtUSD(m.realized_pnl) : '--')}</td>
       <td class="mono">${esc(m.realized_pnl !== null && m.realized_pnl !== undefined ? fmtUSD(m.realized_pnl) : '--')}</td>
       <td><span class="pill ${hedged === 'Hedged' ? 'active' : 'reconnecting'}">${fills_count} (${hedged})</span></td>
       <td><span class="pill ${m.quotes_count > 0 ? 'active' : 'stopped'}">${m.quotes_count > 0 ? 'QUOTING' : 'IDLE'}</span></td>

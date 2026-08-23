@@ -16,7 +16,7 @@ Journeys under test:
 4. As the Owner, I no longer see a single-market strip shouting at the top of
    the page.
 
-Mirrors the simulation's `capitalSeries` widget in
+Mirrors the paper run's `capitalSeries` widget in
 `server/spread_dash_html.py:175` -- closes stacked on bankroll, float marks
 folded in at the timestamps they were actually recorded.
 """

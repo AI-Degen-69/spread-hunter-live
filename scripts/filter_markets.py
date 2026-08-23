@@ -23,11 +23,11 @@ import requests
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from strategy.allocate import (marginal, spread_capture_daily)   # noqa: E402
-from strategy.config import load as _load_cfg   # noqa: E402
-from strategy.markets import parse_book   # noqa: E402
-from strategy.rewards import score_per_share   # noqa: E402
-from strategy.selector import identity_allowed, pair_books_allowed  # noqa: E402
+from scoring.allocate import (marginal, spread_capture_daily)   # noqa: E402
+from scoring.config import load as _load_cfg   # noqa: E402
+from scoring.markets import parse_book   # noqa: E402
+from scoring.rewards import score_per_share   # noqa: E402
+from scoring.selector import identity_allowed, pair_books_allowed  # noqa: E402
 
 RUN = ROOT / "run"
 OFFSET = 0.020          # where we intend to quote, in price units
@@ -195,7 +195,7 @@ def gamma_spread_universe(session: requests.Session,
     ranker structurally could not see the markets that actually trade. The
     entire 2026-07-31 universe came from there: 20 markets, 48 tape prints in
     11.6 hours, nine of them never traded at all, and every `tape_json`
-    recorded in run/fleet.db is `{}`.
+    recorded in the paper-run database is `{}`.
 
     Gamma sorts by 24h volume and carries the book summary (`spread`,
     `bestBid`, `bestAsk`) inline, so the expensive part -- one CLOB round trip
@@ -694,7 +694,7 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="python -m scripts.filter_markets",
         description=__doc__.split("\n\n")[0],
-        epilog="Writes the winners to run/markets.json, which strategy.fleet "
+        epilog="Writes the winners to data/markets.json, which the Trader "
                "reads as its market universe.")
     p.add_argument("--top", type=_positive_int, default=20, metavar="N",
                    help="how many markets to write (default: 20)")

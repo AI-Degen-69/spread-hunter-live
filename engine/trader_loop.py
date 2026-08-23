@@ -1,7 +1,7 @@
 """Live fleet loop: decide -> submit -> reconcile, reusing the risk gates.
 
-The live twin of `strategy.fleet`. The decision is `engine.quotes.decide_quotes`
--- already proven in simulation and already wired to the live risk gates -- so
+The decision is `engine.quotes.decide_quotes`
+-- already proven in the paper run and already wired to the live risk gates -- so
 this module adds NOTHING new to the decision. Its only jobs are:
 
 1. `plan_orders`: turn "what we want resting" into "what to cancel / submit"
@@ -93,7 +93,7 @@ def _cid(spec: Any) -> str:
 
 
 def _market_cfg(base, spec: Any):
-    """Per-market config, mirroring strategy.fleet's MarketState.
+    """Per-market config carried through one rotation of the Trader.
 
     `decide_quotes` runs the same from-mid pricing path and the same live risk
     gates the paper fleet runs; the only per-market differences are the venue's
@@ -604,7 +604,7 @@ def _fleet_state(registry, cfg) -> dict:
 
 
 def main(argv: Optional[list[str]] = None) -> int:
-    """The live equivalent of `python -m strategy.fleet`.
+    """The Trader loop entry point.
 
     Dry-run by default; `--live` places real orders. `--once` runs a single
     rotation (the smoke-test path); without it the loop runs until interrupted.

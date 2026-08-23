@@ -20,7 +20,7 @@ back into $1.00 of USDC. The income is the difference:
 profit per pair = 1.00 - (avg UP price + avg DOWN price)
 ```
 
-Measured on `run/fleet.db`: **476 merge closes returned +$1,172.35** at an average pair cost
+Measured over the paper run: **476 merge closes returned +$1,172.35** at an average pair cost
 of **$0.96006** — roughly 4c per pair. `max_pair_cost = 0.995` is the profit condition: the
 merge is the exit and the P&L event.
 
@@ -70,7 +70,7 @@ spread-hunter-live/
   engine/                 Core trading & execution engine
   dash/                   Operations dashboard (:8799) + SPA
   scripts/                Ranker, screener loop, watchdog, PowerShell control center
-  strategy/               Simulation-side modules (fork source for engine/config.py)
+  scoring/                Scoring, allocation and selection rules the Market Filter uses
   run/                    Runtime state (live.db registry, markets.json, logs — not committed)
   tests/                  Full hermetic unit & integration test suite
 ```

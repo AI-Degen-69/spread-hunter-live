@@ -299,7 +299,7 @@ def test_kpi_report_parity_and_live_fields(tmp_path):
 
     kpis = generate_kpi_report(db_path=db_file)
 
-    # Core simulation parity fields
+    # Core parity fields
     assert kpis["markets_quoted"] == 1
     assert kpis["markets_filled"] == 1
     assert kpis["fills"] == 1

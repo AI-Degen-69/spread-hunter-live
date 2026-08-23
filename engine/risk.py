@@ -365,7 +365,7 @@ def hard_block(cfg, inv, side: str, price: float,
     # exposure" does not make a guaranteed loss acceptable. The old order
     # skipped this arm entirely for the light side, which is how a light-side
     # quote chased to $0.92 against a $0.20 held leg produced the $1.12 pair
-    # seen in production (and how the sim's own docstring records buying 14
+    # seen in production (and how the paper run's own docstring records buying 14
     # pairs at $1.0200 against a $0.995 cap). For the heavy side the arm still
     # reports LAST, preserving the documented "most useful reason first" order.
     other_avg = inv.avg(other)

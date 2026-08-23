@@ -7,9 +7,9 @@ See AGENTS.md for the full statement and the universe rules.
 
 Quoting parameters (price band, offsets, balance target, fill caps) are derived
 from 56,768 of @powerwinner's BTC/ETH 5-min fills over 2026-07-14..21 (2,970
-markets); see research/powerwinner_analysis.md in the simulation repo. That is
-where the NUMBERS came from -- it is not where the bot trades. The live universe
-is the ranker's graduated list in run/markets.json.
+markets). That is where the NUMBERS came from -- it is not where the bot
+trades. The live universe is the Market Filter's graduated list in
+data/markets.json.
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class MakerConfig:
     series_slug: str = "btc-up-or-down-5m"
 
     # --- virtual account --------------------------------------------------
-    # Fresh paper run wallet. This is the total simulated capital available,
+    # Fresh paper run wallet. This is the total paper capital available,
     # not a promise that the allocator may commit every dollar at once.
     bankroll_usd: float = 100.0
 
@@ -43,7 +43,7 @@ class MakerConfig:
     #
     # The income is buying UP+DOWN below $1.00 and merging the pair back to
     # collateral, which pays exactly $1.00: profit = 1.00 - (avg_up + avg_dn).
-    # Measured on run/fleet.db, 476 merge closes returned +$1,172.35 at an
+    # Measured on the paper-run database, 476 merge closes returned +$1,172.35 at an
     # average pair cost of $0.96006. Over the same run maker rebates accrued
     # about $0.22/day against $566 committed -- four hundredths of a percent.
     # Rebates are extra; they are not why this bot exists.
@@ -345,7 +345,7 @@ class MakerConfig:
     # Whether the threshold applies per-market or across a maker's aggregate is
     # not settled by the docs. Per-market is the conservative reading and is
     # safe under either; the first real payout settles it empirically.
-    # SIMULATION ONLY -- READ BY NO LIVE CODE (same status as the allocator
+    # PAPER RUN ONLY -- READ BY NO LIVE CODE (same status as the allocator
     # knobs above). These price a REWARD market's payout floor, and the live
     # universe has none: every graduated market in run/markets.json carries
     # `source: "spread"` with `daily: 0.00`, because the markets that actually
@@ -565,7 +565,7 @@ class MakerConfig:
     min_quote_shares: int = 5
     max_spread_from_mid: float = 0.045
 
-    # HOW a funded market is sized. "shares" is the simulation's behaviour --
+    # HOW a funded market is sized. "shares" is the paper run's behaviour --
     # `quote_shares` shares per leg. "dollars" sizes each leg from the Owner's
     # allocation rule below and lets price decide the share count.
     #

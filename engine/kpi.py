@@ -104,7 +104,7 @@ def compute_trade_analytics(
     if mean_return_pct is not None and stdev_return_pct is not None and len(return_pcts) > 1:
         se = stdev_return_pct / math.sqrt(len(return_pcts))
         # One-sided 90% lower bound (the "is expectancy positive?" gate the
-        # simulation uses), plus a 95% two-sided band for context.
+        # the paper run uses), plus a 95% two-sided band for context.
         ci90_lower_pct = mean_return_pct - 1.645 * se
         ci95_return_pct = {
             "lower": mean_return_pct - 1.96 * se,
@@ -315,7 +315,7 @@ def _funnel_from_pipeline(
     markets_path: Path | str | None = None,
 ) -> Optional[dict[str, Any]]:
     """Build the Level 2 market funnel from the screener's own snapshot and annotate graduated markets with live results.
-    `run/pipeline.json` is the same file the sim scan (server/fleet_dash.py) renders, so sourcing the funnel from it makes the live Level 2 lanes compare 1:1 with the sim scan: identical gate names [...]
+    `run/pipeline.json` is the same file the paper-run scan (server/fleet_dash.py) renders, so sourcing the funnel from it makes the live Level 2 lanes compare 1:1 with the paper-run scan: identical gate names [...]
     Parameters:
         by_mkt (dict[str, Any]): Market metrics used to annotate graduated markets.
         pipeline_path (Path | str | None): Optional path to the screener snapshot. Defaults to run/pipeline.json.
@@ -707,7 +707,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     top_skips = sorted([(code, len(items)) for code, items in skip_reasons.items()], key=lambda kv: -kv[1])[:6]
 
     # Funnel view (RAW -> FILTERS -> FINAL -> GRADUATED). Prefer the screener's
-    # own snapshot so the gate names and counts compare 1:1 with the sim scan;
+    # own snapshot so the gate names and counts compare 1:1 with the paper-run scan;
     # fall back to runtime market-event telemetry when the ranker hasn't written
     # a snapshot, or when serving a non-production db (a test/smoke db), where
     # the repo's snapshot would misrepresent that db's own telemetry.
@@ -810,7 +810,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
 
     # ------------------------------------------------------------------
     # Portfolio overview: the whole run in one reading, not the first market.
-    # Mirrors the simulation's capitalSeries widget (server/spread_dash_html.py:175):
+    # Mirrors the paper run's capitalSeries widget (server/spread_dash_html.py:175):
     # realised closes stacked on the starting bankroll, with the open float
     # folded in at the timestamps it was actually marked.
     # ------------------------------------------------------------------
@@ -887,7 +887,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     )
     # ------------------------------------------------------------------
     # The account, as the venue reports it. `starting_capital` above is a
-    # simulation constant that nobody deposited; these fields are the balance
+    # paper-run constant that nobody deposited; these fields are the balance
     # and P&L the account holder sees on Polymarket, written by
     # `engine.order_manager account-sweep` and read here from SQLite.
     # ------------------------------------------------------------------

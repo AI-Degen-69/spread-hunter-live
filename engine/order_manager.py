@@ -1,8 +1,7 @@
 """LIVE order execution against Polymarket CLOB. Real money.
 
-Everything else in this repo is a simulator. This file is the one place that
-can lose actual funds, so it is deliberately small, deliberately manual, and
-refuses to do anything by default.
+This is the one file that can lose actual funds, so it is deliberately small,
+deliberately manual, and refuses to do anything by default.
 
 CREDENTIALS NEVER APPEAR HERE. They are read from the environment and handed
 straight to the client. Nothing in this module prints, logs, or writes a key,
@@ -68,10 +67,8 @@ RUN = ROOT / "run"
 # from the repo root, or an import from a test.
 #
 # ROOT only. The repo root is deliberately NOT added: `engine` must resolve
-# inside live/ and nowhere else. This package was called `strategy` until
-# 2026-08-18, which collided with the simulation package of the same name, and
-# adding the repo root here would let that collision come back the moment
-# someone writes `from strategy...` in live code.
+# inside this repo and nowhere else. Adding the repo root here would let a
+# same-named package elsewhere on sys.path merge with it again.
 #
 # A dry run does not prove this works. `quote` imports engine.markets ABOVE the
 # dry-run return and engine.order_registry BELOW it, so a half-resolved path
@@ -393,7 +390,7 @@ def quote(condition_id: str, price: float, size: float, live: bool,
             "--expiration (UTC epoch seconds) is required when --tif GTD."
         )
 
-    # Rewards are not the income. Measured on run/fleet.db: 476 merge closes
+    # Rewards are not the income. Measured on the paper-run database: 476 merge closes
     # earned +$1,172.35 at an average pair cost of $0.96006, while maker rebate
     # accrual over the same run ran about $0.22/day against $566 committed --
     # four hundredths of a percent. The income is buying UP+DOWN below $1.00 and
@@ -2948,7 +2945,7 @@ def main() -> None:
     # A recurring series (such as btc-up-or-down-5m) is chosen for probe as a
     # LATENCY FIXTURE because it is always mid-window and continually regenerates,
     # not because it represents the traded universe.
-    # Measured against run/fleet.db (66,317 quotes across 425 distinct markets):
+    # Measured against the paper-run database (66,317 quotes across 425 distinct markets):
     #   tennis (atp/wta)   34,294   51.71%
     #   baseball (mlb)     14,772   22.27%
     #   esports (cs2 etc)  12,584   18.98%

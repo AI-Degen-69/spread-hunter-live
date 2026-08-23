@@ -1194,7 +1194,7 @@ def test_venue_order_id_accepts_the_spellings_and_refuses_to_guess():
 def test_quote_says_why_a_market_was_rejected(monkeypatch, tmp_path):
     """An unfunded market quotes; an unusable one is refused, and says why.
 
-    Rewards are not the income. Measured on run/fleet.db: 476 merge closes,
+    Rewards are not the income. Measured on the paper-run database: 476 merge closes,
     +$1,172.35, mean pair cost $0.96006, against rebate accrual of roughly
     $0.22/day. Every market the ranker graduates pays zero rewards, so demanding
     them here refused the fleet's entire universe. What still earns a refusal is

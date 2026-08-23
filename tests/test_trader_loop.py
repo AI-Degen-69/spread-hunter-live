@@ -1,7 +1,7 @@
 """The live fleet loop: decide -> submit -> reconcile, reusing the risk gates.
 
-`engine.live_fleet` is the live twin of `strategy.fleet`. The strategy that
-trades is `engine.quotes.decide_quotes` -- already proven in simulation and
+`engine.trader_loop` runs the live rotation. The strategy that
+trades is `engine.quotes.decide_quotes` -- already proven in the paper run and
 already wired to the live risk gates -- so this module must add NOTHING new to
 the decision. Its only new jobs are:
 

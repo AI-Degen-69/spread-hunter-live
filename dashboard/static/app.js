@@ -475,7 +475,7 @@ function renderKPIs(kpi) {
     </div>
     <div class="kpi-tile">
       <div class="kpi-label">Starting Capital</div>
-      ${fmtVal(startCap !== null && startCap !== undefined ? fmtUSD(startCap) : 'simulated')}
+      ${fmtVal(startCap !== null && startCap !== undefined ? fmtUSD(startCap) : 'estimated')}
     </div>
     <div class="kpi-tile">
       <div class="kpi-label">Realized P&L</div>

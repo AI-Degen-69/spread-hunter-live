@@ -11,7 +11,8 @@ default — every subcommand reaches the venue unless you pass `--no-live`.
   dashboard's START button rest real funds. Hand over the exact command; run it yourself
   only when the operator says so in that session.
 - Closing commands reduce exposure and are pre-approved: `exit`, `complete`, `merge`,
-  `redeem`, `cancel`, `cancel-market`, `cancel-all`.
+  `redeem`, `cancel`, `cancel-market`, `cancel-all`. Cancelling only pulls resting
+  orders — a leg that already filled needs `complete`, then `merge`, or `exit`.
 - Real-money checks are allowed and often the only real proof. Keep them at the venue
   minimum, inside `MAX_ORDER_USD` / `MAX_TOTAL_USD`, and always pair them with the undo
   command.

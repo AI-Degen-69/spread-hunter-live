@@ -11,7 +11,7 @@
 ## Global Constraints
 
 - Never break active running daemons: provide transitional forwarding shims for moved modules.
-- Preserve 100% test pass rate across the 480 test suite (`pytest -q`).
+- Preserve a 100% pass rate across the whole suite (`python -m pytest -q`).
 - Zero references to "naked" or "leg" in new APIs or active trading engine code.
 - Zero references to "live" in module file names (`live_exec.py`, `live_dash.py`, `live.db`).
 
@@ -120,7 +120,7 @@
 
 - [ ] **Step 1: Update `DEFAULT_DB_PATH` in `engine/order_registry.py` with seamless fallback for existing databases**
 - [ ] **Step 2: Update test fixtures in `tests/conftest.py` and test files**
-- [ ] **Step 3: Run full test suite `pytest -q` (all 480 tests)**
+- [ ] **Step 3: Run the full test suite (`python -m pytest -q`), all green**
 - [ ] **Step 4: Commit `feat(data): transition default db path to runtime/orders.db`**
 
 ---
@@ -128,7 +128,7 @@
 ## Verification Plan
 
 ### Automated Tests
-- Run complete test suite: `pytest -q` (verify 479+ tests pass).
+- Run the complete test suite: `python -m pytest -q` (every test passes).
 - Test CLI verbs: `python -m engine.order_manager status`.
 - Test dashboard server: `python -m dashboard.server --port 8799`.
 - Test interactive menu: `pwsh -File .\scripts\spread-hunter-menu.ps1 status`.

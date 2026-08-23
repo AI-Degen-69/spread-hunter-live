@@ -152,7 +152,7 @@ python -m dashboard.server
 .\scripts\spread-hunter-menu.ps1 status
 
 # Run full test suite
-pytest -q
+python -m pytest -q
 ```
 
 ## Safety Rails
@@ -189,8 +189,15 @@ Rules for the block:
 
 1. Name the file or screen, one expected value per step, five steps or fewer.
 2. Say what a **failed** check looks like, not only a passing one.
-3. Every live step carries its undo on the next line — `cancel`, `cancel-market`,
-   `complete` or `merge` — so exposure can be pulled in one paste.
+3. Every live step carries its undo on the next line, and the undo has to match what
+   actually happened:
+   - **Nothing filled:** `cancel`, `cancel-market` or `cancel-all` pulls the resting
+     orders. This does *not* close a leg that already filled.
+   - **One leg filled:** `complete <pair_id> --live` buys the missing side; if it
+     refuses, `exit <pair_id> --live` sells the leg you are holding.
+   - **Both legs filled:** `merge <condition_id>` turns the pair back into USDC.
+   - Then confirm: the market is no longer `NAKED` on the dashboard and holds no
+     single-buy shares.
 4. State the money at risk in dollars before the first live step.
 5. The operator runs the order-placing commands. Agents run read-only and closing
    commands, and may run an opening command only when the operator says so in that
@@ -246,7 +253,8 @@ Then wait for it and work the feedback:
 3. Push the fixes to the same branch, then reply on each thread — what you changed, or
    why you declined. Declining is fine when the suggestion is wrong or out of scope;
    say so plainly.
-4. Re-request review after pushing fixes: `@coderabbitai review`.
+4. Re-request review after pushing fixes: `@coderabbitai full review`, which covers
+   the fix commit rather than only the newest changes.
 5. Repeat until CodeRabbit raises nothing new and CI (`.github/workflows/tests.yml`) is
    green on both ubuntu and windows.
 

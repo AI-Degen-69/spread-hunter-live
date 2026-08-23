@@ -55,3 +55,6 @@ Thumbs.db
 .vscode/
 .idea/
 .claude/settings.local.json
+
+# Local agent tooling state
+.ecc/

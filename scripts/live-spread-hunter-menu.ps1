@@ -482,25 +482,29 @@ function Show-Status {
 
     # ── 1 · DASHBOARD ──
     Write-Host ""
-    Write-ProfileRuleWithText -Text "1 · DASHBOARD" -Style Border
     $inst = Get-DashInstance
     $portUp = Test-LivePort
     if ($inst) {
-        Write-StatusLine -Label "Dashboard" -Status "RUNNING" -StatusStyle Success `
-            -Detail ("PID {0} · port {1} · up {2}" -f $inst.pid, $LivePort, (Format-Uptime $inst.proc.StartTime))
+        Write-ProfileRuleWithText -Text "1 · DASHBOARD | ON " -Style Border
+        Write-StatusLine -Label "Dashboard URL" -Detail $DashUrl -DetailStyle Link
+        Write-StatusLine -Label "Uptime" -Detail (Format-Uptime $inst.proc.StartTime) -DetailStyle Value
+        Write-StatusLine -Label "Filepath" -Detail $StackPaths["dash"] -DetailStyle Path
+        Write-StatusLine -Label "PID file" -Detail ("PID {0} · run/live-dash.pids.json" -f $inst.pid) -DetailStyle Path
     } elseif ($portUp) {
-        Write-StatusLine -Label "Dashboard" -Status "LISTENING" -StatusStyle Warning `
-            -Detail ("PID {0} on port {1} · not owned by this menu" -f (Get-PortPid), $LivePort)
+        Write-ProfileRuleWithText -Text "1 · DASHBOARD | LISTENING " -Style Border
+        Write-StatusLine -Label "Dashboard URL" -Detail $DashUrl -DetailStyle Link
+        Write-StatusLine -Label "Filepath" -Detail $StackPaths["dash"] -DetailStyle Path
+        Write-StatusLine -Label "PID file" -Detail ("PID {0} on port {1} · not owned by this menu" -f (Get-PortPid), $LivePort) -DetailStyle Warning
     } else {
-        Write-StatusLine -Label "Dashboard" -Status "STOPPED" -StatusStyle Error `
-            -Detail "nothing serving on port $LivePort"
+        Write-ProfileRuleWithText -Text "1 · DASHBOARD | OFF " -Style Border
+        Write-StatusLine -Label "Dashboard URL" -Detail ("{0} · Run: python -m dash.live_dash --port {1}" -f $DashUrl, $LivePort) -DetailStyle Warning
+        Write-StatusLine -Label "Filepath" -Detail $StackPaths["dash"] -DetailStyle Path
+        Write-StatusLine -Label "PID file" -Detail "run/live-dash.pids.json" -DetailStyle Path
     }
-    Write-StatusLine -Label "Dashboard URL" -Detail $DashUrl -DetailStyle Link
-    Write-StatusLine -Label "PID file" -Detail "run/live-dash.pids.json" -DetailStyle Path
 
     # ── 2 · BOT STACK (dashboard API when up, live_procs.json otherwise) ──
     Write-Host ""
-    Write-ProfileRuleWithText -Text "2 · BOT STACK" -Style Border
+    Write-ProfileRuleWithText -Text "2 · BOT STACK " -Style Border
     $status = $null
     if ($portUp) {
         try { $status = Invoke-RestMethod -Uri "$DashUrl/api/system/status" -UseBasicParsing -TimeoutSec 5 } catch {}
@@ -530,7 +534,7 @@ function Show-Status {
 
     # ── 3 · GUARDRAIL WATCHDOG (API when up, heartbeat file otherwise) ──
     Write-Host ""
-    Write-ProfileRuleWithText -Text "3 · GUARDRAIL WATCHDOG" -Style Border
+    Write-ProfileRuleWithText -Text "3 · GUARDRAIL WATCHDOG " -Style Border
     $gh = $null
     if ($portUp) {
         try { $gh = Invoke-RestMethod -Uri "$DashUrl/api/guardrail-health" -UseBasicParsing -TimeoutSec 5 } catch {}
@@ -572,7 +576,7 @@ function Show-Status {
 
 function Show-ScreenerAndFeed {
     Write-Host ""
-    Write-ProfileRuleWithText -Text "4 · SCREENER & UNIVERSE FEED" -Style Border
+    Write-ProfileRuleWithText -Text "4 · SCREENER & UNIVERSE FEED " -Style Border
     $rerank = Join-Path $ProjectPath "scripts\rerank_loop.py"
     $ranker = Join-Path $ProjectPath "scripts\rank_markets.py"
     $strategyCfg = Join-Path $ProjectPath "strategy\config.py"
@@ -606,7 +610,7 @@ function Show-ScreenerAndFeed {
 
 function Show-CheckoutIdentity {
     Write-Host ""
-    Write-ProfileRuleWithText -Text "5 · CHECKOUT IDENTITY" -Style Border
+    Write-ProfileRuleWithText -Text "5 · CHECKOUT IDENTITY " -Style Border
     # Single-line -c: robust against hosts whose $ErrorActionPreference='Stop'
     # turns native stderr into a terminating error, and against multiline
     # argument mangling. The repo root is inserted into sys.path EXPLICITLY:

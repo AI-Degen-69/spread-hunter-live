@@ -788,7 +788,8 @@ function getStageHero(key, funnel) {
   const depthGate = funnel?.depth_gate_usd || 1000;
   const spreadGate = gateBar(funnel?.spread_gate, 0.06);
   const horizonDays = gateBar(funnel?.horizon_gate_days, 30);
-  const minIncome = gateBar(funnel?.min_income_usd_day, 1.5);
+  const rewardIncome = gateBar(funnel?.reward_min_income_usd_day, 1.5);
+  const spreadIncome = gateBar(funnel?.spread_min_income_usd_day, 0);
   const maxPairCost = gateBar(funnel?.max_pair_cost, 0.995);
 
   switch (key) {
@@ -820,7 +821,11 @@ function getStageHero(key, funnel) {
     case 'horizon':
       return {
         param: 'TEST: HORIZON & PAYOUT',
-        value: `≤ ${Number(horizonDays).toFixed(1)} days & ≥ $${Number(minIncome).toFixed(2)}/day`,
+        // The payout floor is a rewards rule. A spread market is paid by
+        // whoever lifts the offer, so it passes on any income at all --
+        // stating one universal bar here would call a passing market a
+        // failure.
+        value: `≤ ${Number(horizonDays).toFixed(1)} days · rewards ≥ $${Number(rewardIncome).toFixed(2)}/day · spread > $${Number(spreadIncome).toFixed(2)}/day`,
       };
     case 'passed':
       return {
@@ -904,23 +909,23 @@ function renderScreener(kpi, scanState) {
   const counts = funnel.counts || {};
   const totalRaw = counts.scored || counts.attempted || funnel.raw_count || 0;
 
-  // Calculate sequential progression stage flow
-  let currentPool = totalRaw;
-  const stageFlow = {
-    raw: { in: totalRaw, out: totalRaw, dropped: 0 },
-  };
-
+  // Per-gate rejection totals, NOT a running pool.
+  //
+  // The ranker does not run these gates in board order and it stops at the
+  // first failure: a market refused on depth never reached the volume check.
+  // Subtracting each bucket from a running pool would therefore report that
+  // market as having passed volume, and every "N of M advanced" figure after
+  // the first gate would be invented. Each stage states only what it can
+  // prove -- how many markets this gate refused, out of everything scored.
+  const stageFlow = { raw: { rejected: 0, scored: totalRaw } };
   const gateOrder = ['identity', 'volume', 'depth', 'spread', 'horizon'];
   for (const k of gateOrder) {
-    const dropped = gateRejections[k]?.count || 0;
-    const nextPool = Math.max(0, currentPool - dropped);
-    stageFlow[k] = { in: currentPool, out: nextPool, dropped: dropped };
-    currentPool = nextPool;
+    stageFlow[k] = { rejected: gateRejections[k]?.count || 0, scored: totalRaw };
   }
 
   const graduatedList = funnel.graduated || [];
   const eligibleList = funnel.final || [];
-  stageFlow.passed = { in: currentPool, out: graduatedList.length, dropped: 0 };
+  stageFlow.passed = { rejected: 0, scored: totalRaw };
 
   // Render the 7 stages. Build the markup as one string and assign it once:
   // `+=` on innerHTML reparses the whole board on every stage, and replacing
@@ -1034,20 +1039,20 @@ function renderScreener(kpi, scanState) {
     } else {
       // Intermediate Gate
       const gateData = gateRejections[def.key] || { count: 0, examples: [], would_fund: 0, traps: 0 };
-      const flow = stageFlow[def.key] || { in: 0, out: 0, dropped: 0 };
-      const droppedCount = flow.dropped;
+      const flow = stageFlow[def.key] || { rejected: 0, scored: 0 };
+      const droppedCount = flow.rejected;
 
       const badgeCls = droppedCount > 0 ? 'alert' : 'ok';
       countBadge = `<span class="bucket-count-badge ${badgeCls}">${droppedCount} REJECTED</span>`;
       flowHtml = `<div class="kanban-header-flow">
-        <span class="flow-passed">${flow.out} passed ➔</span>
-        <span class="flow-rejected">${droppedCount} dropped</span>
+        <span class="flow-rejected">${droppedCount} refused here</span>
+        <span>of ${flow.scored} scored</span>
       </div>`;
 
       if (droppedCount === 0) {
         cardsHtml = `<div class="kanban-empty all-pass">
-          <strong>✓ 100% Passed</strong>
-          <div style="margin-top:6px;color:var(--text-secondary)">All ${flow.in} markets cleared this gate and advanced to next stage.</div>
+          <strong>✓ No rejections</strong>
+          <div style="margin-top:6px;color:var(--text-secondary)">No market that reached this gate was refused by it.</div>
         </div>`;
       } else {
         const examples = gateData.examples || [];
@@ -1070,7 +1075,7 @@ function renderScreener(kpi, scanState) {
       if (gateData.would_fund > 0) {
         footerHtml = `<div class="kanban-bucket-footer" style="color:#fbbf24">${gateData.would_fund} would clear allocator floor</div>`;
       } else {
-        footerHtml = `<div class="kanban-bucket-footer">${flow.out} of ${flow.in} markets advanced</div>`;
+        footerHtml = `<div class="kanban-bucket-footer">${droppedCount} of ${flow.scored} scored markets refused here</div>`;
       }
     }
 

@@ -416,7 +416,8 @@ def _funnel_from_pipeline(
         "trial_volume_usd": snap.get("trial_volume_usd"),
         "spread_gate": snap.get("spread_gate"),
         "horizon_gate_days": snap.get("horizon_gate_days"),
-        "min_income_usd_day": snap.get("min_income_usd_day"),
+        "reward_min_income_usd_day": snap.get("reward_min_income_usd_day"),
+        "spread_min_income_usd_day": snap.get("spread_min_income_usd_day"),
         "max_pair_cost": snap.get("max_pair_cost"),
     }
 

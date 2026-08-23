@@ -96,7 +96,8 @@ def test_funnel_carries_every_gate_bar(tmp_path):
         "volume_gate_usd": 250000.0,
         "spread_gate": 0.06,
         "horizon_gate_days": 30.0,
-        "min_income_usd_day": 1.5,
+        "reward_min_income_usd_day": 1.5,
+        "spread_min_income_usd_day": 0.0,
         "max_pair_cost": 0.995,
     })
 
@@ -106,7 +107,8 @@ def test_funnel_carries_every_gate_bar(tmp_path):
     assert f is not None
     assert f["spread_gate"] == 0.06
     assert f["horizon_gate_days"] == 30.0
-    assert f["min_income_usd_day"] == 1.5
+    assert f["reward_min_income_usd_day"] == 1.5
+    assert f["spread_min_income_usd_day"] == 0.0
     assert f["max_pair_cost"] == 0.995
 
 

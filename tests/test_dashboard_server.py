@@ -1341,13 +1341,42 @@ def test_app_js_reads_every_gate_bar_from_the_funnel():
     """
     app_js = _read_static("app.js")
     for key in ('volume_gate_usd', 'depth_gate_usd', 'spread_gate',
-                'horizon_gate_days', 'min_income_usd_day', 'max_pair_cost'):
+                'horizon_gate_days', 'reward_min_income_usd_day',
+                'spread_min_income_usd_day', 'max_pair_cost'):
         assert key in app_js, key
     # The literals these replaced must be gone.
     assert '0.0600 (6.00%)' not in app_js
     assert '30.0 days' not in app_js
     assert '$1.50/day' not in app_js
     assert '$0.995' not in app_js
+
+
+def test_app_js_states_the_payout_floor_per_market_source():
+    """One universal payout bar would call a passing spread market a failure."""
+    app_js = _read_static("app.js")
+    assert 'rewardIncome' in app_js
+    assert 'spreadIncome' in app_js
+    assert 'rewards ≥ $' in app_js or 'rewards ≥ $' in app_js
+    assert 'spread > $' in app_js
+
+
+def test_app_js_does_not_fabricate_sequential_gate_flow():
+    """The ranker stops at the first failure and not in board order.
+
+    Subtracting each gate's rejections from a running pool would report a
+    market refused on depth as having passed volume, so every advanced count
+    after the first gate would be invented. Each stage states its own refusals
+    against the scored total instead.
+    """
+    app_js = _read_static("app.js")
+    assert 'flow.rejected' in app_js
+    assert 'flow.scored' in app_js
+    # The running-pool arithmetic and every claim built on it are gone.
+    assert 'currentPool' not in app_js
+    assert 'flow.out' not in app_js
+    assert 'flow.in' not in app_js
+    assert 'markets advanced' not in app_js
+    assert 'advanced to next stage' not in app_js
 
 
 def test_app_js_preserves_kanban_scroll_across_renders():

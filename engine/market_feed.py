@@ -1,7 +1,7 @@
 """live/engine/market_feed.py - Market feed reading graduated markets from run/markets.json.
 
 Reads the ranker's output (8 graduated markets) directly from disk without
-re-deriving the funnel and without importing across the simulation boundary.
+re-deriving the funnel and without importing across a package boundary.
 Handles missing, empty, or stale feed files explicitly.
 """
 from __future__ import annotations

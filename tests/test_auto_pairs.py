@@ -3,7 +3,7 @@
 `auto_manage_pairs` runs once per poll cycle after reconcile. It discovers
 pairs with fills from the ledger, gates them on the U35 window and the
 close table, and routes each to complete (under the cap) or exit (at/over
-the cap or no ask), mirroring the sim's sweep. These tests drive the pass
+the cap or no ask), mirroring the paper run's sweep. These tests drive the pass
 with a real tmp registry and a fake venue client -- no network.
 """
 import uuid

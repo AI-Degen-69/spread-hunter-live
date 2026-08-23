@@ -321,7 +321,7 @@ def recent_trades(condition_id: str, seen: set, limit: int = 500) -> dict:
 
 
 if __name__ == "__main__":
-    from strategy.config import load
+    from scoring.config import load
 
     cfg = load()
     m = fetch_live_market(cfg.gamma_host, cfg.series_slug)

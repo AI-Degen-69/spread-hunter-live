@@ -101,7 +101,7 @@ def share_of_pool(our_q1: float, our_q2: float,
                   book_q1: float, book_q2: float) -> tuple[float, float, float]:
     """(our_score, others_score, share).
 
-    The book measured here does NOT contain our orders -- in simulation we post
+    The book measured here does NOT contain our orders -- in the paper run we post
     nothing real. Live, our size would rest in that book and count toward the
     total, so the pool splits over ours PLUS theirs. Dividing by theirs alone
     overstates the share, worst in exactly the thin markets worth picking.

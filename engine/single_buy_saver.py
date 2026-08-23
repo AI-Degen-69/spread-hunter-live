@@ -1,12 +1,12 @@
 """Stage 3 — stop-loss / naked exit for a one-sided live pair.
 
-This is a port of the pairs rule already proven in simulation at
-`strategy/sweep.py:700-830`, not a redesign of it. The trigger there fired 16
+This is the pairs rule already proven in the paper run, not a redesign of it.
+The trigger there fired 16
 times across 26,777 pairs, always on `pair_cost >= max_pair_cost`, and cost
 3.67c per exit against 3.68c gained per completed pair. Those numbers are the
 reason it is worth porting faithfully.
 
-What changes in live is not the rule but the failure surface. In simulation a
+What changes in live is not the rule but the failure surface. In the paper run a
 cancel always succeeds, a book read is free, and nobody else can fill our order
 between two statements. Live, each of those is a place to lose money, so the
 sequence is written around them:
@@ -68,7 +68,7 @@ MIN_SELL_SHARES: float = MIN_ORDER_SHARES
 # Absolute rather than proportional: these are probability prices in [0, 1],
 # where a 2c give-up means the same thing at 0.10 as at 0.90, and a percentage
 # would silently tighten to under a tick down there. Two cents is roughly the
-# 3.67c average exit cost measured in simulation, so a fill worse than this is
+# 3.67c average exit cost measured in the paper run, so a fill worse than this is
 # outside the behaviour the rule was validated against.
 #
 # Without a bound the SDK derives the sell price from the requested amount and
@@ -103,7 +103,7 @@ class PairCompletionRefused(RuntimeError):
 
 def should_exit(fill_cost: float, light_ask: Optional[float],
                 max_pair_cost: float) -> bool:
-    """Port of the sim trigger: exit when the pair cannot complete under the cap.
+    """Exit when the pair cannot complete under the cap.
 
     `>=`, not `>`. A pair costing exactly max_pair_cost is a guaranteed loss
     after gas, which is the whole reason the cap sits below $1.00.
@@ -471,7 +471,7 @@ def _record_exit_close(registry: OrderRegistry, pair: dict, heavy_token: str,
                        heavy_side: str, size: float, sell_price: float) -> None:
     """Ledger a completed exit: the sold leg leaves the registry for good.
 
-    Written AFTER the market order succeeds, mirroring the sim's sweep (which
+    Written AFTER the market order succeeds, mirroring the paper run's sweep (which
     logs the close after the walk). The close is the ONLY record of this
     sell -- the venue's trade never lands in the fills table because reconcile
     adopts fills only for orders it knows, and the SELL is a taker order with
@@ -506,7 +506,7 @@ def _record_exit_close(registry: OrderRegistry, pair: dict, heavy_token: str,
         proceeds=proceeds,
         realized_pnl=realized,
         # The leg would have paid $1 or $0 at resolution -- unknown, so no
-        # forgone figure rather than a guessed one (same as the sim).
+        # forgone figure rather than a guessed one (same as the paper run).
         forgone_vs_settlement=None,
         up_cost_removed=up_removed,
         dn_cost_removed=dn_removed,
@@ -952,7 +952,7 @@ def auto_manage_pairs(
     Discovery is from the fills ledger: every pair that has a fill, whose
     last fill is inside `pairs_exit_window_sec`, whose fills are not already
     covered by a later close on the condition, and whose legs are unbalanced.
-    Each such pair is routed exactly like the sim's sweep -- complete the
+    Each such pair is routed exactly like the paper run's sweep -- complete the
     missing leg at ask when the pair stays under `max_pair_cost`, else
     same-window exit of the naked leg at the best bid.
 
@@ -985,7 +985,7 @@ def auto_manage_pairs(
     # skip meant one close on a condition permanently disabled the rule for
     # that condition -- so a market exited once would never be managed again
     # even if the fleet later re-quoted it and took a new one-sided fill.
-    # The sim has no such flag: its rule keys off fill age, and a fresh fill
+    # The paper run has no such flag: its rule keys off fill age, and a fresh fill
     # re-arms the window. Mirror that: a pair whose last fill is OLDER than
     # the condition's latest close was the position that close sold (or
     # merged) -- skip it. A pair filled after the close is new exposure and
@@ -1042,7 +1042,7 @@ def _route_pair(client, registry, pair, max_pair_cost, live,
                 venue_positions) -> dict:
     """Complete when the pair stays under the cap, else exit the naked leg.
 
-    The sim's sweep decides the same way: cross the missing leg at ask when
+    The paper run's sweep decides the same way: cross the missing leg at ask when
     `fill_cost + ask < max_pair_cost`, otherwise sell the naked leg at the
     best bid. `should_exit` is the ported trigger; the light ask is read once
     to route, and the action functions re-read what they need. If the ask

@@ -6,7 +6,7 @@ collateral, which pays exactly $1.00. The profit is the discount:
 
     profit per pair = 1.00 - (avg_up + avg_dn)
 
-Measured on run/fleet.db: 476 merge closes, +$1,172.35, average pair cost
+Measured on the paper-run database: 476 merge closes, +$1,172.35, average pair cost
 $0.96006. Maker rebates over the same run accrued ~$0.22/day against $566
 committed -- four hundredths of a percent. Rebates are extra; the pair discount
 is the income, and it is what "spread hunter" names.

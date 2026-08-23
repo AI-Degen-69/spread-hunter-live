@@ -8,7 +8,7 @@ Journeys under test:
 1. A closed position records its net gain/loss and return % in the trade
    distribution ($5 commit returning $6.50 is a +$1.50 / +30% row).
 2. Win rate carries a Wilson 95% interval; expectancy carries a 90% lower
-   bound -- the same "is it positive" gate the simulation uses.
+   bound -- the same "is it positive" gate the paper run uses.
 3. Sharpe, Sortino, risk:reward, and profit factor are per-trade and NULL when
    unmeasurable, never a fabricated zero.
 4. Max drawdown reads the run-level equity curve; inventory risk reads the
@@ -129,7 +129,7 @@ def test_win_rate_ci_is_null_when_there_are_no_closes():
 
 
 def test_expectancy_ci_uses_90_percent_one_sided_lower_bound():
-    """The lower bound is mean - 1.645*se, the simulation's positivity gate."""
+    """The lower bound is mean - 1.645*se, the paper run's positivity gate."""
     closes = [
         dict(realized_pnl=1.5, cost_basis=5.0, ts=100.0),   # +30%
         dict(realized_pnl=0.5, cost_basis=5.0, ts=200.0),   # +10%

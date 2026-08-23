@@ -1,13 +1,10 @@
-"""Re-run the ranker on a fixed interval, forever.
+"""Re-run the Market Filter on a fixed interval, forever.
 
-PORTED 2026-08-23 from the simulation checkout
-(C:/Users/Tiger/Agents/Projects/AI Trading/spread-hunter/scripts/rerank_loop.py)
-into this standalone repo. Paths below are relative to THIS repo: the log and
-the cycle ring live in run/, and the ranker writes run/markets.json here so
-the fleet in this repo adopts it. The strategy.* scoring modules it depends
-on were copied alongside (strategy/).
+Paths are relative to this repo: the log lands in run/rerank.log, the cycle ring
+lives in run/, and the filter writes run/markets.json for the Trader to adopt.
+The scoring rules it leans on live in scoring/.
 
-`strategy.fleet` adopts run/markets.json every `rerank_interval_sec`, but
+The Trader adopts run/markets.json every `rerank_interval_sec`, but
 nothing regenerates that file -- and the U6 universe is short-dated by
 construction, so every market in it resolves within a day. Left alone, the
 fleet re-reads the same file until its whole universe has settled and then
@@ -84,7 +81,7 @@ def _rank_cmd(top: int = TOP) -> list[str]:
     """
     cmd = [sys.executable, "-m", "scripts.filter_markets", "--top", str(top)]
     try:
-        from strategy.config import load as _load_cfg
+        from scoring.config import load as _load_cfg
         cfg = _load_cfg()
         if cfg.select_min_top3_depth_usd_trial:
             cmd += ["--trial-depth", str(cfg.select_min_top3_depth_usd_trial)]

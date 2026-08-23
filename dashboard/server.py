@@ -1,7 +1,7 @@
 """Single-market live execution monitor (:8799).
 
 Watched during ONE supervised live cycle or unattended operation.
-Lifts proven UI components from the simulation dashboards:
+Lifts proven UI components from the paper-run dashboards:
 - Level 1: Run-level Strategy KPI tile grid, tooltips, and bell curves from `server/spread_dash_html.py:1525-1567`
 - Level 2: Selection funnel (RAW -> FILTERS -> FINAL -> GRADUATED) & refusal cards from `server/fleet_dash.py:1106-1180`
 - Level 2: Market drill-down (quotes vs mid, 4 markout horizons, skip events, settlements) from `server/spread_dash.py:598`
@@ -688,10 +688,10 @@ def start_bot() -> dict:
         # Capture starting capital: a real snapshot of account equity at the
         # moment the bot is toggled ON. The kpi.py report uses
         # _CFG.bankroll_usd (a hardcoded config constant) as its baseline,
-        # but the comment at kpi.py:889 explicitly says that's "a simulation
+        # but the comment at kpi.py:889 explicitly says that's "a paper-run
         # constant that nobody deposited." This snapshot is the real number.
         # It may be None if the venue is unreachable at start time; the
-        # dashboard shows a "simulated baseline" label in that case.
+        # dashboard shows a "estimated baseline" label in that case.
         starting_account_value = _capture_starting_capital()
         if starting_account_value is not None:
             saved_procs["starting_account_value"] = starting_account_value

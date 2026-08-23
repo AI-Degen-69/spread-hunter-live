@@ -18,8 +18,7 @@ pair back into $1.00 of USDC. The income is the difference:
 profit per pair = 1.00 - (avg UP price + avg DOWN price)
 ```
 
-Measured on the simulator's `fleet.db` (in the sibling simulation checkout, not this
-repo): 476 merge closes returned **+$1,172.35** at an average pair
+Measured over the paper run: 476 merge closes returned **+$1,172.35** at an average pair
 cost of **$0.96006** — roughly 4c per pair. That is the strategy, and it is what the
 name "spread hunter" refers to.
 
@@ -69,8 +68,8 @@ construction. It is unreachable in production and must stay that way.
 
 No reward-economics knob reaches live code. `reward_min_payout_usd`,
 `reward_floor_multiple`, `est_reward_pool_usd`, `rebate_rate`, `marginal_return_floor`,
-`allocation_budget` and `max_market_frac` are inherited from the simulation's allocator
-and are read by nothing in `engine/` or `dash/`. `quotes.reward_score()` formats a log
+`allocation_budget` and `max_market_frac` belong to the allocator in `scoring/allocate.py`
+and are read by nothing in `engine/` or `dashboard/`. `quotes.reward_score()` formats a log
 string and feeds no sizing decision.
 
 ### The two failure modes
@@ -114,9 +113,10 @@ spread-hunter-live/
     spread-hunter-menu.ps1 Interactive operations menu
   data/
     orders.db             THE primary order and fill registry
-    markets.json          The filtered universe the trader quotes
+  run/
+    markets.json          The filtered universe the Trader quotes
     cycle_events.jsonl    Ring buffer of operational events
-  strategy/               Scoring, allocation and selection rules the Market Filter uses
+  scoring/                Scoring, allocation and selection rules the Market Filter uses
   tests/                  Full hermetic unit & integration test suite
 ```
 

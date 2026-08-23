@@ -1,7 +1,7 @@
 """live/tests/test_live_funnel.py - Level 2 funnel sourced from the screener snapshot.
 
 The live Level 2 funnel must reuse the ranker's own gate names and counts so a
-refusal compares 1:1 with the sim scan (server/fleet_dash.py). These tests pin
+refusal compares 1:1 with the paper-run scan (server/fleet_dash.py). These tests pin
 that mapping against a hermetic fixture rather than the repo's live
 run/pipeline.json.
 """
@@ -43,7 +43,7 @@ def test_funnel_from_pipeline_reuses_screener_gate_names(tmp_path):
 
     assert f is not None
     assert f["source"] == "screener"
-    # RAW = reward pool + gamma liquid pool, matching the sim scan's 1015.
+    # RAW = reward pool + gamma liquid pool, matching the paper-run scan's 1015.
     assert f["raw_count"] == 1015
     assert f["final_count"] == 3
     assert [g["cause"] for g in f["filters"]] == ["YES: top-3 bid depth", "volume", "horizon"]

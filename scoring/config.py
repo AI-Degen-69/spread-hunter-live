@@ -18,7 +18,7 @@ class MakerConfig:
     series_slug: str = "btc-up-or-down-5m"
 
     # --- virtual account --------------------------------------------------
-    # Fresh paper run wallet. This is the total simulated capital available,
+    # Fresh paper run wallet. This is the total paper capital available,
     # not a promise that the allocator may commit every dollar at once.
     bankroll_usd: float = 1000.0
 

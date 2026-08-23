@@ -38,13 +38,11 @@ def test_live_network_block_raises_on_outbound_socket():
 def test_every_engine_module_resolves_inside_live():
     """The engine is one package in one directory -- live/engine/ and nowhere else.
 
-    Until 2026-08-18 this package was called `strategy`, the same name as the
-    simulation package at the repo root. Neither had an `__init__.py`, so Python
-    merged them into a namespace package spanning both trees: `markets` and
-    `config` came from the simulation while `live_exec` came from live/, and
-    which of the two directories resolved depended on the working directory the
-    operator happened to be in. The rename ended that. This test is what keeps
-    it ended.
+    Until 2026-08-18 this package was called `strategy` and had no
+    `__init__.py`, so Python could merge it with any same-named directory on
+    sys.path into one namespace package spanning both trees. Which directory a
+    module resolved from depended on the operator's working directory. The
+    rename ended that. This test is what keeps it ended.
     """
     import engine
     import engine.order_manager as live_exec

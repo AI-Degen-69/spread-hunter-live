@@ -2,7 +2,7 @@
 
 The defect these tests pin: the dashboard's headline tile read
 `config.bankroll_usd + realized_pnl` = $100.30 for an account the venue valued
-at $101.88. `bankroll_usd` is a simulation parameter nobody deposited.
+at $101.88. `bankroll_usd` is a paper-run parameter nobody deposited.
 
 The measured figures below are the real account on 2026-08-19, read from the
 Data API: collateral $101.88, no open positions, two closed positions returning

@@ -1,10 +1,11 @@
 """Live fill engine interface implementation for live trading execution.
 
-Backed by OrderRegistry and venue client. Wireable to nothing in test/simulation mode.
+Backed by OrderRegistry and a venue client. The paper-run path never used this
+engine; tests construct it directly with a stub client.
 
 CRITICAL INVARIANT:
 on_book() MUST NEVER infer a fill from book deltas, price changes, or trade tape.
-In simulation, QueueFillEngine deduces fills from book deltas and queue position.
+In the paper run, QueueFillEngine deduces fills from book deltas and queue position.
 Live, fills come ONLY from the venue through the poll loop / OrderRegistry sync.
 Inventing a fill is the worst failure available to this system.
 """
@@ -208,7 +209,7 @@ class LiveFillEngine:
         book depth without a venue round-trip, and the displayed depth may be
         gone, rejected, or fill elsewhere -- so an unconfirmed quantity must not
         reach money-valued position reporting. This is a deliberate divergence
-        from `strategy/fills.py`, whose simulated crosses are always real.
+        from the paper run, whose crosses were always real.
         """
         return sum(f.size * f.price for f in self.fills
                    if (side is None or f.side == side)

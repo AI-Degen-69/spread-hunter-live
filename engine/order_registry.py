@@ -1,7 +1,9 @@
-"""live/engine/order_registry.py - Live order and fill registry backed by SQLite (run/live.db).
+"""Live order and fill registry backed by SQLite.
 
 Stage 2 Architecture Constraints:
-- Stored separately in run/live.db, never in run/fleet.db (simulator state).
+- Stored in data/orders.db. A legacy run/live.db is still honoured when data/orders.db
+  does not exist yet, so a host carrying both files must be migrated before the two can
+  drift; see DEFAULT_DB_PATH below for the exact precedence.
 - orders.id is a local uuid4 string written BEFORE submitting to the venue.
 - orders.order_id is the venue order id, unique and nullable, attached after POST response.
 - size_matched is strictly derived from SUM(fills.size), never stored as a mutable column in orders.
@@ -1744,7 +1746,7 @@ def inventory_from_registry(
 
         # Subtract executed closes. `naked_exit` is U35: ONE leg was sold, and
         # which one is encoded by which price field is set -- the same
-        # encoding the sim's stats.inventory_from_db uses and the settled-
+        # encoding the paper run's stats.inventory_from_db uses and the settled-
         # positions reader expects. The OTHER leg is untouched, so it must
         # not be decremented.
         close_rows = conn.execute(
@@ -1830,8 +1832,8 @@ def registry_committed_usd(registry) -> float:
     Inventory cost (every filled share's cost basis whose pair is still open)
     plus the notional resting in unfilled offers. Both are spoken for right
     now: the venue holds collateral against an open bid, and a fill converts
-    that promise into inventory without asking -- the same two terms the
-    simulation's `fleet_committed_cost` sums, and the same gap that let $767
+    that promise into inventory without asking -- the same two terms
+    `fleet_committed_cost` sums, and the same gap that let $767
     of naked exposure hide behind $9,588 of committed capital in 2026-07-30.
 
     Pairs whose condition already has a close are skipped whole: merged or

@@ -6,14 +6,13 @@ never the second: if the second cannot resolve, the operator sees a clean dry
 run, approves the order, and the crash lands on the `--live` call -- at the
 venue, with money committed.
 
-That is not hypothetical. On 2026-08-18 `python -m live.strategy.live_exec
-quote ... --live` from the repo root died with `ModuleNotFoundError: No module
-named 'strategy.order_registry'` after a dry run of the same command had
-printed cleanly.
+That is not hypothetical. On 2026-08-18 a `quote ... --live` run from the repo
+root died with `ModuleNotFoundError: No module named 'order_registry'` after a
+dry run of the same command had printed cleanly.
 
-The package has since been renamed from `strategy` to `engine` so it can no
-longer merge with the simulation package at the repo root, and `live_exec`
-bootstraps `live/` -- and only `live/` -- onto `sys.path`. These tests exercise
+The execution package is named `engine` so it cannot merge with a same-named
+package anywhere else, and the order manager bootstraps this repo -- and only
+this repo -- onto `sys.path`. These tests exercise
 the deferred imports through both invocations an operator actually uses, so the
 failure surfaces in CI rather than at the venue.
 """

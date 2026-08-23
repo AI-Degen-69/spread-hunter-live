@@ -1,6 +1,6 @@
 """live/engine/markout.py - Out-of-band adverse selection sampler for live trading.
 
-Measures mid-price movement post-fill at standard simulation horizons:
+Measures mid-price movement post-fill at the standard markout horizons:
   mid_h0: 300s (5m)
   mid_h1: 3600s (1h)
   mid_h2: 21600s (6h)
@@ -153,7 +153,7 @@ class MarkoutWorker(threading.Thread):
 
 
 def _markout_weight(row: dict) -> float:
-    """Shares a row speaks for. Port of `strategy.markout._weight`.
+    """Shares a row speaks for. Mirrors the paper-run markout weighting.
 
     A row with NO `size` key weighs 1.0 -- one row, one vote. A size that is
     present but null, zero or negative is a defective row and weighs 0.0 so it
@@ -168,7 +168,7 @@ def _markout_weight(row: dict) -> float:
 
 
 def _pool_stats(rows: list[dict], min_sample: int) -> dict:
-    """Size-weighted pooled verdict. Port of `strategy.markout._stats_from_rows`.
+    """Size-weighted pooled verdict. Mirrors the paper-run pooled markout statistics.
 
     Returns `insufficient_sample` rather than a mean when the sample is thin.
     `n` is Kish's `sum(w)^2 / sum(w^2)` -- the effective sample the size
@@ -197,7 +197,7 @@ def _matured_drift(row: dict, horizons: tuple[float, ...]) -> list[float]:
 
     Drift, not total markout: `mid_later - ref_mid` is the adverse-selection
     term alone, and the gate must react to the market moving against us, never
-    to our own entry offset. Port of `strategy.markout._matured` -- the 15m
+    to our own entry offset -- the 15m
     exit-window read sits AFTER the 6h column in the schema but is SHORTER, so
     sorting is by duration, never by column index.
     """
@@ -223,8 +223,8 @@ def fleet_stats(
 ) -> dict:
     """One verdict over EVERY market's fills, on the longest-horizon drift rule.
 
-    The live twin of `strategy.markout.fleet_stats`, reading the registry's
-    `markouts` table instead of the simulator's store. Pooled is the only
+    Reads the registry's
+    `markouts` table instead of the paper run's store. Pooled is the only
     reading that exists when no individual market matures a sample of its own
     -- the case `gate.fleet_posture` exists for -- so the fleet runner feeds
     this to that gate once per cycle.

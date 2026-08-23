@@ -55,7 +55,7 @@ def test_live_fill_engine_on_book_never_infers_fills(mock_registry, mock_client)
     order = engine.post(token_id="tok_up", side="UP", price=0.50, size=20.0, book_bids={0.50: 100.0}, ts=100.0)
 
     # Book completely cleared and trades occurred at price
-    # In simulation (QueueFillEngine), this would generate a sweep/queue fill.
+    # With a queue-based fill engine, this would generate a sweep/queue fill.
     # In LiveFillEngine, on_book MUST return 0 fills.
     bids_after = {0.48: 50.0}
     tape = {0.50: 500.0}

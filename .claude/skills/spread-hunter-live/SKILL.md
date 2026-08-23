@@ -20,7 +20,7 @@ description: Development conventions and patterns for spread-hunter-live. Python
 
 | Package | Role |
 |---------|------|
-| `engine/` | execution core — order registry, fills, pairs, risk, merge |
+| `core_brain/` | execution core — order registry, fills, pairs, risk, merge |
 | `strategy/` | signal and sizing logic |
 | `dash/` | FastAPI dashboard + static assets |
 | `scripts/` | operator tooling and one-off maintenance |
@@ -40,13 +40,13 @@ description: Development conventions and patterns for spread-hunter-live. Python
 Absolute, rooted at the repo. `pytest.ini` sets `pythonpath = .`.
 
 ```python
-from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH
-from engine.quotes import Inventory, QuoteIntent
+from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
+from core_brain.quotes import Inventory, QuoteIntent
 ```
 
 Do not use relative imports (0 in the codebase) or wildcard imports (0 in the codebase).
 
-Modules open with `from __future__ import annotations` (19 of 20 in `engine/`).
+Modules open with `from __future__ import annotations` (19 of 20 in `core_brain/`).
 
 ### Error Handling
 
@@ -85,7 +85,7 @@ Conventional commits. Prefixes seen: `feat`, `fix`, `docs`. Imperative mood,
 concise first line.
 
 ```text
-fix(engine): size pair completion against the asks ladder
+fix(core_brain): size pair completion against the asks ladder
 ```
 
 ## Trading-Engine Guardrails

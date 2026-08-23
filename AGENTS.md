@@ -39,7 +39,7 @@ Describe this bot as a **pair-assembly arbitrage** that earns rebates while it w
 The **Market Filter** (`scripts/filter_markets.py`, run continuously by
 `scripts/filter_loop.py`) funnels the venue — 24h volume, top-3 bid depth on both sides,
 book spread, horizon — and writes the survivors to `runtime/markets.json`. The **Trader**
-(`engine/trader_loop.py`) quotes **only** that list, via `engine/market_feed.py`.
+(`core_brain/trader_loop.py`) quotes **only** that list, via `core_brain/market_feed.py`.
 
 `scripts/rank_markets.py` and `scripts/rerank_loop.py` are backward-compatible aliases
 that import from the filter modules; new work targets the filter names.
@@ -51,7 +51,7 @@ that import from the filter modules; new work targets the filter names.
   all, and they are the markets that actually trade.
 - BTC 5-minute binaries are out of scope: `config.series_slug = "btc-up-or-down-5m"`
   is a **legacy field**, read only by
-  `engine/markets.py` and the `probe` latency harness. The 5-minute BTC series was
+  `core_brain/markets.py` and the `probe` latency harness. The 5-minute BTC series was
   measured dead: *"Adverse selection, not fee level, is what killed 5-min BTC."*
 
 ### Pricing mode: spread_capture (formerly "rewards")
@@ -69,7 +69,7 @@ construction. It is unreachable in production and must stay that way.
 No reward-economics knob reaches live code. `reward_min_payout_usd`,
 `reward_floor_multiple`, `est_reward_pool_usd`, `rebate_rate`, `marginal_return_floor`,
 `allocation_budget` and `max_market_frac` belong to the allocator in `scoring/allocate.py`
-and are read by nothing in `engine/` or `dashboard/`. `quotes.reward_score()` formats a log
+and are read by nothing in `core_brain/` or `dashboard/`. `quotes.reward_score()` formats a log
 string and feeds no sizing decision.
 
 ### The two failure modes
@@ -82,7 +82,7 @@ $1.00. A **one-sided fill** is a directional bet nobody decided to take. Everyth
 
 ```
 spread-hunter-live/
-  engine/                 Core trading & execution engine
+  core_brain/             Core trading & execution engine
     quotes.py             THE decision layer: where to rest both legs, and why not to
     risk.py               Sizing ladder, inventory skew, dollar caps, hard blocks
     unhedged_stop_loss.py Per-market markout state machine + trader posture
@@ -102,6 +102,7 @@ spread-hunter-live/
     kpi.py                Live performance metrics & markouts
     audit.py              3-way reconciliation (Registry vs Venue vs Chain)
     config.py             Live tuning configuration
+    runtime_paths.py      Where a runtime state file lives, across the run/ rename
   dashboard/
     server.py             Operations dashboard (:8799)
     static/               Dashboard SPA (index.html, app.js, styles.css)
@@ -113,8 +114,9 @@ spread-hunter-live/
     spread-hunter-menu.ps1 Interactive operations menu
   data/
     orders.db             THE primary order and fill registry
-  run/
+  runtime/
     markets.json          The filtered universe the Trader quotes
+    processes.json        PIDs of the running stack (filter / query / decide)
     cycle_events.jsonl    Ring buffer of operational events
   scoring/                Scoring, allocation and selection rules the Market Filter uses
   tests/                  Full hermetic unit & integration test suite
@@ -128,16 +130,41 @@ issues, dashboard copy and operator instructions.
 | Was | Now | Where it lives |
 | --- | --- | --- |
 | Screener / ranker | **Market Filter** | `scripts/filter_markets.py`, loop in `scripts/filter_loop.py` |
-| Engine Poll Loop (5s) | **Order Manager** (0.5s) | `engine/order_manager.py`, `poll --interval 0.5` |
-| Fleet / Quoting Fleet | **Trader** | `engine/trader_loop.py` |
-| Naked leg / one-sided fill | **Single buy** | `engine/single_buy_saver.py` |
+| Engine Poll Loop (5s) | **Order Manager** (0.5s) | `core_brain/order_manager.py`, `poll --interval 0.5` |
+| Fleet / Quoting Fleet | **Trader** | `core_brain/trader_loop.py` |
+| Naked leg / one-sided fill | **Single buy** | `core_brain/single_buy_saver.py` |
 | `dash/live_dash.py` | **Dashboard server** | `dashboard/server.py` |
 | `run/live.db` | **Orders DB** | `data/orders.db` |
 | `scripts/live-spread-hunter-menu.ps1` | **Operations menu** | `scripts/spread-hunter-menu.ps1` |
+| `engine/` | **`core_brain/`** | the execution package; import as `from core_brain.x import y` |
+| `run/` | **`runtime/`** | on-disk state: `markets.json`, `processes.json`, the cycle ring |
+| `scripts/guardrail_watch.py` | **Global Stop Loss** | `scripts/global_stop_loss.py` |
+| `run/live_procs.json` | **Process file** | `runtime/processes.json` |
+| process keys `screener` / `engine` / `fleet` | **`filter` / `query` / `decide`** | `runtime/processes.json`, `/api/system/status` |
 
 Old module paths (`scripts/rank_markets.py`, `scripts/rerank_loop.py`,
 `scripts/live-spread-hunter-menu.ps1`) survive only as thin forwarders for anything still
 calling them. Do not add to them.
+
+### Runtime state across the rename
+
+`runtime/` holds state that is **not** in git: it is on the operator's disk, written by
+processes that may still be running when new code starts. So readers resolve state files
+through `core_brain/runtime_paths.py`, which prefers the `runtime/` path and falls back to
+the pre-rename `run/` path while only that one exists. Writers always write `runtime/`,
+which disarms the fallback as soon as the new file appears.
+
+Two of those files are money, not cosmetics:
+
+- **`processes.json`.** `start_bot()` refuses a second stack only when the status reads
+  RUNNING, and that status comes from this file. A registry the code cannot find reads as
+  STOPPED, and START then launches a second live Trader beside the running one.
+- **`markets.json`.** The Trader quotes only what this file lists. A feed the code cannot
+  find is an empty universe until the Market Filter regenerates it.
+
+Add a state file: write it through `runtime_file(...)`, read it through
+`resolve_runtime_file(...)`, and if you ever rename one, add the old name to
+`LEGACY_FILE_NAMES` in the same commit.
 
 ## Commands
 
@@ -162,10 +189,10 @@ python -m pytest -q
 2. **Closing commands are pre-approved:** `exit`, `merge`, `redeem`, `cancel`, `cancel-market`, `cancel-all` reduce exposure. Cancelling pulls resting orders only — a leg that already filled is still open exposure.
 3. **Opening commands require explicit supervision.** Four things spend money: `quote`, `complete`, the Trader loop, and the dashboard's **START** button.
    - `complete` buys the missing side. It removes the risk of a single buy, but it does so by spending, so it belongs here and not with the closing commands.
-   - START calls `start_bot()`, which launches `engine.trader_loop --live`. A click on the dashboard is a live order path exactly like a typed command.
+   - START calls `start_bot()`, which launches `core_brain.trader_loop --live`. A click on the dashboard is a live order path exactly like a typed command.
    - Propose the command; the operator runs it.
-4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (`engine/config.py`).
-5. **`data/orders.db` is the registry, and the only one.** Every module resolves it through `engine.order_registry.DEFAULT_DB_PATH`. Read it; never rewrite or delete it.
+4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (`core_brain/config.py`).
+5. **`data/orders.db` is the registry, and the only one.** Every module resolves it through `core_brain.order_registry.DEFAULT_DB_PATH`. Read it; never rewrite or delete it.
 
 ## Verifying a change
 

@@ -1,7 +1,7 @@
 """Re-run the Market Filter on a fixed interval, forever.
 
 Paths are relative to this repo: the log lands in runtime/rerank.log, the cycle ring
-lives in run/, and the filter writes runtime/markets.json for the Trader to adopt.
+lives in runtime/, and the filter writes runtime/markets.json for the Trader to adopt.
 The scoring rules it leans on live in scoring/.
 
 The Trader adopts runtime/markets.json every `rerank_interval_sec`, but
@@ -31,10 +31,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LOG = ROOT / "runtime" / "rerank.log"
 
-# The live cycle-telemetry ring (engine/cycle_stream.py). This script
-# APPENDS only, deliberately without importing engine.cycle_stream: it runs
-# from the repo root and must stay decoupled from the engine package.
-# Rotation of the ring is owned by the engine process (Q3).
+# The live cycle-telemetry ring (core_brain/cycle_stream.py). This script
+# APPENDS only, deliberately without importing core_brain.cycle_stream: it runs
+# from the repo root and must stay decoupled from the execution package.
+# Rotation of the ring is owned by the Query Polymarket process (Q3).
 RING_PATH = ROOT / "runtime" / "cycle_events.jsonl"
 
 # How often to regenerate runtime/markets.json. The fleet adopts the file within
@@ -51,10 +51,10 @@ TOP = 20
 def _emit_scan_event(record: dict) -> None:
     """Inline NDJSON append to the live cycle ring. Never raises.
 
-    Same schema as engine.cycle_stream.emit, `service="screener"`. Appends go
+    Same schema as core_brain.cycle_stream.emit, `service="filter"`. Appends go
     through one os.write on an O_APPEND fd, which lands at EOF as a single
     syscall -- a plain open("a") seek-then-write loses a line on Windows when
-    two writers hit the same end offset. The engine owns rotation.
+    two writers hit the same end offset. Query Polymarket owns rotation.
     """
     try:
         RING_PATH.parent.mkdir(parents=True, exist_ok=True)

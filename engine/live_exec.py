@@ -11,7 +11,7 @@ and nothing that does should ever be added to it.
     # in .env, which must be in .gitignore BEFORE the key goes in
     POLY_PRIVATE_KEY=0x...      # signing key
     POLY_FUNDER=0x...           # address actually holding the USDC
-    POLY_SIG_TYPE=1             # 0 EOA | 1 email-magic proxy | 2 browser proxy
+    POLY_SIG_TYPE=3             # 0 EOA | 1 magic proxy | 2 Gnosis Safe | 3 Deposit Wallet
 
     python -m engine.live_exec status
     python -m engine.live_exec quote <condition_id> --price 0.22 --size 20
@@ -30,10 +30,21 @@ SAFETY RAILS, all on by default:
     module, so it cannot place a real order by accident.
 
 SIGNATURE TYPE IS THE USUAL FOOTGUN. An account funded through the Polymarket
-website is a PROXY: signature_type 1 or 2, with POLY_FUNDER set to the proxy
-address rather than the address the private key derives to. Get it wrong and
-orders are rejected -- or signed against an account with no balance. Run
-`status` first and confirm the address it prints is the one holding your money.
+website is a PROXY, with POLY_FUNDER set to the proxy address rather than the
+address the private key derives to. Every wallet deployed on or after
+2026-05-04 is an ERC-1967 beacon proxy Deposit Wallet -- signature_type 3
+(POLY_1271) -- regardless of the signer that created it. Older accounts are 1
+(magic-link proxy) or 2 (Gnosis Safe). This module defaults to 3.
+
+Get it wrong and the CLOB derives a DIFFERENT wallet address and truthfully
+reports balance 0 with zero allowances. Nothing in that response says "wrong
+address", so it reads exactly like an unfunded account. Do not go hunting for
+the money -- sweep the type instead, it settles the question in seconds:
+
+    foreach ($s in 0,1,2,3) { $env:POLY_SIG_TYPE=$s; python -m engine.live_exec balance }
+
+Exactly one returns a non-zero balance. Then run `status` and confirm the
+address it prints is the one holding your money.
 """
 from __future__ import annotations
 

@@ -117,9 +117,10 @@ dry-run preview.
 | `exit <pair_id>` | Stop-loss exit of a single buy |
 | `cancel` / `cancel-market` / `cancel-all` | Pull resting orders |
 
-**Bot stack** — the dashboard's START/STOP buttons (or the PowerShell menu) launch the
+**Bot stack** — the dashboard's START/STOP buttons (or the PowerShell menu) control the
 Market Filter (`filter`), Query Polymarket (`query`) and Decide & Execute (`decide`).
-Decide & Execute rests real maker bids: verify dashboard state before starting.
+START launches all three; STOP stops them. Decide & Execute rests real maker bids: verify
+dashboard state before starting.
 
 **PowerShell control center** — `.\scripts\spread-hunter-menu.ps1` offers
 `start` / `stop` / `status` / `open`. The `status` view shows the dashboard, every stack

@@ -165,7 +165,7 @@ def test_exit_writes_a_naked_exit_close(registry: OrderRegistry):
     closes = registry.get_all_closes()
     assert len(closes) == 1
     c = closes[0]
-    assert c["method"] in ("single_buy_exit", "naked_exit")
+    assert c["method"] == "single_buy_exit"
     assert c["condition_id"] == COND
     assert c["shares"] == pytest.approx(10.0)
     # UP leg sold: up_price carries the sale, dn_price stays None.

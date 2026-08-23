@@ -619,7 +619,7 @@ def quote(condition_id: str, price: float, size: float, live: bool,
 
     print(f"\nlogged to {RUN / 'live_orders.json'}")
     print(f"pair_id  {pair_id}")
-    print(f"  poll:     python -m engine.order_manager poll --interval 5")
+    print("  poll:     python -m engine.order_manager poll --interval 0.5")
     print(f"  exit:     python -m engine.order_manager exit {pair_id}")
     print(f"  complete: python -m engine.order_manager complete {pair_id}")
 

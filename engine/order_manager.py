@@ -337,7 +337,7 @@ def pairs(db_path: str | Path | None = None) -> None:
     """List every pair the registry knows, with what is actually held.
 
     Stage 3 and Stage 4 both take a pair_id, and without this the only way to
-    find one is to open live.db by hand -- which is exactly the sort of step an
+    find one is to open orders.db by hand -- which is exactly the sort of step an
     operator skips at the moment it matters.
     """
     from engine.order_registry import OrderRegistry, DEFAULT_DB_PATH, get_connection
@@ -2827,7 +2827,7 @@ def _evaluate_single_market_quote(
         print(f"DECISION: DECLINED -- {why or 'no side quotable'}")
     print("=" * 80)
 
-    # Telemetry logging to live.db (Amendment 4: decide stays strictly read-only on orders, logs telemetry only)
+    # Telemetry logging to orders.db (Amendment 4: decide stays strictly read-only on orders, logs telemetry only)
     from engine.order_registry import HedgeCensusRecord, MarketEventRecord, get_run_id
     pair_touch = round(ba_up + ba_dn - 0.02, 4) if (ba_up is not None and ba_dn is not None) else None
     fillable_sub = 1.0 if (pair_touch is not None and pair_touch < cfg.max_pair_cost) else 0.0
@@ -2912,17 +2912,17 @@ def main() -> None:
                    help="Time in force: GTC (default), GTD, FOK, FAK.")
     q.add_argument("--expiration", type=int, default=None,
                    help="Expiration timestamp (UTC epoch seconds) required when --tif GTD.")
-    q.add_argument("--db", default=None, help="Custom database path (default: run/live.db)")
+    q.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     q.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
                   help="send to venue (default: True)")
     canc = sub.add_parser("cancel", help="Cancel a single active order by venue order ID.")
     canc.add_argument("order_id", help="Venue order ID to cancel")
-    canc.add_argument("--db", default=None, help="Custom database path (default: run/live.db)")
+    canc.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     canc.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
                       help="send to venue (default: True)")
     cm = sub.add_parser("cancel-market", help="Cancel all active orders for a condition ID.")
     cm.add_argument("condition_id", help="Condition ID to cancel orders for")
-    cm.add_argument("--db", default=None, help="Custom database path (default: run/live.db)")
+    cm.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     cm.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
                     help="send to venue (default: True)")
     r = sub.add_parser("redeem", help="Gasless redemption of winning positions via Relayer.")
@@ -2968,7 +2968,7 @@ def main() -> None:
     pl = sub.add_parser("poll", help="Poll CLOB and reconcile orders and fills.")
     pl.add_argument("--interval", type=float, default=0.5, help="Cadence in seconds (default: 0.5)")
     pl.add_argument("--once", action="store_true", help="Reconcile once and exit")
-    pl.add_argument("--db", default=None, help="Custom database path (default: run/live.db)")
+    pl.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     pl.add_argument("--sweep-every", type=int, default=1,
                     help="Account sweep every N poll cycles when --sweep-interval is not set (default 1 = every tick)")
     pl.add_argument("--sweep-interval", type=float, default=None,
@@ -2978,7 +2978,7 @@ def main() -> None:
                     help="Supervise the guardrail watcher as a child process (default: on; --no-watch-guardrails disables)")
     ex = sub.add_parser("exit", help="Stage 3: close a one-sided pair (cancel resting leg, sell filled leg).")
     ex.add_argument("pair_id", help="pair_id as recorded in the order registry")
-    ex.add_argument("--db", default=None, help="Custom database path (default: run/live.db)")
+    ex.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     ex.add_argument("--skip-positions-check", action="store_true",
                     help="Act without the Data API registry/venue cross-check. Only when the endpoint is down.")
     ex.add_argument("--force", action="store_true",
@@ -2987,7 +2987,7 @@ def main() -> None:
                     help="send to venue (default: True)")
     cp = sub.add_parser("complete", help="Stage 4: cross the book to complete a one-sided pair.")
     cp.add_argument("pair_id", help="pair_id as recorded in the order registry")
-    cp.add_argument("--db", default=None, help="Custom database path (default: run/live.db)")
+    cp.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     cp.add_argument("--skip-positions-check", action="store_true",
                     help="Act without the Data API registry/venue cross-check. Only when the endpoint is down.")
     cp.add_argument("--force", action="store_true",
@@ -2995,17 +2995,17 @@ def main() -> None:
     cp.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
                     help="send to venue (default: True)")
     pr = sub.add_parser("pairs", help="List pair_ids in the registry with held sizes.")
-    pr.add_argument("--db", default=None, help="Custom database path (default: run/live.db)")
+    pr.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     dec = sub.add_parser("decide", help="Read-only quote decision for graduated markets using live venue books.")
     dec.add_argument("target", nargs="?", default=None, help="Market condition ID, slug, or index (0..7). Default: first graduated market.")
     dec.add_argument("--all", action="store_true", help="Evaluate all graduated markets from run/markets.json")
-    dec.add_argument("--db", default=None, help="Custom database path (default: run/live.db)")
+    dec.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     aud = sub.add_parser("audit", help="Read-only three-way audit comparing Registry, Venue, and Chain views.")
     aud.add_argument("target", help="Condition ID or pair_id to audit")
     aud.add_argument("--funder", default=None, help="Funder address (default: POLY_FUNDER)")
-    aud.add_argument("--db", default=None, help="Custom database path (default: run/live.db)")
+    aud.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     kp = sub.add_parser("kpi", help="Generate live KPI report mirroring strategy/kpi.py.")
-    kp.add_argument("--db", default=None, help="Custom database path (default: run/live.db)")
+    kp.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     kp.add_argument("--run-id", default=None, help="Filter by run_id session")
     ac = sub.add_parser("api-creds",
                         help="Derive L2 API credentials once and store them in .env.")
@@ -3014,7 +3014,7 @@ def main() -> None:
     asw = sub.add_parser("account-sweep",
                          help="Read-only: record venue account value and P&L into the registry.")
     asw.add_argument("--funder", default=None, help="Funder address (default: POLY_FUNDER)")
-    asw.add_argument("--db", default=None, help="Custom database path (default: run/live.db)")
+    asw.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     c = sub.add_parser("cancel-all")
     c.add_argument("--live", action=argparse.BooleanOptionalAction, default=True,
                   help="send to venue (default: True)")

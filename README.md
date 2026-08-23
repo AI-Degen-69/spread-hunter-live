@@ -108,7 +108,7 @@ dry-run preview.
 | `status` / `balance` | Account state, wallet balance |
 | `decide` | Read-only quote decision for graduated markets |
 | `quote <condition_id> --price P --size N` | Rest a maker bid (opening command) |
-| `poll --interval 5` | Reconcile fills from the venue into `run/live.db` |
+| `poll --interval 0.5` | Reconcile fills from the venue into `data/orders.db` |
 | `merge <condition_id> --amount N` | Merge UP+DOWN pairs back to USDC (the exit) |
 | `redeem <condition_id>` | Gasless redemption of resolved positions |
 | `complete <pair_id>` | Cross the book to complete a one-sided pair |

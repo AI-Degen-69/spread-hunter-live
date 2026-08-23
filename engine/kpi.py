@@ -1,6 +1,6 @@
 """live/engine/kpi.py - Live KPI report mirroring strategy/kpi.py:124-410.
 
-Computes exact matching metrics from live/run/live.db across 3 levels:
+Computes exact matching metrics from data/orders.db across 3 levels:
 1. Run level: maker fill rate, uptime, spread capture, markout drift, PnL by method, ROI.
 2. Market level: per-market drill-down with 4-horizon markouts (5m/1h/6h/15m), quotes vs mid, skips, settlement.
 3. Mechanics level: order latency, reconcile lag, venue errors by code, 3-way divergences.

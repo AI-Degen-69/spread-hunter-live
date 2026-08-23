@@ -19,7 +19,7 @@ against every database ever created and explain itself to nobody.
 
 Idempotent: it only moves a row whose `venue_ts` still equals the backfill clock.
 
-    python live/scripts/repair_stage45_fill_times.py [--db live/run/live.db] [--apply]
+    python -m scripts.repair_stage45_fill_times [--db data/orders.db] [--apply]
 """
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ REPAIRS = {
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--db", default=str(Path(__file__).resolve().parents[1] / "run" / "live.db"))
+    ap.add_argument("--db", default=str(Path(__file__).resolve().parents[1] / "data" / "orders.db"))
     ap.add_argument("--apply", action="store_true",
                     help="write the change; without it the script only reports")
     args = ap.parse_args()

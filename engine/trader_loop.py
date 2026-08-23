@@ -625,7 +625,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--once", action="store_true",
                     help="run one rotation and exit")
     ap.add_argument("--db", default=None,
-                    help="registry db path (default: run/live.db)")
+                    help="registry db path (default: data/orders.db)")
     ap.add_argument("--max-markets", type=int, default=None,
                     help="cap the number of markets rotated (default: all)")
     ap.add_argument("--funder", default=None,

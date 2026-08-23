@@ -1,4 +1,4 @@
-"""The read side of the live registry (live/run/live.db).
+"""The read side of the live registry (data/orders.db).
 
 Mirrors the root tree's State-reader split: strategy/store.py owns writes and
 schema, strategy/stats.py owns every read that produces dashboard numbers. Here

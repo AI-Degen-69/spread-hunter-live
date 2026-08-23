@@ -4,7 +4,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
-from engine.live_exec import decide, _evaluate_single_market_quote
+from engine.order_manager import decide, _evaluate_single_market_quote
 from engine.market_feed import GraduatedMarket
 from engine.markets import LiveMarket
 

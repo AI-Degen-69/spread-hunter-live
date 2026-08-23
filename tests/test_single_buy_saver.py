@@ -19,7 +19,7 @@ import pytest
 from engine.order_registry import (
     OrderRegistry, OrderRecord, FillRecord, QuoteRecord,
 )
-from engine import single_side_buy_saver as lp
+from engine import single_buy_saver as lp
 
 
 MAX_PAIR_COST = 0.995
@@ -127,7 +127,7 @@ class FakeClient:
         self.calls.append(
             f"{verb}:{order_args.token_id}:{order_args.amount}:{order_args.side}"
         )
-        # Kept structured as well as stringified: `amount` means shares on a
+        # Kept structured as stringified: `amount` means shares on a
         # SELL and USDC on a BUY, and a test that only reads the string cannot
         # tell those apart.
         self.orders.append({
@@ -735,7 +735,7 @@ def test_route_to_merge_does_not_leave_the_condition_blocked(
     marked `submitted`, `_check_idempotency_guard` would then refuse that merge
     until --force -- a guard blocking the recovery it just recommended.
     """
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     monkeypatch.setattr(live_exec, "client", lambda *a, **k: None)
@@ -748,7 +748,7 @@ def test_route_to_merge_does_not_leave_the_condition_blocked(
                 "condition_id": COND, "cancelled": [light.order_id], "size": 0.0}
 
     monkeypatch.setattr(live_exec, "exit_naked_leg", fake_exit, raising=False)
-    monkeypatch.setattr("engine.single_side_buy_saver.exit_naked_leg", fake_exit)
+    monkeypatch.setattr("engine.single_buy_saver.exit_naked_leg", fake_exit)
 
     live_exec.exit_pair(pair_id, live=True, db_path=registry.db_path,
                         skip_positions_check=True)
@@ -760,7 +760,7 @@ def test_route_to_merge_does_not_leave_the_condition_blocked(
 def test_a_real_exit_does_hold_the_condition(registry: OrderRegistry, tmp_path,
                                              monkeypatch):
     """The mirror: a sell that actually went out must block a second one."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     monkeypatch.setattr(live_exec, "client", lambda *a, **k: None)
@@ -771,7 +771,7 @@ def test_a_real_exit_does_hold_the_condition(registry: OrderRegistry, tmp_path,
         return {"action": "exited", "pair_id": pair_id, "condition_id": COND,
                 "size": 10.0, "cancelled": []}
 
-    monkeypatch.setattr("engine.single_side_buy_saver.exit_naked_leg", fake_exit)
+    monkeypatch.setattr("engine.single_buy_saver.exit_naked_leg", fake_exit)
 
     live_exec.exit_pair(pair_id, live=True, db_path=registry.db_path,
                         skip_positions_check=True)
@@ -790,7 +790,7 @@ def test_complete_pair_cmd_runs_end_to_end_and_holds_after_a_cross(
     Fixing one entry point and testing the other is how that defect survived
     thirty-seven passing tests in the first place.
     """
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     monkeypatch.setattr(live_exec, "client", lambda *a, **k: None)
@@ -804,7 +804,7 @@ def test_complete_pair_cmd_runs_end_to_end_and_holds_after_a_cross(
         return {"action": "completed", "pair_id": pair_id, "condition_id": COND,
                 "size": 10.0, "notional": 3.0}
 
-    monkeypatch.setattr("engine.single_side_buy_saver.complete_pair", fake_complete)
+    monkeypatch.setattr("engine.single_buy_saver.complete_pair", fake_complete)
 
     live_exec.complete_pair_cmd(pair_id, live=True, db_path=registry.db_path,
                                 skip_positions_check=True)
@@ -818,7 +818,7 @@ def test_complete_pair_cmd_does_not_hold_the_condition_when_nothing_crossed(
     registry: OrderRegistry, tmp_path, monkeypatch
 ):
     """`balanced` sends no BUY, so it must not block a later merge or completion."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     monkeypatch.setattr(live_exec, "client", lambda *a, **k: None)
@@ -829,7 +829,7 @@ def test_complete_pair_cmd_does_not_hold_the_condition_when_nothing_crossed(
         return {"action": "balanced", "pair_id": pair_id, "condition_id": COND,
                 "size": 0.0}
 
-    monkeypatch.setattr("engine.single_side_buy_saver.complete_pair", fake_complete)
+    monkeypatch.setattr("engine.single_buy_saver.complete_pair", fake_complete)
 
     live_exec.complete_pair_cmd(pair_id, live=True, db_path=registry.db_path,
                                 skip_positions_check=True)
@@ -844,7 +844,7 @@ def test_an_unknown_pair_id_refuses_cleanly_on_both_commands(tmp_path, monkeypat
     before either command's try block, and the completion path does not
     otherwise catch the exit path's exception type.
     """
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     monkeypatch.setattr(live_exec, "client", lambda *a, **k: None)
@@ -1080,7 +1080,7 @@ def test_quote_writes_both_legs_to_the_registry_under_one_pair_id(
     """Without this the poll loop has nothing to reconcile and exit/complete
     have no pair_id, so the two legs rest at the venue with real money and
     nothing tracking them."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     db = tmp_path / "live.db"
@@ -1144,7 +1144,7 @@ def test_quote_leaves_the_row_pending_when_the_venue_returns_no_id(
     Guessing an id would bind our row to somebody else's order; `pending` is
     what reconcile's orphan adoption is built to claim.
     """
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
     db = tmp_path / "live.db"
@@ -1182,7 +1182,7 @@ def test_quote_leaves_the_row_pending_when_the_venue_returns_no_id(
 
 
 def test_venue_order_id_accepts_the_spellings_and_refuses_to_guess():
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     assert live_exec.venue_order_id({"orderID": "a"}) == "a"
     assert live_exec.venue_order_id({"orderId": "b"}) == "b"
@@ -1202,7 +1202,7 @@ def test_quote_says_why_a_market_was_rejected(monkeypatch, tmp_path):
     exactly two tokens -- and the message must say so rather than sending the
     operator hunting for a typo in a condition_id that is perfectly correct.
     """
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setattr(live_exec, "RUN", tmp_path)
 

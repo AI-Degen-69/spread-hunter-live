@@ -39,6 +39,12 @@ run/archive/
 run/*.json
 run/*.jsonl
 run/.current_run_id
+data/*.db*
+data/archive/
+data/*.json
+data/*.jsonl
+data/*.tmp.*
+data/.current_run_id
 
 # Session tooling
 .freebuff/

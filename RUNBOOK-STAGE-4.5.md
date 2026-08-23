@@ -61,11 +61,11 @@ Run all commands from `live/` directory with `POLY_SIG_TYPE=3`.
 cd live
 
 # 1. Verify credentials and wallet balance
-python -m engine.live_exec status
-python -m engine.live_exec balance
+python -m engine.order_manager status
+python -m engine.order_manager balance
 
 # 2. Start the telemetry dashboard in a dedicated terminal
-python -m dash.live_dash --port 8799
+python -m dashboard.server --port 8799
 ```
 Open `http://localhost:8799` in your browser. Verify the dashboard header reports `DB: .../live/run/live.db` and telemetry status is green/idle.
 
@@ -81,10 +81,10 @@ Open `http://localhost:8799` in your browser. Verify the dashboard header report
 
 ```bash
 # 1. Run dry-run quote first to verify prices, ticks, and condition parameters
-python -m engine.live_exec quote <condition_id> --price <bid_price> --size <shares> --no-live
+python -m engine.order_manager quote <condition_id> --price <bid_price> --size <shares> --no-live
 
 # 2. ONLY AFTER OWNER APPROVAL: Post live resting bids on the CLOB
-python -m engine.live_exec quote <condition_id> --price <bid_price> --size <shares> --live
+python -m engine.order_manager quote <condition_id> --price <bid_price> --size <shares> --live
 ```
 
 ---
@@ -100,7 +100,7 @@ Start the live poll loop to sync order fills from the venue into `live/run/live.
 
 ```bash
 # In a separate terminal under live/:
-python -m engine.live_exec poll --interval 5.0
+python -m engine.order_manager poll --interval 5.0
 ```
 
 ---
@@ -111,7 +111,7 @@ When both legs fill on the CLOB, the position is balanced:
 
 ```bash
 # 1. Merge complete outcome share sets back to USDC collateral (Gasless via Relayer)
-python -m engine.live_exec merge <condition_id> --amount <shares> --live
+python -m engine.order_manager merge <condition_id> --amount <shares> --live
 ```
 
 > [!NOTE]
@@ -126,24 +126,24 @@ If one leg fills while the complement leg remains unfilled:
 ### Scenario A: Attempt Cross Completion (Target combined cost < $1.00)
 ```bash
 # Attempt to cross the opposing book to lock in complete pair
-python -m engine.live_exec complete <pair_id> --live
+python -m engine.order_manager complete <pair_id> --live
 ```
 
 ### Scenario B: Stop-Loss Exit (Opposing book drifted / combined cost >= $1.00)
 If `complete` refuses or adverse selection occurs, immediately execute the stop-loss exit:
 ```bash
 # Cancels the resting leg and immediately sells filled shares back to the CLOB
-python -m engine.live_exec exit <pair_id> --live
+python -m engine.order_manager exit <pair_id> --live
 ```
 
 ### Scenario C: Emergency Global Pull
 If unexpected venue behavior, supervisor disconnect, or rapid market disruption occurs:
 ```bash
 # Cancel all active orders for the specific market
-python -m engine.live_exec cancel-market <condition_id> --live
+python -m engine.order_manager cancel-market <condition_id> --live
 
 # OR cancel ALL open orders across the entire account immediately
-python -m engine.live_exec cancel-all --live
+python -m engine.order_manager cancel-all --live
 ```
 
 ---
@@ -155,7 +155,7 @@ The Owner monitors `http://localhost:8799` throughout the cycle.
 | Component | Healthy / Normal State | Unhealthy / Alert State | Action Required |
 |---|---|---|---|
 | **Hero Card** | `⏳ RESTING BIDS ON CLOB` (bids resting) or `⚖️ BALANCED POSITION` (both legs filled) | `⚠️ UNHEDGED NAKED LEG` (pulsing red/amber banner with timer) | If naked leg persists > 10s: trigger `complete <pair_id> --live` or `exit <pair_id> --live`. |
-| **Telemetry Pill** | Green `POLL OK (<5s)` | Red `STALE (>30s)` or `OFFLINE` | Poll loop stalled. Restart `python -m engine.live_exec poll`. |
+| **Telemetry Pill** | Green `POLL OK (<5s)` | Red `STALE (>30s)` or `OFFLINE` | Poll loop stalled. Restart `python -m engine.order_manager poll`. |
 | **Reconcile Lock** | `Idle (no pass in flight)` or momentary `HELD` during sync | `HELD` by same process for > 30s | Stale lock. Investigate or clear lock row if process crashed. |
 | **Capital Panel** | Resting / Filled notional matches intended order size (< $25.00 limit) | Total committed exceeds max budget limit ($100.00) | Abort immediately via `cancel-all --live`. |
 | **Orders Table** | Status `open` / `filled` / `cancelled` | Status `⚠️ UNATTRIBUTED` | Fill detected without local order attribution. Inspect venue web UI. |

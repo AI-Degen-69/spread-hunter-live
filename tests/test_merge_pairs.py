@@ -4,7 +4,7 @@ collection/position id derivation, and EIP-712 batch signing.
 Moved verbatim from test_live_exec.py and test_live_exec_merge.py when the
 cluster was extracted out of the 3,370-line CLI module; only the import target
 changed (`engine.settlement as s`). The relayer submit path and the payout
-denominator RPC read stay in engine.live_exec and keep their tests there.
+denominator RPC read stay in engine.order_manager and keep their tests there.
 """
 from __future__ import annotations
 

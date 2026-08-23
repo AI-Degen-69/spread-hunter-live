@@ -15,7 +15,7 @@ import pytest
 
 from engine.config import load
 from engine.order_registry import registry_committed_usd
-from engine.main_spread_hunter_loop import _fleet_state
+from engine.trader_loop import _fleet_state
 from engine.markout import fleet_stats
 from engine.order_registry import (
     CloseRecord,

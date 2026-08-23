@@ -26,7 +26,7 @@ from engine.order_registry import (
 )
 from engine.markout import sample_pending_markouts, MARKOUT_HORIZONS
 from engine.kpi import report as generate_kpi_report
-from engine.live_exec import decide
+from engine.order_manager import decide
 
 
 class DummyClobClient:

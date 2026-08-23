@@ -87,11 +87,11 @@ cp .env.example .env
 #   POLY_PRIVATE_KEY, POLY_FUNDER, POLY_SIG_TYPE, optional RELAYER_API_KEY / POLYGON_RPC
 
 # 3. Check wallet and account status (read-only)
-python -m engine.live_exec status
-python -m engine.live_exec balance
+python -m engine.order_manager status
+python -m engine.order_manager balance
 
 # 4. Run the operations dashboard
-python -m dash.live_dash          # http://127.0.0.1:8799
+python -m dashboard.server          # http://127.0.0.1:8799
 
 # 5. Tests
 pytest -q
@@ -99,7 +99,7 @@ pytest -q
 
 ## Operating guide
 
-**CLI** — `python -m engine.live_exec <command>`. Live by default; pass `--no-live` for a
+**CLI** — `python -m engine.order_manager <command>`. Live by default; pass `--no-live` for a
 dry-run preview.
 
 | Command | Purpose |

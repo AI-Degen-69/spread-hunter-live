@@ -24,7 +24,7 @@ import time
 
 import pytest
 
-from dash.live_dash import (
+from dashboard.server import (
     PID_START_TOLERANCE_S,
     _is_pid_alive,
     _process_start_time,
@@ -82,7 +82,7 @@ def test_system_status_ignores_a_stale_procs_file(tmp_path, monkeypatch):
     """The exact failure: a real, live PID recorded with an old started_at."""
     import json
 
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -102,7 +102,7 @@ def test_system_status_ignores_a_stale_procs_file(tmp_path, monkeypatch):
 def test_system_status_reports_a_genuinely_running_process(tmp_path, monkeypatch):
     import json
 
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -145,7 +145,7 @@ def test_permission_error_means_the_process_exists(monkeypatch):
     """EPERM from os.kill means the process is alive and owned by someone else.
     Reading it as 'stopped' would let a second bot stack start beside a live
     one, which AGENTS.md forbids."""
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     def denied(pid, sig):
         raise PermissionError(1, "Operation not permitted")

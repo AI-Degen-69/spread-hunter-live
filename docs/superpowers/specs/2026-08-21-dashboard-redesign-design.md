@@ -42,11 +42,11 @@ Four independent cards represent the background architecture:
    - *Expandable Kanban Funnel:*
      `Raw Polymarket Feed (500+) → Min Liquidity (>$500) → Spread Check (<4.5%) → Price Band (0.10-0.90) → Graduated Markets (8)`.
 
-2. **Engine Poll Loop (`engine.live_exec poll`)**
+2. **Engine Poll Loop (`engine.order_manager poll`)**
    - *Purpose:* Polls Polymarket CLOB every 5s, reconciles order fills against SQLite database, and executes account sweeps.
    - *Controls:* Independent `[ START ]` / `[ STOP ]` toggle switch.
    - *Status Display:* PID, Uptime, Venue Latency (ms), Fills Reconciled, DB Sync Status.
-   - *Info Bubble (?):* Explains functionality + raw CLI command: `python -m engine.live_exec poll --interval 5`.
+   - *Info Bubble (?):* Explains functionality + raw CLI command: `python -m engine.order_manager poll --interval 5`.
 
 3. **Quoting Fleet (`engine.live_fleet loop`)**
    - *Purpose:* Evaluates two-sided pricing, computes size ladders ($3/leg budget), and submits maker bids to Polymarket.

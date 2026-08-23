@@ -26,7 +26,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from engine.order_registry import SCHEMA
-from dash.live_dash import (
+from dashboard.server import (
     PAGE_HTML,
     _PAGE_HTML_FILE,
     app,
@@ -44,7 +44,7 @@ NODE = shutil.which("node")
 def _read_static(filename):
     """Read a static file for test assertions (replaces PAGE_HTML inline checks)."""
     from pathlib import Path
-    p = Path(__file__).resolve().parent.parent / "dash" / "static" / filename
+    p = Path(__file__).resolve().parent.parent / "dashboard" / "static" / filename
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
@@ -262,9 +262,9 @@ def test_guardrail_alerts_endpoint_returns_newest_first(client, tmp_path):
 def test_dashboard_script_parses():
     """Ensures no syntax errors in app.js (now extracted to static file)."""
     from pathlib import Path
-    app_js = Path(__file__).resolve().parent.parent / "dash" / "static" / "app.js"
+    app_js = Path(__file__).resolve().parent.parent / "dashboard" / "static" / "app.js"
     if not app_js.exists():
-        pytest.skip("dash/static/app.js not found")
+        pytest.skip("dashboard/static/app.js not found")
     if NODE is None:
         pytest.skip("node not installed")
     res = subprocess.run(["node", "--check", str(app_js)], capture_output=True, text=True)
@@ -453,7 +453,7 @@ def test_kpi_endpoint_survives_launch_by_file_path(tmp_path):
     which runs with live/ as the working directory.
     """
     project_root = Path(__file__).resolve().parent.parent
-    dash_file = project_root / "dash" / "live_dash.py"
+    dash_file = project_root / "dashboard" / "server.py"
     db_file = tmp_path / "live.db"
     conn = sqlite3.connect(db_file)
     conn.executescript(SCHEMA)
@@ -517,7 +517,7 @@ def test_system_start_and_stop_endpoints(client, monkeypatch, tmp_path):
     from a test run -- and nothing in the test would ever stop the loops. The
     spawn is stubbed; what is under test is the endpoint contract.
     """
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     spawned = []
     monkeypatch.setattr(
@@ -544,12 +544,12 @@ def test_start_endpoint_never_spawns_a_process_under_test(client, monkeypatch):
     """A regression guard: no test may Popen the live bot stack.
 
     Fails against the unpatched suite, where /api/system/start reached
-    subprocess.Popen and left `scripts.rerank_loop` and `engine.live_exec poll`
+    subprocess.Popen and left `scripts.rerank_loop` and `engine.order_manager poll`
     running against the venue after pytest exited.
     """
     import subprocess
 
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     def _forbidden(*args, **kwargs):
         raise AssertionError(f"test spawned a live process: {args!r}")
@@ -571,11 +571,11 @@ def test_reset_db_refuses_to_destroy_an_archived_run(tmp_path, monkeypatch):
     record the operator opened the page to read, and nested a fresh archive/
     inside the archive directory on the way out.
     """
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
     # Isolate the bot-running gate (see test_system_reset_db_endpoint): point
     # LIVE_ROOT at tmp_path so the global live_procs.json is not consulted.
     monkeypatch.setattr(dash_mod, "LIVE_ROOT", tmp_path)
-    from dash.live_dash import reset_database
+    from dashboard.server import reset_database
 
     archive_dir = tmp_path / "run" / "archive"
     archive_dir.mkdir(parents=True)
@@ -607,7 +607,7 @@ def test_system_restart_dash_endpoint(client, monkeypatch):
     """
     import subprocess
 
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     launched = []
     exited = []
@@ -619,7 +619,7 @@ def test_system_restart_dash_endpoint(client, monkeypatch):
     assert res.status_code == 200
     assert res.json().get("ok") is True
     # The restart-dash route exists in the backend
-    from dash.live_dash import app as dash_app
+    from dashboard.server import app as dash_app
     assert any(getattr(r, 'path', '') == '/api/system/restart-dash' for r in dash_app.routes)
 
     # The handler's daemon thread sleeps 0.8s before acting. Wait for it here:
@@ -640,7 +640,7 @@ def test_restart_relaunches_by_absolute_path(monkeypatch):
     live/live/dash/live_dash.py, so the replacement dies on startup and the page
     never comes back -- while the current instance has already os._exit(0)'d.
     """
-    from dash.live_dash import LIVE_ROOT, relaunch_argv
+    from dashboard.server import LIVE_ROOT, relaunch_argv
 
     # Exactly how launch.json invokes it, from the repo root.
     monkeypatch.setattr(sys, "argv", ["live/dash/live_dash.py", "--port", "8799"])
@@ -650,7 +650,7 @@ def test_restart_relaunches_by_absolute_path(monkeypatch):
 
     assert script.is_absolute(), f"relaunched by relative path: {script}"
     assert script.exists(), f"relaunch target does not exist: {script}"
-    assert script.name == "live_dash.py"
+    assert script.name in ("server.py", "live_dash.py")
     # The restart runs with cwd=LIVE_ROOT; the command must still resolve there.
     assert (LIVE_ROOT / script).exists()
     # Port and database flags survive the restart.
@@ -659,7 +659,7 @@ def test_restart_relaunches_by_absolute_path(monkeypatch):
 
 def test_restart_preserves_the_database_flag(monkeypatch):
     """A restart must come back on the same database it was reading."""
-    from dash.live_dash import relaunch_argv
+    from dashboard.server import relaunch_argv
 
     monkeypatch.setattr(sys, "argv", ["live_dash.py", "--db", "run/archive/live_x.db"])
     assert relaunch_argv()[2:] == ["--db", "run/archive/live_x.db"]
@@ -668,7 +668,7 @@ def test_restart_preserves_the_database_flag(monkeypatch):
 def test_system_reset_db_endpoint(client, temp_db, tmp_path, monkeypatch):
     """POST /api/system/reset-db archives the existing DB and initializes a clean fresh DB."""
     import sqlite3
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
     # Isolate the bot-running gate: reset_database() consults the global
     # LIVE_ROOT/run/live_procs.json to decide if the bot is RUNNING. Point
     # LIVE_ROOT at the test tmp so the gate sees no procs file and treats the
@@ -761,7 +761,7 @@ def test_api_state_does_not_pre_filter_orders(client, temp_db):
 
 def _control(client):
     """Headers that authorize a machine-state change from this process's page."""
-    from dash.live_dash import CONTROL_TOKEN
+    from dashboard.server import CONTROL_TOKEN
     return {"X-Control-Token": CONTROL_TOKEN}
 
 
@@ -784,7 +784,7 @@ def test_control_endpoints_reject_untokened_posts(client):
 
 def test_control_endpoints_reject_foreign_origin(client, monkeypatch):
     """Even with a token, a request claiming a foreign Origin is refused."""
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     monkeypatch.setattr(dash_mod, "start_bot", lambda: {"ok": True})
     res = client.post(
@@ -796,7 +796,7 @@ def test_control_endpoints_reject_foreign_origin(client, monkeypatch):
 
 def test_page_carries_a_live_token_but_the_constant_does_not(client):
     """The served page gets a real token; PAGE_HTML keeps only the placeholder."""
-    from dash.live_dash import CONTROL_TOKEN, CONTROL_TOKEN_PLACEHOLDER
+    from dashboard.server import CONTROL_TOKEN, CONTROL_TOKEN_PLACEHOLDER
 
     html = _read_static("index.html")
     assert CONTROL_TOKEN_PLACEHOLDER in html
@@ -815,7 +815,7 @@ def test_start_refuses_a_second_bot_stack(client, monkeypatch):
     """
     import subprocess
 
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     monkeypatch.setattr(
         dash_mod, "get_system_status", lambda: {"bot_state": "RUNNING"}
@@ -833,7 +833,7 @@ def test_start_refuses_a_second_bot_stack(client, monkeypatch):
 
 def test_reset_db_refuses_while_the_bot_is_running(monkeypatch, temp_db):
     """Unlinking the registry under a live writer loses every later write."""
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     monkeypatch.setattr(dash_mod, "get_system_status", lambda: {"bot_state": "RUNNING"})
     result = dash_mod.reset_database(temp_db)
@@ -845,7 +845,7 @@ def test_reset_db_refuses_while_the_bot_is_running(monkeypatch, temp_db):
 
 def test_status_reports_the_port_actually_bound(monkeypatch):
     """--port moves the dashboard, and the status payload must follow it."""
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     monkeypatch.setattr(dash_mod, "_ACTIVE_PORT", 9123)
     assert dash_mod.get_system_status()["services"]["dash"]["port"] == 9123
@@ -855,7 +855,7 @@ def test_status_reports_the_port_actually_bound(monkeypatch):
 
 def test_sweep_interval_is_configurable_from_env(monkeypatch):
     """LIVE_SWEEP_INTERVAL sets the card's cadence; absent/bad values don't."""
-    from dash.live_dash import resolve_sweep_interval
+    from dashboard.server import resolve_sweep_interval
 
     monkeypatch.setenv("LIVE_SWEEP_INTERVAL", "30")
     assert resolve_sweep_interval() == 30.0
@@ -872,7 +872,7 @@ def test_sweep_interval_is_configurable_from_env(monkeypatch):
 
 def test_status_surfaces_engine_sweep_cadence(monkeypatch, tmp_path):
     """The system-status payload reports how often the engine sweeps."""
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     monkeypatch.setattr(dash_mod, "LIVE_ROOT", tmp_path)
     monkeypatch.setenv("LIVE_SWEEP_INTERVAL", "30")
@@ -886,7 +886,7 @@ def test_start_bot_passes_sweep_interval_to_poll(monkeypatch, tmp_path):
     """start_bot launches poll with --sweep-interval when one is configured."""
     import subprocess
 
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     spawned = []
 
@@ -916,7 +916,7 @@ def test_start_bot_spawns_screener_engine_and_fleet(monkeypatch, tmp_path):
     """
     import subprocess
 
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     spawned = []
 
@@ -935,9 +935,9 @@ def test_start_bot_spawns_screener_engine_and_fleet(monkeypatch, tmp_path):
 
     cmds = [" ".join(a) for a in spawned]
     assert any("scripts.filter_loop" in c or "scripts.rerank_loop" in c for c in cmds), cmds
-    assert any("engine.live_exec" in c and "poll" in c for c in cmds), cmds
+    assert any("engine.order_manager" in c and "poll" in c for c in cmds), cmds
 
-    fleet_cmd = next(c for c in cmds if "engine.main_spread_hunter_loop" in c)
+    fleet_cmd = next(c for c in cmds if "engine.trader_loop" in c)
     assert "--live" in fleet_cmd
     assert "--no-reconcile" in fleet_cmd
     assert "--no-sweep" in fleet_cmd
@@ -947,7 +947,7 @@ def test_set_sweep_interval_persists_and_applies(monkeypatch, tmp_path):
     """The control writes LIVE_SWEEP_INTERVAL into .env and the status payload."""
     import os
 
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     env_file = tmp_path / ".env"
     env_file.write_text("POLY_PRIVATE_KEY=do-not-load\nOTHER=1\n", encoding="utf-8")
@@ -969,7 +969,7 @@ def test_set_sweep_interval_persists_and_applies(monkeypatch, tmp_path):
 
 def test_set_sweep_interval_rejects_bad_values(monkeypatch, tmp_path):
     """A non-numeric or non-positive cadence is refused before touching .env."""
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     monkeypatch.setattr(dash_mod, "LIVE_ROOT", tmp_path)
 
@@ -980,7 +980,7 @@ def test_set_sweep_interval_rejects_bad_values(monkeypatch, tmp_path):
 
 def test_sweep_interval_endpoint_sets_and_clears(client, monkeypatch, tmp_path):
     """POST /api/system/sweep-interval persists and clears the cadence."""
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     env_file = tmp_path / ".env"
     env_file.write_text("", encoding="utf-8")
@@ -1007,7 +1007,7 @@ def test_status_distinguishes_configured_from_running_sweep_cadence(monkeypatch,
     import os
     import time
 
-    import dash.live_dash as dash_mod
+    import dashboard.server as dash_mod
 
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -1381,6 +1381,6 @@ def test_styles_css_has_reset_button():
 
 def test_reset_endpoint_exists():
     """The /api/system/reset endpoint is registered on the app."""
-    from dash.live_dash import app
+    from dashboard.server import app
     routes = [r.path for r in app.routes if hasattr(r, 'path')]
     assert '/api/system/reset' in routes

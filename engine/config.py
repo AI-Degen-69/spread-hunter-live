@@ -245,14 +245,14 @@ class MakerConfig:
     markout_catastrophic_threshold: float = -0.020
     # Widened quotes stay inside the 4.5c reward window, so rent continues.
     widen_offset: float = 0.035
-    # ALLOCATOR KNOBS -- SIMULATION ONLY, READ BY NO LIVE CODE.
+    # ALLOCATOR KNOBS -- READ BY NO LIVE CODE.
     # `marginal_return_floor`, `allocation_budget` and `max_market_frac` below
-    # belong to the sim's water-fill allocator (`strategy/allocate.py`). The live
-    # tree has no allocator: the fleet quotes whatever run/markets.json lists and
-    # sizes each couple from `couple_allocation_usd`. Grep confirms no reference
-    # to these three anywhere in engine/ or dash/. They are kept so the forked
-    # config stays comparable with the sim copy, not because they do anything
-    # here. The live capital bounds that DO bind are `max_naked_usd`,
+    # belong to the water-fill allocator in `strategy/allocate.py`, which only
+    # the Market Filter's scoring uses. The trading path has no allocator: the
+    # Trader quotes whatever data/markets.json lists and sizes each couple from
+    # `couple_allocation_usd`. Grep confirms no reference to these three
+    # anywhere in engine/ or dashboard/. The live capital bounds that DO bind
+    # are `max_naked_usd`,
     # `max_fleet_naked_usd` and `max_committed_usd`.
     #
     # Marginal $/day per $ committed, below which capital is better left idle.
@@ -261,7 +261,7 @@ class MakerConfig:
     allocation_budget: float = 900.0
     # Ceiling on any ONE market's share of that budget.
     #
-    # The water-fill was written as a diversifier and is not one. `marginal`
+    # The water-fill was a diversifier and is not one. `marginal`
     # is daily*T/(capital+T)^2, which is nearly FLAT in capital whenever
     # competitor depth T dominates our size -- so the argmax never changes
     # and a single market absorbs every increment. Measured 2026-08-02: one
@@ -500,7 +500,7 @@ class MakerConfig:
 
     # TOTAL COMMITTED CAPITAL (U3). Everything above bounds the UNHEDGED leg;
     # nothing bounded the hedged one. A matched pair cannot lose -- it pays
-    # exactly $1 -- so it was treated as free, and it is not: until U2 it was
+    # exactly $1 -- so it was free, and it is not: until U2 it was
     # frozen until 2027, and even with merge it is money that is committed
     # right now and cannot be committed anywhere else.
     #

@@ -130,7 +130,7 @@ def allocate(markets: list[dict], budget: float, floor: float,
     Returns dollars per market.
 
     `max_frac` bounds any ONE market's share of the budget, and it exists
-    because this function was read as a diversifier and is not one. Marginal
+    because this function was a diversifier and is not one. Marginal
     return is daily*T/(capital+T)^2, which is nearly FLAT in capital whenever
     competitor depth T dominates our own size -- so the argmax never changes
     hands and one market absorbs every increment. Measured 2026-08-02: a single

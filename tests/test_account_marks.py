@@ -274,7 +274,7 @@ def test_registry_stores_unavailable_fields_as_null(tmp_path):
 
 def test_sweep_records_what_the_venue_reported(tmp_path, monkeypatch):
     """account-sweep is read-only at the venue and writes one row locally."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setenv("POLY_FUNDER", "0xee3b")
     monkeypatch.setattr(live_exec, "fetch_live_balance", lambda who: 101.88)
@@ -296,7 +296,7 @@ def test_sweep_records_what_the_venue_reported(tmp_path, monkeypatch):
 
 
 def test_sweep_refuses_without_a_funder(tmp_path, monkeypatch):
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.delenv("POLY_FUNDER", raising=False)
     with pytest.raises(SystemExit):
@@ -306,7 +306,7 @@ def test_sweep_refuses_without_a_funder(tmp_path, monkeypatch):
 def test_sweep_records_a_partial_read_rather_than_inventing_a_total(tmp_path, monkeypatch):
     """No credentials means no collateral, which means no account value -- and
     the row says so instead of reporting positions-only as the total."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setenv("POLY_FUNDER", "0xee3b")
     monkeypatch.setattr(live_exec, "fetch_live_balance", lambda who: None)
@@ -348,7 +348,7 @@ def test_client_is_built_once_per_process(monkeypatch):
     the API, and repeated derivations preceded a venue-side stall on this
     account: signed requests hung past 30s while unsigned ones returned in 0.1s.
     """
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     venue._CLIENT_CACHE.clear()
     monkeypatch.setenv("POLY_PRIVATE_KEY", "0x" + "11" * 32)
@@ -379,7 +379,7 @@ def test_client_is_built_once_per_process(monkeypatch):
 def test_a_different_funder_gets_its_own_client(monkeypatch):
     """`balance --funder` checks a candidate address; it must not reuse a
     client authenticated for a different one."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     venue._CLIENT_CACHE.clear()
     monkeypatch.setenv("POLY_PRIVATE_KEY", "0x" + "11" * 32)
@@ -409,7 +409,7 @@ def test_stored_credentials_skip_derivation_entirely(monkeypatch):
     three L2 values in the environment, no command may call it: `balance`
     succeeded and `account-sweep` timed out on the same credentials twenty
     seconds later, purely because each derived its own key."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     venue._CLIENT_CACHE.clear()
     monkeypatch.setenv("POLY_PRIVATE_KEY", "0x" + "11" * 32)
@@ -450,7 +450,7 @@ def test_a_partial_credential_set_falls_back_to_derivation(monkeypatch, missing)
     that derivation still happens, and a test that only checks the helper
     returns None would pass even if `client()` stopped deriving on None.
     """
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     venue._CLIENT_CACHE.clear()
     monkeypatch.setenv("POLY_PRIVATE_KEY", "0x" + "11" * 32)
@@ -484,7 +484,7 @@ def test_a_partial_credential_set_falls_back_to_derivation(monkeypatch, missing)
 
 
 def test_credentials_are_read_from_the_environment(monkeypatch):
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     monkeypatch.setenv("POLY_API_KEY", "abc")
     monkeypatch.setenv("POLY_API_SECRET", "def")
@@ -497,7 +497,7 @@ def test_env_write_is_atomic_and_never_truncates_on_failure(tmp_path, monkeypatc
     """.env holds POLY_PRIVATE_KEY. A plain write truncates first, so a crash
     between truncate and flush would destroy the wallet's signing key -- and it
     is not recoverable from anywhere in this repo."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
 
     env = tmp_path / ".env"
     original = "POLY_PRIVATE_KEY=0xdeadbeef\n"
@@ -527,7 +527,7 @@ def test_registry_naked_usd_counts_open_pairs_only(tmp_path):
     """Naked dollars come from open pairs; a merged pair contributes nothing."""
     import time
 
-    from engine import live_exec
+    from engine import order_manager as live_exec
     from engine.order_registry import (
         OrderRegistry, OrderRecord, FillRecord, CloseRecord,
     )
@@ -567,7 +567,7 @@ def test_registry_naked_usd_counts_open_pairs_only(tmp_path):
 
 def test_float_mark_logs_only_when_the_venue_measured(tmp_path):
     """A partial venue read must not fabricate a 0.0 float mark."""
-    from engine import live_exec
+    from engine import order_manager as live_exec
     from engine.order_registry import OrderRegistry, registry_naked_usd
 
     reg = OrderRegistry(db_path=tmp_path / "live.db")

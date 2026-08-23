@@ -25,7 +25,11 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 LIVE_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB_PATH = LIVE_ROOT / "run" / "live.db"
+DEFAULT_DB_PATH = (
+    LIVE_ROOT / "data" / "orders.db"
+    if (LIVE_ROOT / "data" / "orders.db").exists() or not (LIVE_ROOT / "run" / "live.db").exists()
+    else LIVE_ROOT / "run" / "live.db"
+)
 BUSY_TIMEOUT_SEC = 5.0
 
 # 30 seconds match window: covers HTTP roundtrip and CLOB ingestion skew
@@ -1757,7 +1761,7 @@ def inventory_from_registry(
             sh = float(cr["shares"] or 0.0)
             up_c = cr["up_cost_removed"]
             dn_c = cr["dn_cost_removed"]
-            if method == "naked_exit":
+            if method in ("single_buy_exit", "naked_exit"):
                 if cr["up_price"] is not None:
                     inv.up_shares = max(0.0, inv.up_shares - sh)
                     if up_c is not None:
@@ -1770,13 +1774,15 @@ def inventory_from_registry(
             if method == "merge":
                 inv.up_shares = max(0.0, inv.up_shares - sh)
                 inv.down_shares = max(0.0, inv.down_shares - sh)
-                if up_c is not None and dn_c is not None:
+                if up_c is not None:
                     inv.up_cost = max(0.0, inv.up_cost - float(up_c))
+                if dn_c is not None:
                     inv.down_cost = max(0.0, inv.down_cost - float(dn_c))
+                continue
     return inv
 
 
-# --- fleet-wide aggregates (moved from engine.live_exec) ----------------
+# --- fleet-wide aggregates (moved from engine.order_manager) ----------------
 # `registry_naked_usd` and `registry_committed_usd` are pure registry
 # reads -- the fleet's risk caps and the poll loop both need them, so they
 # live next to the registry instead of in live_exec's CLI grab-bag.
@@ -1790,7 +1796,7 @@ def registry_naked_usd(registry) -> float:
     longer carries. A partially-exited pair is skipped whole rather than
     over-stated, which is the safe direction for a risk figure.
     """
-    from engine.single_side_buy_saver import load_pair, PairExitRefused
+    from engine.single_buy_saver import load_pair, PairExitRefused
 
     with registry._conn() as conn:
         closed_cids = {

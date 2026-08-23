@@ -109,7 +109,7 @@ def should_exit(fill_cost: float, light_ask: Optional[float],
     after gas, which is the whole reason the cap sits below $1.00.
 
     A missing ask fires rather than holds. No ask means there is nothing to
-    complete against, so the leg stays naked for as long as that is true --
+    complete against, so the leg stays naked for as that is true --
     holding on the hope that a quote appears is the position this rule exists
     to close.
     """
@@ -389,7 +389,7 @@ def load_pair(registry: OrderRegistry, pair_id: str) -> dict:
         "condition_id": orders[0].condition_id,
         "heavy": heavy,
         "light": light,
-        # Keyed by token as well as by rank. `heavy` and `light` are a ranking,
+        # Keyed by token as by rank. `heavy` and `light` are a ranking,
         # and a ranking flips: once the light leg fills past the heavy one, a
         # second load_pair call swaps them. Anything comparing a value taken
         # before an action with one taken after must key on the token, not on
@@ -498,7 +498,7 @@ def _record_exit_close(registry: OrderRegistry, pair: dict, heavy_token: str,
     registry.log_close(CloseRecord(
         ts=time.time(),
         condition_id=pair["condition_id"],
-        method="naked_exit",
+        method="single_buy_exit",
         shares=size,
         up_price=up_price,
         dn_price=dn_price,
@@ -518,35 +518,19 @@ def _naked_after(after: dict, heavy_token: str, light_token: Optional[str],
                  venue_heavy_extra: float = 0.0) -> tuple[float, float, float]:
     """Recompute (signed naked, heavy fill cost, unpriced heavy size) for two
     FIXED tokens.
-
-    Never re-derive heavy and light from the post-action ranking. If the light
-    leg filled past the heavy one, `after["heavy"]` is the other token, and
-    comparing it against a venue reading taken on the original light orders
-    mixes two different positions into one subtraction.
-
-    The result is SIGNED and callers must respect the sign. Positive means the
-    original heavy token is naked; negative means the original *light* token is,
-    by that many shares. Treating a negative as zero would report a pair as
-    complete while the other side is exposed.
-
-    `unpriced` is heavy size the venue reports and the registry does not. We
-    know it exists but not what it cost, so any decision needing an average
-    heavy price is unsafe while it is non-zero.
     """
     legs = after["legs"]
     heavy_leg = legs.get(heavy_token, {"matched": 0.0, "notional": 0.0})
     light_registry = legs.get(light_token, {"matched": 0.0})["matched"] if light_token else 0.0
 
     heavy_registry = heavy_leg["matched"]
-    # The venue figures are *extras* over the registry, computed per order, so
-    # they add rather than compete with the leg totals.
     heavy_matched = heavy_registry + venue_heavy_extra
     light_matched = light_registry + venue_light_extra
     fill_cost = (heavy_leg["notional"] / heavy_registry) if heavy_registry > 0 else 0.0
     return heavy_matched - light_matched, fill_cost, venue_heavy_extra
 
 
-def exit_naked_leg(
+def exit_single_buy(
     client,
     registry: OrderRegistry,
     pair_id: str,
@@ -554,14 +538,14 @@ def exit_naked_leg(
     live: bool = True,
     venue_positions: Optional[dict[str, float]] = None,
 ) -> dict:
-    """Close a one-sided pair: cancel the resting leg, then sell the filled one.
+    """Close a single-sided fill: cancel resting opposite leg, then sell filled inventory.
 
     `action` in the returned dict is one of:
-      balanced       -- nothing naked, nothing to do
+      balanced       -- nothing single, nothing to do
       hold           -- the pair still completes under the cap
       would_exit     -- dry run; the trigger fired but nothing was sent
       route_to_merge -- the pair completed between cancel and sell
-      exited         -- the naked leg was sold
+      exited         -- the single buy was sold
 
     Raises PairExitRefused on any condition where acting is worse than not
     acting.
@@ -1069,12 +1053,16 @@ def _route_pair(client, registry, pair, max_pair_cost, live,
     ask = best_ask(client.get_order_book(light_token)) if light_token else None
 
     if should_exit(pair["fill_cost"], ask, max_pair_cost):
-        return exit_naked_leg(client, registry, pair["pair_id"], max_pair_cost,
-                              live=live, venue_positions=venue_positions)
+        return exit_single_buy(client, registry, pair["pair_id"], max_pair_cost,
+                               live=live, venue_positions=venue_positions)
 
     try:
         return complete_pair(client, registry, pair["pair_id"], max_pair_cost,
                              live=live)
     except PairCompletionRefused:
-        return exit_naked_leg(client, registry, pair["pair_id"], max_pair_cost,
-                              live=live, venue_positions=venue_positions)
+        return exit_single_buy(client, registry, pair["pair_id"], max_pair_cost,
+                               live=live, venue_positions=venue_positions)
+
+
+# Backward-compatible alias
+exit_naked_leg = exit_single_buy

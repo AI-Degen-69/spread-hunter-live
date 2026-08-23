@@ -7,7 +7,7 @@
 #   .\scripts\spread-hunter-menu.ps1 start    # dashboard + bot stack (detached)
 #   .\scripts\spread-hunter-menu.ps1 stop     # bot stack, then dashboard
 #   .\scripts\spread-hunter-menu.ps1 status   # dashboard + every assisting process
-#   .\scripts\spread-hunter-menu.ps1 open     # open the dashboard in the browser
+#   .\scripts\spread-hunter-menu.ps1 open     # start dashboard in background (no bot) & open in browser
 #
 # The bot stack (Market Filter / Query Polymarket / Decide & Execute) is started
 # and stopped through the dashboard's own /api/system/start|stop endpoints --
@@ -408,7 +408,7 @@ function Write-FileRow {
     param(
         [Parameter(Mandatory)][string]$Label,
         [Parameter(Mandatory)][string]$Status,
-        [Parameter(Mandatory)][string]$Path,
+        [AllowEmptyString()][string]$Path = "",
         [string]$Dynamic = "",
         [string]$StatusStyle = "",
         [string]$DynamicStyle = ""
@@ -435,8 +435,12 @@ function Write-FileRow {
 
     Write-Host ("  {0,-27}" -f $Label) -ForegroundColor $cLabel -NoNewline
     Write-Host ("{0,-11}" -f $Status) -ForegroundColor $cStatus -NoNewline
-    Write-Host ("{0,-35}" -f $Path) -ForegroundColor $cPath -NoNewline
-    Write-Host $Dynamic -ForegroundColor $cDynamic
+    if ($Path -or $Dynamic) {
+        Write-Host ("{0,-35}" -f $Path) -ForegroundColor $cPath -NoNewline
+        Write-Host $Dynamic -ForegroundColor $cDynamic
+    } else {
+        Write-Host ""
+    }
 }
 
 function Write-SectionHeader {
@@ -776,13 +780,12 @@ function Show-CheckoutIdentity {
         return
     }
     $labels = @("dashboard.server", "core_brain.order_manager", "core_brain.trader_loop", "scripts.filter_loop", "scripts.filter_markets")
-    $relPaths = @("dashboard/server.py", "core_brain/order_manager.py", "core_brain/trader_loop.py", "scripts/filter_loop.py", "scripts/filter_markets.py")
     for ($i = 0; $i -lt 5; $i++) {
         $p = $paths[$i].Trim()
         if ($p -like "$ProjectPath*") {
-            Write-FileRow -Label $labels[$i] -Status "FOUND" -Path $relPaths[$i] -Dynamic $ProjectPath
+            Write-FileRow -Label $labels[$i] -Status "FOUND" -Path "" -Dynamic ""
         } else {
-            Write-FileRow -Label $labels[$i] -Status "MISSING" -Path $relPaths[$i] -Dynamic ($p + " <-- outside repo!")
+            Write-FileRow -Label $labels[$i] -Status "MISSING" -Path "" -Dynamic ($p + " <-- outside repo!")
         }
     }
 }
@@ -798,7 +801,7 @@ function Show-MenuGrid {
         @{ K = "1"; V = "Start Live Stack"; D = "Dashboard + screener + engine + fleet (detached)" }
         @{ K = "2"; V = "Stop Live Stack";  D = "Stop bot stack, then the dashboard" }
         @{ K = "3"; V = "Status";           D = "All 5 processes + feed + repo identity" }
-        @{ K = "4"; V = "Open Dashboard";   D = "Open http://127.0.0.1:8799 in the browser" }
+        @{ K = "4"; V = "Open Dashboard";   D = "Start dashboard in background (no bot) & open in browser" }
         @{ K = "q"; V = "Exit";             D = "Return to PowerShell" }
     )
     foreach ($it in $items) {
@@ -829,8 +832,10 @@ function Invoke-LiveAction {
         }
         "3" { Show-Status }
         "4" {
-            Start-Process $DashUrl
-            Lsh-Ok "Opened $DashUrl in default browser."
+            if (Start-Dashboard) {
+                Start-Process $DashUrl
+                Lsh-Ok "Opened $DashUrl in default browser."
+            }
         }
         "q" { Write-Host "Exiting Spread Hunter Live menu." -ForegroundColor (Get-ProfileColor -Name Neutral); exit 0 }
         default {
@@ -843,10 +848,12 @@ function Invoke-LiveAction {
 # ── Dispatch ──
 if ($Action -ne "") {
     $actionMap = @{
-        "start"  = "1"
-        "stop"   = "2"
-        "status" = "3"
-        "open"   = "4"
+        "start"     = "1"
+        "stop"      = "2"
+        "status"    = "3"
+        "open"      = "4"
+        "dashboard" = "4"
+        "dash"      = "4"
     }
     $key = $Action.Trim().ToLower()
     if ($actionMap.ContainsKey($key)) { $key = $actionMap[$key] }
@@ -854,7 +861,7 @@ if ($Action -ne "") {
     # Require -Yes flag for non-interactive start
     if ($key -eq "1" -and -not $Yes) {
         Write-Host "ERROR: Non-interactive start requires explicit -Yes flag" -ForegroundColor Red
-        Write-Host "Usage: .\scripts\live-spread-hunter-menu.ps1 start -Yes"
+        Write-Host "Usage: .\scripts\spread-hunter-menu.ps1 start -Yes"
         exit 1
     }
 

@@ -422,6 +422,28 @@ def _funnel_from_pipeline(
     }
 
 
+def _pipeline_sourced_dbs() -> set[Path]:
+    """Databases whose funnel may be sourced from the screener's own snapshot.
+
+    The live registry and the shadow store are both fed by the same ranker, so
+    `runtime/pipeline.json` describes them 1:1. Any other path is a test or
+    smoke db whose telemetry the repo snapshot would misrepresent.
+
+    `shadow_run.DEFAULT_SHADOW_DB` is repo-relative, so it resolves against the
+    process CWD. Both that resolution and the repo-rooted one are accepted:
+    a shadow run started from another directory must not silently lose its
+    screener funnel, and the constant is imported rather than restated so the
+    two modules cannot drift apart.
+    """
+    from core_brain.shadow_run import DEFAULT_SHADOW_DB
+
+    return {
+        DEFAULT_DB_PATH.resolve(),
+        Path(DEFAULT_SHADOW_DB).resolve(),
+        (REPO_ROOT / DEFAULT_SHADOW_DB).resolve(),
+    }
+
+
 def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> dict[str, Any]:
     """
     Generate a live KPI report containing run-level, portfolio, market-level, funnel, and mechanics metrics.
@@ -738,11 +760,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # fall back to runtime market-event telemetry when the ranker hasn't written
     # a snapshot, or when serving a non-production db (a test/smoke db), where
     # the repo's snapshot would misrepresent that db's own telemetry.
-    allowed_dbs = {
-        DEFAULT_DB_PATH.resolve(),
-        (REPO_ROOT / "data" / "shadow.db").resolve(),
-    }
-    if db_path is None or Path(db_path).resolve() in allowed_dbs:
+    if db_path is None or Path(db_path).resolve() in _pipeline_sourced_dbs():
         pipeline_funnel = _funnel_from_pipeline(by_mkt)
     else:
         pipeline_funnel = None

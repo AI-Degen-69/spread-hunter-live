@@ -210,3 +210,35 @@ def test_report_funnel_excluded_for_custom_db_path(monkeypatch, tmp_path):
     assert len(rep["funnel"]["filters"]) == 1
     assert rep["funnel"]["filters"][0]["cause"] == "CUSTOM_DEPTH_LOW"
     assert rep["funnel"]["filters"][0]["n"] == 1
+
+
+def test_report_funnel_allowed_for_shadow_db_resolved_from_cwd(monkeypatch, tmp_path):
+    """A shadow run started outside the repo still gets the screener funnel.
+
+    `shadow_run.DEFAULT_SHADOW_DB` is repo-relative, so its real location follows
+    the process CWD. Hard-coding `REPO_ROOT / "data" / "shadow.db"` in the
+    allowlist misses that db and silently downgrades the report to runtime
+    telemetry.
+    """
+    import core_brain.kpi as kpi_mod
+    from core_brain.order_registry import init_db
+    from core_brain.shadow_run import DEFAULT_SHADOW_DB
+
+    workdir = tmp_path / "elsewhere"
+    shadow_db = workdir / DEFAULT_SHADOW_DB
+    shadow_db.parent.mkdir(parents=True, exist_ok=True)
+    init_db(shadow_db)
+
+    repo_root = tmp_path / "repo"
+    runtime_dir = repo_root / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    _write(runtime_dir / "pipeline.json", {
+        "counts": {"funded": 10, "spread_universe": 5, "eligible": 2},
+        "rejections": [{"cause": "volume", "n": 1, "examples": []}],
+    })
+    _write(runtime_dir / "markets.json", [{"cid": "0x1", "slug": "m", "title": "T"}])
+    monkeypatch.setattr(kpi_mod, "REPO_ROOT", repo_root)
+    monkeypatch.chdir(workdir)
+
+    rep = kpi_mod.report(db_path=shadow_db)
+    assert rep["funnel"]["source"] == "screener"

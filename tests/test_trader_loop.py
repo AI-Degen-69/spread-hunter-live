@@ -224,3 +224,64 @@ class TestRunLoop:
             sleep_fn=lambda s: None,
         )
         assert seen["fleet_naked_usd"] == 12.5
+
+    def test_open_orders_fn_includes_open_and_partial_orders(self):
+        from unittest.mock import MagicMock
+        from core_brain.trader_loop import _make_open_orders_fn
+
+        registry = MagicMock()
+        o_open = MagicMock(condition_id="0xabc", status="open", token_id="tok-up", price=0.55, order_id="v1", id="row1", side="BUY")
+        o_partial = MagicMock(condition_id="0xabc", status="partial", token_id="tok-dn", price=0.45, order_id="v2", id="row2", side="BUY")
+        o_filled = MagicMock(condition_id="0xabc", status="filled", token_id="tok-up", price=0.55, order_id="v3", id="row3", side="BUY")
+        o_cancelled = MagicMock(condition_id="0xabc", status="cancelled", token_id="tok-dn", price=0.45, order_id="v4", id="row4", side="BUY")
+        o_other_mkt = MagicMock(condition_id="0xdef", status="open", token_id="tok-dn", price=0.45, order_id="v5", id="row5", side="BUY")
+
+        registry.get_active_orders.return_value = [o_open, o_partial, o_filled, o_cancelled, o_other_mkt]
+
+        fn = _make_open_orders_fn(registry)
+        market = FakeMarket("0xabc")
+        res = fn(market)
+
+        assert len(res) == 2
+        assert {r["order_id"] for r in res} == {"v1", "v2"}
+        assert {r["status"] for r in res} == {"open", "partial"}
+
+    def test_run_reloads_markets_via_markets_fn_each_cycle(self):
+        call_count = [0]
+        m1 = FakeMarket("0x1")
+        m2 = FakeMarket("0x2")
+
+        def market_supplier():
+            call_count[0] += 1
+            return [m1] if call_count[0] == 1 else [m2]
+
+        visited = []
+
+        def fake_fetch_market(cid):
+            visited.append(cid)
+            return FakeMarket(cid)
+
+        seam = VenueSeam(
+            client=object(),
+            fetch_market=fake_fetch_market,
+            fetch_books=lambda h, t: {"token_id": t, "bids": {}, "asks": {}},
+            decide=lambda *a: ([], "declined"),
+            submit_fn=lambda *a, **k: 0,
+            cancel_fn=lambda *a, **k: 0,
+            reconcile_fn=lambda *a, **k: None,
+            sweep_fn=lambda: None,
+        )
+
+        cycles = [0]
+        def sleep_stop(s):
+            cycles[0] += 1
+            if cycles[0] >= 2:
+                raise KeyboardInterrupt()
+
+        run(
+            seam, interval=0.0, once=False, live=False,
+            markets_fn=market_supplier,
+            sleep_fn=sleep_stop,
+        )
+
+        assert visited == ["0x1", "0x2"]

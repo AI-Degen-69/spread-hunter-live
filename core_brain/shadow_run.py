@@ -286,12 +286,14 @@ def run_shadow(
     seam.fleet_state_fn = lambda r: _fleet_state(r, cfg)
 
     deadline_ts = time.time() + max(0.0, minutes * 60.0)
+    resolved_markets_fn = markets_fn or _default_markets_fn()
     results = loop_run(
         seam,
         interval=interval,
         once=False,
         live=True,  # safe: submit/cancel are recorders, the client cannot sign
         markets=markets,
+        markets_fn=resolved_markets_fn,
         sleep_fn=make_deadline_sleep(deadline_ts),
     )
     return ShadowResult(
@@ -320,7 +322,8 @@ def _lookup_fetch_market(markets: list) -> Callable[[str], Any]:
 
     A session handed fully-formed market objects (tests, or a caller that
     resolved markets itself) must not re-fetch them. Anything not in the
-    session's list falls through to the live loop's real resolver.
+    session's list or lacking tradeable tokens falls through to the live
+    loop's real resolver.
     """
     from core_brain.trader_loop import _cid, _fetch_market
 
@@ -328,7 +331,12 @@ def _lookup_fetch_market(markets: list) -> Callable[[str], Any]:
 
     def fetch(cid: str):
         m = by_cid.get(cid)
-        return m if m is not None else _fetch_market(cid)
+        if m is not None:
+            up = getattr(m, "up_token", None) or (m.get("up_token") if isinstance(m, dict) else None)
+            dn = getattr(m, "down_token", None) or (m.get("down_token") if isinstance(m, dict) else None)
+            if up and dn:
+                return m
+        return _fetch_market(cid)
 
     return fetch
 

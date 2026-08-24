@@ -160,6 +160,7 @@ def run(
     once: bool = False,
     live: bool = True,
     markets: Optional[list] = None,
+    markets_fn: Optional[Callable[[], list]] = None,
     sleep_fn: Optional[Callable] = None,
 ) -> list[LiveFleetResult]:
     """Rotate over `markets`: reconcile, then decide+submit per market, then sweep.
@@ -218,8 +219,16 @@ def run(
         except Exception as e:
             log.warning("reconcile failed: %s: %s", type(e).__name__, e)
 
+        current_markets = markets
+        if markets_fn is not None:
+            try:
+                current_markets = markets_fn()
+            except Exception as e:
+                log.warning("markets_fn failed: %s: %s", type(e).__name__, e)
+                current_markets = markets
+
         cycle_results: list[LiveFleetResult] = []
-        for spec in list(markets or []):
+        for spec in list(current_markets or []):
             cycle_results.append(_visit_one(
                 seam=seam, spec=spec, live=live, cycle=cycle,
                 emit_fn=emit_fn,
@@ -368,7 +377,7 @@ def _make_open_orders_fn(registry):
     def open_orders_fn(market) -> list[dict]:
         out = []
         for o in registry.get_active_orders():
-            if o.condition_id != market.condition_id or o.status != "open":
+            if o.condition_id != market.condition_id or o.status not in ("open", "partial"):
                 continue
             out.append({
                 "token_id": o.token_id,
@@ -705,6 +714,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     results = run(
         seam,
         interval=a.interval, once=a.once, live=a.live, markets=specs,
+        markets_fn=lambda: _market_specs(a.max_markets),
     )
     return 0 if results else 1
 

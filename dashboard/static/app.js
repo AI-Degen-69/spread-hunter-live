@@ -25,6 +25,9 @@
 const POLL_MS = 2000;
 let lastState = null;
 let lastKpi = null;
+// Whether the page is reading the production registry. Starts false: until the
+// first status arrives we cannot claim a live view, and START is refused on it.
+let lastDbIsProduction = false;
 
 /* ── XSS defense: escape before innerHTML ── */
 function esc(v) {
@@ -410,6 +413,15 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
         // Decide & Execute loop together. Every toggle therefore starts live
         // trading, whichever card was clicked, so the typed confirmation sits
         // outside the service check rather than only on the decide card.
+        // The server refuses this too (dashboard/server.py:start_bot). Checked
+        // here as well so a shadow view never shows the live-order prompt.
+        if (!lastDbIsProduction) {
+          alert('This dashboard is not reading the production registry. '
+            + 'START launches the live stack against data/orders.db, whose orders '
+            + 'would not appear on this page. Restart the dashboard without '
+            + '--db / LIVE_DB_PATH first.');
+          return;
+        }
         const confirmed = prompt('This starts the whole stack, including live Decide & Execute, which rests REAL maker bids. Type START to confirm:');
         if (confirmed !== 'START') {
           return;
@@ -422,6 +434,36 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); t.click(); }
     });
   });
+}
+
+/* ── Render: Active registry (LIVE vs SHADOW) ── */
+function renderDbMode(status) {
+  const el = document.getElementById('db-mode-badge');
+  if (!el) return;
+
+  const mode = status?.db_mode || null;
+  lastDbIsProduction = status?.db_is_production === true;
+
+  if (!mode) {
+    el.className = 'pill stopped mono';
+    el.textContent = 'DB: --';
+    el.title = 'Active registry unknown: the status endpoint did not answer.';
+    return;
+  }
+
+  const path = status.db_path || '';
+  if (lastDbIsProduction) {
+    el.className = 'pill active mono';
+    el.textContent = 'LIVE REGISTRY';
+    el.title = `Reading the production registry: ${path}`;
+  } else {
+    // Not a cosmetic state. Every number on the page is a rehearsal, and START
+    // is refused while this shows.
+    el.className = 'pill shadow mono';
+    el.textContent = `${mode}: ${path.split(/[\\/]/).pop()}`;
+    el.title = `Reading ${path}, not the production registry. `
+      + `Orders, fills and PnL on this page are not live positions, and START is disabled.`;
+  }
 }
 
 /* ── Render: Strategy Parameters ── */
@@ -1200,6 +1242,9 @@ async function pollStatus() {
 
     lastState = stateRes.ok ? await stateRes.json() : null;
     lastKpi = kpi;
+
+    // Which registry these numbers came from, before anything renders them.
+    renderDbMode(status);
 
     // Render service cards
     renderServiceCards(status, guardHealth, guardAlerts);

@@ -123,6 +123,35 @@ def resolve_db_path(custom_path: str | Path | None = None) -> Path:
     return DEFAULT_DB_PATH
 
 
+def resolve_db_identity(db_path: Path | str) -> dict:
+    """Which registry the page is reading: the live one, or something else.
+
+    Three answers, never two. LIVE is the production registry
+    (`core_brain.order_registry.DEFAULT_DB_PATH`); SHADOW is any other store the
+    page was pointed at with `--db` or `LIVE_DB_PATH`; UNKNOWN is a path the
+    platform refuses to resolve.
+
+    UNKNOWN reports `is_production=False`, and that direction is the whole
+    point. START is gated on this flag, so a path we cannot resolve refuses a
+    live stack rather than launching one on a guess. The mirror-image guard in
+    `core_brain/shadow_guard.py:assert_not_production_registry` fails closed the
+    other way -- it refuses a shadow *write* it cannot prove is safe -- because
+    there the dangerous outcome is the opposite one.
+    """
+    from core_brain.order_registry import DEFAULT_DB_PATH
+
+    raw = Path(db_path)
+    try:
+        same = raw.resolve() == DEFAULT_DB_PATH.resolve()
+    except (OSError, ValueError, RuntimeError):
+        return {"path": str(raw), "mode": "UNKNOWN", "is_production": False}
+    return {
+        "path": str(raw),
+        "mode": "LIVE" if same else "SHADOW",
+        "is_production": same,
+    }
+
+
 def resolve_sweep_interval() -> float | None:
     """Configured account-sweep cadence in seconds, or None for every tick.
 
@@ -484,6 +513,8 @@ def get_system_status() -> dict:
 
     bot_running = bool(filter_running or query_running or decide_running)
 
+    db_identity = resolve_db_identity(resolve_db_path(_ACTIVE_DB_OVERRIDE))
+
     return {
         "services": {
             "filter": {
@@ -516,6 +547,13 @@ def get_system_status() -> dict:
         ),
         "registry_path": str(procs_file),
         "registry_unreadable": registry_unreadable,
+        # Which store these numbers came from. The page renders identically
+        # against the production registry and against a shadow rehearsal, so
+        # the mode has to travel with the data rather than live in the operator's
+        # memory of how they launched the server.
+        "db_path": db_identity["path"],
+        "db_mode": db_identity["mode"],
+        "db_is_production": db_identity["is_production"],
         "starting_capital": get_starting_capital(),
         "timestamp": time.time(),
     }
@@ -572,6 +610,27 @@ def start_bot() -> dict:
     """Launch background Screener and Reconcile loop."""
     import subprocess
     import tempfile
+
+    # The stack always writes the production registry, whatever this page is
+    # reading. Started from a shadow view, real maker bids would rest behind a
+    # page that cannot show a single one of them -- no orders, no fills, no
+    # exposure bar -- which reads as "nothing happened". Refuse before the
+    # start lock, so a refusal leaves nothing for a later live start to clear.
+    db_identity = resolve_db_identity(resolve_db_path(_ACTIVE_DB_OVERRIDE))
+    if not db_identity["is_production"]:
+        from core_brain.order_registry import DEFAULT_DB_PATH
+        return {
+            "ok": False,
+            "message": (
+                f"This dashboard is reading {db_identity['path']} "
+                f"({db_identity['mode']}), not the production registry "
+                f"{DEFAULT_DB_PATH}. START launches the live stack against the "
+                f"production registry, so its orders would be invisible here. "
+                f"Restart the dashboard without --db / LIVE_DB_PATH to start "
+                f"the stack."
+            ),
+            "status": get_system_status(),
+        }
 
     # One instance at a time (AGENTS.md): two stacks on one database sum their
     # independent inventories into silently invalid data. The page disables the

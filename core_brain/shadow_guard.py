@@ -161,17 +161,41 @@ def assert_not_production_registry(db_path) -> None:
     # registry on one platform and to a single oddly-named file on the other.
     # This guard only ever refuses, so it treats both spellings as the registry
     # rather than letting a Windows-style path pasted into a Linux shell past.
-    candidates = {raw}
+    candidates = [raw]
     if "\\" in raw:
-        candidates.add(raw.replace("\\", "/"))
+        candidates.append(raw.replace("\\", "/"))
+
+    # Resolution can fail on a symlink loop or a name the platform rejects.
+    # Each candidate is resolved on its own so one failure cannot skip the
+    # others, and a failure refuses rather than returns: a guard that cannot
+    # prove a path is *not* the registry must not wave it through. A false
+    # refusal costs a re-run with a plainer path; a false pass puts fabricated
+    # fills in the real order history, where nothing downstream flags them.
+    unresolvable = False
+    same = False
     try:
         target = DEFAULT_DB_PATH.resolve()
-        same = any(Path(c).resolve() == target for c in candidates)
-    except (OSError, ValueError):
-        return
+    except (OSError, ValueError, RuntimeError):
+        unresolvable = True
+    else:
+        for candidate in candidates:
+            try:
+                if Path(candidate).resolve() == target:
+                    same = True
+                    break
+            except (OSError, ValueError, RuntimeError):
+                unresolvable = True
+
     if same:
         raise ShadowSafetyViolation(
             f"shadow run pointed at the production registry {DEFAULT_DB_PATH}. "
             f"A shadow run fabricates fills; those rows must never enter the "
             f"real order history. Use data/shadow.db or another path."
+        )
+    if unresolvable:
+        raise ShadowSafetyViolation(
+            f"shadow run store {raw!r} could not be resolved, so it cannot be "
+            f"told apart from the production registry {DEFAULT_DB_PATH}. "
+            f"Refusing instead of guessing. Use data/shadow.db or another "
+            f"plain path."
         )

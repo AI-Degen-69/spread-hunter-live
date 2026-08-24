@@ -169,12 +169,70 @@ def test_shadow_client_returns_a_denying_proxy(monkeypatch):
     from core_brain.shadow_guard import shadow_client
 
     inner = _StubClient()
-    venue = shadow_client(build_fn=lambda host: inner)
+    venue = shadow_client(build_fn=lambda _host: inner)
 
     assert isinstance(venue, ReadOnlyVenue)
     with pytest.raises(ShadowSafetyViolation):
         venue.post_order({"price": 0.48})
     assert inner.calls == []
+
+
+def test_setting_an_attribute_on_the_venue_is_denied():
+    """Attaching a credential to the client is the bypass this blocks."""
+    inner = _StubClient()
+    venue = ReadOnlyVenue(inner)
+
+    with pytest.raises(ShadowSafetyViolation, match="creds"):
+        venue.creds = {"key": "leaked"}
+
+    assert not hasattr(inner, "creds")
+
+
+def test_the_real_builder_reads_no_credential(monkeypatch):
+    """`_build_unauthenticated_client` is the one function every injected
+    test skips, and it is the one that constructs the real client. Prove it
+    builds without a key, a signature type or a funder, and reads no
+    credential env var doing it -- otherwise both guarantees fail for the
+    first time during an operator's live shadow run.
+    """
+    pytest.importorskip("py_clob_client_v2")
+    import os
+
+    import py_clob_client_v2.client as clob_client_module
+
+    env = _RecordingEnv({
+        "POLY_PRIVATE_KEY": "0xdeadbeef",
+        "POLY_KEY": "0xdeadbeef",
+        "POLY_API_KEY": "api-key",
+        "POLY_API_SECRET": "api-secret",
+        "POLY_API_PASSPHRASE": "api-passphrase",
+        "POLY_FUNDER": "0xfunder",
+    })
+    monkeypatch.setattr(os, "environ", env)
+
+    captured = {}
+
+    def fake_clob_client(host, **kwargs):
+        captured["host"] = host
+        captured["kwargs"] = kwargs
+        return _StubClient()
+
+    monkeypatch.setattr(clob_client_module, "ClobClient", fake_clob_client)
+
+    from core_brain.shadow_guard import shadow_client
+
+    shadow_client()  # no build_fn: the real builder runs
+
+    forbidden = {
+        "POLY_PRIVATE_KEY", "POLY_KEY", "PRIVATE_KEY",
+        "POLY_API_KEY", "POLY_API_SECRET", "POLY_API_PASSPHRASE",
+    }
+    leaked = forbidden.intersection(env.read_keys)
+    assert not leaked, f"the real builder read credential env vars: {sorted(leaked)}"
+    assert captured["kwargs"].keys().isdisjoint(
+        {"key", "signature_type", "funder"}), (
+        f"the real builder passed credential-ish kwargs: "
+        f"{sorted(captured['kwargs'])}")
 
 
 # --- shadow store guard ------------------------------------------------------
@@ -204,6 +262,48 @@ _ABS_ORDERS_DB = str(_PROD_DB).replace("\\", "/")
 def test_production_registry_is_refused_as_a_shadow_store(target):
     with pytest.raises(ShadowSafetyViolation, match="production registry"):
         assert_not_production_registry(target)
+
+
+def test_one_spelling_failing_to_resolve_does_not_disable_the_guard(monkeypatch):
+    """A resolution failure must not swallow the other candidate's match.
+
+    The guard checks `data\\orders.db` and its slash-normalised twin. Resolving
+    them under one `any()` meant a symlink loop on the first spelling aborted
+    the whole check and let the production registry through.
+    """
+    import pathlib
+
+    real_resolve = pathlib.Path.resolve
+    calls = {"n": 0}
+
+    def flaky_resolve(self, *args, **kwargs):
+        # Call 1 is DEFAULT_DB_PATH, call 2 the first candidate spelling.
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise OSError(40, "Too many levels of symbolic links")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", flaky_resolve)
+
+    with pytest.raises(ShadowSafetyViolation, match="production registry"):
+        assert_not_production_registry(r"data\orders.db")
+
+
+def test_a_store_that_cannot_be_resolved_is_refused(monkeypatch):
+    """Unresolvable means unprovable, and the guard refuses what it cannot prove."""
+    import pathlib
+
+    real_resolve = pathlib.Path.resolve
+
+    def exploding_resolve(self, *args, **kwargs):
+        if self.name == "loop.db":
+            raise OSError(40, "Too many levels of symbolic links")
+        return real_resolve(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", exploding_resolve)
+
+    with pytest.raises(ShadowSafetyViolation, match="could not be resolved"):
+        assert_not_production_registry("data/loop.db")
 
 
 def test_the_default_shadow_store_is_accepted():

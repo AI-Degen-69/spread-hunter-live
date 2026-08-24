@@ -39,6 +39,7 @@ MAX_LINES = 500
 KEEP_LINES = 400
 
 CYCLE_INTENT_KEEP_ROWS = 200
+_INTENT_RETRY_BACKOFF_SEC = 0.05
 
 _CREATE_CYCLE_INTENT = """
     CREATE TABLE IF NOT EXISTS cycle_intent (
@@ -117,6 +118,13 @@ def _with_intent_connection(path: Path, work):
             return work(_intent_connection(path))
         except sqlite3.Error:
             close_intent_connections()
+            # Retrying a locked database in the same instant just fails again,
+            # so the pause is what makes this a retry rather than a formality.
+            # It stays short on purpose: emit() sits on the trading loop, and
+            # this module's contract is no latency impact, so a write that
+            # stays contended is dropped with a warning instead of stalling a
+            # cycle. Worst case here is the two 1s busy timeouts plus this.
+            time.sleep(_INTENT_RETRY_BACKOFF_SEC)
             return work(_intent_connection(path))
 
 

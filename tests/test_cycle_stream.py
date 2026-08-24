@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -197,23 +198,82 @@ class TestCycleIntent:
             emit(i, "quoting", "decide", market_slug="m",
                  ring_path=ring, db_path=db)
 
-        assert connects.count(str(db)) == 1,             f"{connects.count(str(db))} connections for 50 decide events"
+        assert connects.count(str(db)) == 1, (
+            f"{connects.count(str(db))} connections for 50 decide events")
 
-    def test_a_broken_connection_is_rebuilt_rather_than_poisoning_the_cache(
-            self, tmp_path):
-        """A cached handle must not turn one failure into a permanent one."""
+    def test_a_dead_cached_handle_still_attributes_the_submit(self, tmp_path):
+        """Closing the handle in place is what the retry actually exists for.
+
+        `close_intent_connections()` also drops the cache entry, so a test
+        using it never reaches the retry -- the next write just opens a fresh
+        connection. Closing the handle while leaving it cached is the real
+        failure state, and without the retry the submit event's counts never
+        reach the row the decide event inserted.
+        """
+        from core_brain import cycle_stream
+
+        ring = tmp_path / "events.jsonl"
+        db = tmp_path / "live.db"
+        emit(4, "quoting", "decide", market_slug="m",
+             ring_path=ring, db_path=db)
+
+        cycle_stream._DB_CACHE[str(db)].close()  # dead, and still cached
+
+        emit(4, "quoting", "submit", market_slug="m",
+             extra={"submitted": 2, "cancelled": 1},
+             ring_path=ring, db_path=db)
+
+        assert _query_intent(
+            db, "SELECT submitted, cancelled FROM cycle_intent") == [(2, 1)]
+
+    def test_a_reopened_connection_keeps_writing(self, tmp_path):
+        """The public close is a supported call, not a one-way door."""
         ring = tmp_path / "events.jsonl"
         db = tmp_path / "live.db"
         emit(1, "quoting", "decide", market_slug="m",
              ring_path=ring, db_path=db)
 
-        close_intent_connections()  # the handle the next emit would reuse
+        close_intent_connections()
 
         emit(2, "quoting", "decide", market_slug="m",
              ring_path=ring, db_path=db)
         cycles = [row[0] for row in
                   _query_intent(db, "SELECT cycle FROM cycle_intent ORDER BY id")]
         assert cycles == [1, 2]
+
+    def test_a_locked_database_warns_and_never_stalls_the_loop(
+            self, tmp_path, capsys):
+        """A contended write is dropped with a warning, not blocked on.
+
+        emit() runs on the trading loop. Waiting out a long lock would stall a
+        cycle, which costs more than the telemetry row is worth, so the retry
+        is bounded and the row is discarded if the lock outlasts it.
+        """
+        ring = tmp_path / "events.jsonl"
+        db = tmp_path / "live.db"
+        emit(1, "quoting", "decide", market_slug="m",
+             ring_path=ring, db_path=db)
+
+        blocker = sqlite3.connect(str(db), timeout=0.1)
+        blocker.execute("BEGIN EXCLUSIVE")
+        try:
+            started = time.monotonic()
+            emit(2, "quoting", "decide", market_slug="m",
+                 ring_path=ring, db_path=db)
+            elapsed = time.monotonic() - started
+        finally:
+            blocker.rollback()
+            blocker.close()
+
+        assert "cycle_intent insert failed" in capsys.readouterr().err
+        assert elapsed < 10, f"emit blocked {elapsed:.1f}s on a locked database"
+
+        # The loop keeps going: the next write lands once the lock is gone.
+        emit(3, "quoting", "decide", market_slug="m",
+             ring_path=ring, db_path=db)
+        cycles = [row[0] for row in
+                  _query_intent(db, "SELECT cycle FROM cycle_intent ORDER BY id")]
+        assert cycles == [1, 3]
 
     def test_cycle_intent_retention_200(self, tmp_path):
         ring = tmp_path / "events.jsonl"

@@ -225,13 +225,15 @@ class TestMain:
     """The command line: `python -m core_brain.shadow_run --minutes N`."""
 
     def test_argument_defaults_match_the_plan(self):
+        from pathlib import Path
+
         from core_brain.shadow_run import _parse_args
 
         a = _parse_args([])
 
         assert a.minutes == 5.0
         assert a.interval == 5.0
-        assert a.db == "data/shadow.db"
+        assert Path(a.db) == Path("data/shadow.db")
         assert a.max_markets is None
 
     def test_main_refuses_the_production_registry_via__db(self):
@@ -254,7 +256,7 @@ class TestMain:
         db = tmp_path / "shadow.db"
         with caplog.at_level(logging.INFO, logger="shadow_run"):
             main(
-                ["--minutes", "2", "--db", str(db)],
+                ["--minutes", "0", "--db", str(db)],
                 markets_fn=lambda max_markets=None: [FakeMarket("0xabc")],
                 client_fn=lambda: object(),
                 decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([], "declined"),
@@ -263,7 +265,7 @@ class TestMain:
         assert "shadow" in text
         assert "no signer" in text
         assert str(db).lower() in text
-        assert "2" in text  # the time box is named too
+        assert "minutes=0" in text  # the time box is named too
 
     def test_main_returns_0_when_the_time_box_expires_with_results(
             self, tmp_path):

@@ -183,4 +183,4 @@ with decide outcomes, exit code 0 at roughly 60 seconds, `data/orders.db` mtime 
 - [ ] **How to verify** block written for the operator, per `docs/agents/verifying.md`
 
 ---
-*Status: AWAITING CONFIRMATION — no code written.*
+*Status: IMPLEMENTED (Milestone 1) — see `.claude/tdd/shadow-run.tdd.md` for RED/GREEN evidence. Operator network check pending.*

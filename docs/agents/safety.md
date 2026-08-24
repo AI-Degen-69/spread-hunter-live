@@ -29,6 +29,23 @@ Four things spend money:
 Propose the command; the operator runs it. An agent runs one only when the operator says
 so in that session.
 
+## 3a. Shadow run is the one loop command an agent may run
+
+`python -m core_brain.shadow_run --minutes N` rehearses the full loop against the live
+book and is pre-approved, unlike every other loop command. The reason is structural, not
+procedural: it builds its venue client with **no private key and no API credentials**,
+wrapped in a deny-by-default proxy (`core_brain/shadow_guard.py`), so there is nothing
+loaded with which a write could be signed. It writes only to `data/shadow.db`;
+`data/orders.db` is refused outright. It stops itself on a wall-clock time box.
+
+Two cautions:
+
+- **Shadow numbers are rehearsal, not results.** Fills are recorded intents, not
+  executions; never quote them as performance.
+- The guarantee holds only for this entrypoint. If a change makes `core_brain.shadow_run`
+  able to construct a signing client, it comes off the pre-approved list until reviewed.
+
+
 ## 4. Limits
 
 `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` are defined in `core_brain/venue.py`,

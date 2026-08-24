@@ -10,6 +10,7 @@ Designed for zero latency impact on the core loop:
 """
 from __future__ import annotations
 
+import atexit
 import datetime
 import json
 import os
@@ -36,6 +37,95 @@ from core_brain.runtime_paths import resolve_runtime_file  # noqa: E402
 
 MAX_LINES = 500
 KEEP_LINES = 400
+
+CYCLE_INTENT_KEEP_ROWS = 200
+_INTENT_RETRY_BACKOFF_SEC = 0.05
+
+_CREATE_CYCLE_INTENT = """
+    CREATE TABLE IF NOT EXISTS cycle_intent (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ts REAL NOT NULL,
+        cycle INTEGER NOT NULL,
+        market_slug TEXT NOT NULL,
+        condition_id TEXT,
+        intent_count INTEGER NOT NULL DEFAULT 0,
+        submitted INTEGER NOT NULL DEFAULT 0,
+        cancelled INTEGER NOT NULL DEFAULT 0,
+        top_skip_reason TEXT,
+        top_pass_reason TEXT,
+        latency_ms REAL,
+        run_id TEXT NOT NULL
+    )
+"""
+
+# The cycle_intent connection, kept open between events. Connecting costs a
+# few milliseconds, and emit() runs on the engine's hot path once per market
+# visit, so rebuilding the handle per event was pure overhead. One entry: the
+# engine writes a single registry for its whole life, while tests walk through
+# temporary files, so a cache of one never grows and never strands a handle.
+_DB_LOCK = threading.RLock()
+_DB_CACHE: dict[str, sqlite3.Connection] = {}
+
+
+def close_intent_connections() -> None:
+    """Close the cached cycle_intent handle.
+
+    The engine never needs this -- the handle lives as long as the process --
+    but a test that wants a fresh connection, or a caller shutting down before
+    the interpreter exits, does.
+    """
+    with _DB_LOCK:
+        for key in list(_DB_CACHE):
+            conn = _DB_CACHE.pop(key)
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+atexit.register(close_intent_connections)
+
+
+def _intent_connection(path: Path) -> sqlite3.Connection:
+    """The open connection for `path`, building it on first use.
+
+    `check_same_thread=False` plus `_DB_LOCK` rather than a per-thread handle:
+    the engine emits from more than one thread, and serialising the writes is
+    what SQLite wants anyway. Callers must hold `_DB_LOCK`.
+    """
+    key = str(path)
+    existing = _DB_CACHE.get(key)
+    if existing is not None:
+        return existing
+    close_intent_connections()
+    conn = sqlite3.connect(key, timeout=1.0, check_same_thread=False)
+    conn.execute(_CREATE_CYCLE_INTENT)
+    conn.commit()
+    _DB_CACHE[key] = conn
+    return conn
+
+
+def _with_intent_connection(path: Path, work):
+    """Run `work(conn)` on the cached connection, rebuilding it once on error.
+
+    A handle can go bad on its own -- the file replaced underneath it, the
+    process resumed from a suspend -- and a cached bad handle would turn one
+    failure into every future one. So a `sqlite3.Error` drops the handle and
+    retries exactly once; a second failure belongs to the caller's warning.
+    """
+    with _DB_LOCK:
+        try:
+            return work(_intent_connection(path))
+        except sqlite3.Error:
+            close_intent_connections()
+            # Retrying a locked database in the same instant just fails again,
+            # so the pause is what makes this a retry rather than a formality.
+            # It stays short on purpose: emit() sits on the trading loop, and
+            # this module's contract is no latency impact, so a write that
+            # stays contended is dropped with a warning instead of stalling a
+            # cycle. Worst case here is the two 1s busy timeouts plus this.
+            time.sleep(_INTENT_RETRY_BACKOFF_SEC)
+            return work(_intent_connection(path))
 
 
 def _resolve_run_id() -> str:
@@ -66,57 +156,45 @@ def _write_cycle_intent(
     r_id = run_id or _resolve_run_id()
 
     now_ts = time.time()
+
+    def insert(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            INSERT INTO cycle_intent (
+                ts, cycle, market_slug, condition_id, intent_count,
+                submitted, cancelled, top_skip_reason, top_pass_reason,
+                latency_ms, run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                now_ts,
+                cycle,
+                market_slug,
+                condition_id,
+                intent_count,
+                0,  # submitted/cancelled are filled by the later submit event
+                0,
+                top_skip_reason,
+                top_pass_reason,
+                latency_ms,
+                r_id,
+            ),
+        )
+        # Pruned on every insert, not in batches: the retention window is what
+        # the dashboard reads, so the table must never be seen over it.
+        conn.execute(
+            """
+            DELETE FROM cycle_intent
+            WHERE id NOT IN (
+                SELECT id FROM cycle_intent ORDER BY id DESC LIMIT ?
+            )
+            """,
+            (CYCLE_INTENT_KEEP_ROWS,),
+        )
+        conn.commit()
+
     try:
-        with sqlite3.connect(str(p), timeout=1.0) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS cycle_intent (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ts REAL NOT NULL,
-                    cycle INTEGER NOT NULL,
-                    market_slug TEXT NOT NULL,
-                    condition_id TEXT,
-                    intent_count INTEGER NOT NULL DEFAULT 0,
-                    submitted INTEGER NOT NULL DEFAULT 0,
-                    cancelled INTEGER NOT NULL DEFAULT 0,
-                    top_skip_reason TEXT,
-                    top_pass_reason TEXT,
-                    latency_ms REAL,
-                    run_id TEXT NOT NULL
-                )
-                """
-            )
-            conn.execute(
-                """
-                INSERT INTO cycle_intent (
-                    ts, cycle, market_slug, condition_id, intent_count,
-                    submitted, cancelled, top_skip_reason, top_pass_reason,
-                    latency_ms, run_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    now_ts,
-                    cycle,
-                    market_slug,
-                    condition_id,
-                    intent_count,
-                    0,  # submitted/cancelled are filled by the later submit event
-                    0,
-                    top_skip_reason,
-                    top_pass_reason,
-                    latency_ms,
-                    r_id,
-                ),
-            )
-            conn.execute(
-                """
-                DELETE FROM cycle_intent
-                WHERE id NOT IN (
-                    SELECT id FROM cycle_intent ORDER BY id DESC LIMIT 200
-                )
-                """
-            )
-            conn.commit()
+        _with_intent_connection(p, insert)
     except Exception as exc:
         # Non-blocking / fire-and-forget
         print(f"WARNING: cycle_intent insert failed: {exc}", file=sys.stderr)
@@ -139,20 +217,23 @@ def _update_cycle_intent(
     p = Path(db_path) if db_path else DEFAULT_DB_PATH
     if not p.exists():
         return
-    try:
-        with sqlite3.connect(str(p), timeout=1.0) as conn:
-            conn.execute(
-                """
-                UPDATE cycle_intent SET submitted = ?, cancelled = ?
-                WHERE id = (
-                    SELECT id FROM cycle_intent
-                    WHERE market_slug = ? AND cycle = ? AND run_id = ?
-                    ORDER BY id DESC LIMIT 1
-                )
-                """,
-                (submitted, cancelled, market_slug, cycle, run_id),
+
+    def update(conn: sqlite3.Connection) -> None:
+        conn.execute(
+            """
+            UPDATE cycle_intent SET submitted = ?, cancelled = ?
+            WHERE id = (
+                SELECT id FROM cycle_intent
+                WHERE market_slug = ? AND cycle = ? AND run_id = ?
+                ORDER BY id DESC LIMIT 1
             )
-            conn.commit()
+            """,
+            (submitted, cancelled, market_slug, cycle, run_id),
+        )
+        conn.commit()
+
+    try:
+        _with_intent_connection(p, update)
     except Exception as exc:
         # Non-blocking / fire-and-forget
         print(f"WARNING: cycle_intent update failed: {exc}", file=sys.stderr)

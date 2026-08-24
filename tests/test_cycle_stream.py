@@ -6,7 +6,10 @@ All tests use tmp_path; nothing ever touches live/run/.
 """
 from __future__ import annotations
 
+import builtins
+import contextlib
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -14,7 +17,12 @@ from pathlib import Path
 
 import pytest
 
-from core_brain.cycle_stream import close_intent_connections, emit, read_ring
+from core_brain.cycle_stream import (
+    KEEP_LINES,
+    close_intent_connections,
+    emit,
+    read_ring,
+)
 
 REQUIRED_FIELDS = {
     "ts", "service", "cycle", "phase", "action",
@@ -27,8 +35,29 @@ def _parse_lines(path: Path) -> list[dict]:
         return [json.loads(line) for line in fh if line.strip()]
 
 
+def _count_ring_reads(monkeypatch, ring: Path) -> list[str]:
+    """Record every read-open of `ring`, so a test can assert how few there are.
+
+    The rotation check is the only thing that opens the ring for reading, so
+    the length of the returned list is the number of whole-file rereads.
+    """
+    reads: list[str] = []
+    real_open = builtins.open
+
+    def counting_open(file, mode="r", *args, **kwargs):
+        if str(file) == str(ring) and "r" in str(mode):
+            reads.append(str(file))
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+    return reads
+
+
 def _query_intent(db: Path, sql: str, params=()) -> list[tuple]:
-    with sqlite3.connect(str(db)) as conn:
+    # closing(), not a bare `with`: a sqlite3 connection's context manager
+    # commits on exit but leaves the handle open, and on Windows that open
+    # handle blocks anything that later replaces the file.
+    with contextlib.closing(sqlite3.connect(str(db))) as conn:
         return conn.execute(sql, params).fetchall()
 
 
@@ -100,6 +129,41 @@ class TestRingFile:
         events = read_ring(ring_path=ring, tail=10)
         assert len(events) == 10
         assert [e["cycle"] for e in events] == list(range(41, 51))
+
+    def test_ring_is_not_reread_on_every_append(self, tmp_path, monkeypatch):
+        # The rotation check used to open and readlines() the whole ring on
+        # every single emit. On Windows that read-open costs ~20ms once the
+        # file has just been modified (Defender rescans it), so a 500-emit
+        # loop spent ten seconds inside open(). The line count is knowable
+        # without re-reading, so the read must be rare, not per-append.
+        ring = tmp_path / "cycle_events.jsonl"
+        reads = _count_ring_reads(monkeypatch, ring)
+        for i in range(1, 201):
+            emit(i, "reconciling", "reconcile_ok", service="query",
+                 ring_path=ring)
+        assert len(reads) <= 2, f"{len(reads)} full reads for 200 appends"
+
+    def test_rotation_still_fires_after_an_external_writer_appends(
+            self, tmp_path, monkeypatch):
+        # The fleet and screener append to the ring without importing
+        # core_brain, so the in-process line count can go stale. A size that
+        # does not match our own bookkeeping must fall back to a real read.
+        ring = tmp_path / "cycle_events.jsonl"
+        reads = _count_ring_reads(monkeypatch, ring)
+        for i in range(1, 100):
+            emit(i, "reconciling", "reconcile_ok", service="query",
+                 ring_path=ring)
+        with open(ring, "a", encoding="utf-8") as fh:
+            for i in range(450):
+                fh.write(json.dumps({"cycle": 1000 + i}) + "\n")
+        emit(999, "reconciling", "reconcile_ok", service="query",
+             ring_path=ring)
+        # Exactly two reads: one to seed the count, one because the external
+        # 450 lines moved the size off our bookkeeping. Asserting the count
+        # rather than only the rotation is what makes this fail against the
+        # old implementation, which reread the ring on all 100 emits.
+        assert len(reads) == 2, f"{len(reads)} full reads"
+        assert len(_parse_lines(ring)) == KEEP_LINES
 
     def test_concurrent_appends(self, tmp_path):
         ring = tmp_path / "cycle_events.jsonl"
@@ -240,6 +304,30 @@ class TestCycleIntent:
         cycles = [row[0] for row in
                   _query_intent(db, "SELECT cycle FROM cycle_intent ORDER BY id")]
         assert cycles == [1, 2]
+
+    def test_replacing_the_store_needs_the_handle_closed_first(self, tmp_path):
+        """Swapping the file under a live handle is not something the retry
+        can rescue: on POSIX the open handle stays bound to the old inode, the
+        write lands in a file nobody reads, and no error is raised to retry on.
+        Closing first is the procedure, and this pins it -- after the close,
+        the next event lands in the database that is actually on the path.
+        """
+        ring = tmp_path / "events.jsonl"
+        db = tmp_path / "live.db"
+        emit(1, "quoting", "decide", market_slug="m",
+             ring_path=ring, db_path=db)
+        assert _query_intent(db, "SELECT COUNT(*) FROM cycle_intent")[0] == (1,)
+
+        close_intent_connections()  # nothing holds the file now
+        replacement = tmp_path / "fresh.db"
+        replacement.write_bytes(b"")
+        os.replace(replacement, db)
+
+        emit(2, "quoting", "decide", market_slug="m",
+             ring_path=ring, db_path=db)
+        cycles = [row[0] for row in
+                  _query_intent(db, "SELECT cycle FROM cycle_intent ORDER BY id")]
+        assert cycles == [2], "the record must land in the database on the path"
 
     def test_a_locked_database_warns_and_never_stalls_the_loop(
             self, tmp_path, capsys):

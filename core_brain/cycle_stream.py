@@ -26,6 +26,16 @@ from typing import Any, Optional
 # O_APPEND (a single os.write lands at EOF as one syscall), not from this lock.
 _APPEND_LOCK = threading.Lock()
 
+# ring path -> (size in bytes we last left the file at, line count at that size).
+# A count of None means "unknown, go read the file". Re-opening the ring for
+# read costs ~20ms per call on Windows once the file has just been modified
+# (real-time AV rescans it), so the rotation check must not read on every
+# append. Our own appends grow the file by a known number of bytes and exactly
+# one line, so the count stays exact for as long as nothing else writes; a size
+# that does not match invalidates the entry and the next check reads for real.
+_RING_LINES: dict[str, tuple[int, Optional[int]]] = {}
+_RING_LINES_MAX_ENTRIES = 32
+
 LIVE_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_RING_PATH = LIVE_ROOT / "runtime" / "cycle_events.jsonl"
 
@@ -108,10 +118,21 @@ def _intent_connection(path: Path) -> sqlite3.Connection:
 def _with_intent_connection(path: Path, work):
     """Run `work(conn)` on the cached connection, rebuilding it once on error.
 
-    A handle can go bad on its own -- the file replaced underneath it, the
-    process resumed from a suspend -- and a cached bad handle would turn one
-    failure into every future one. So a `sqlite3.Error` drops the handle and
-    retries exactly once; a second failure belongs to the caller's warning.
+    A cached handle that has gone bad would otherwise turn one failure into
+    every future one, so a `sqlite3.Error` drops it and retries exactly once;
+    a second failure belongs to the caller's warning. That covers the errors
+    SQLite actually reports: a closed handle, a lock it could not take, a
+    statement it refused.
+
+    It does NOT cover the database file being replaced underneath a live
+    handle, and nothing here should be read as promising otherwise. On POSIX
+    the open handle stays bound to the old inode, the write "succeeds" into a
+    file nobody reads, and no exception is raised for a retry to catch --
+    SQLite documents unlinking or renaming a database in use as unsafe. The
+    supported way to swap the store is to call `close_intent_connections()`
+    first and replace it while nothing holds it open; `test_replacing_the_
+    store_needs_the_handle_closed_first` pins that procedure. Nothing in this
+    repo replaces `data/orders.db` under a running engine today.
     """
     with _DB_LOCK:
         try:
@@ -248,12 +269,28 @@ def _append_line(path: Path, line: str) -> None:
     Windows loses a line whenever two writers hit the same end offset -- the
     concurrent-append test caught that race.
     """
+    payload = line.encode("utf-8")
     with _APPEND_LOCK:
         fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT)
         try:
-            os.write(fd, line.encode("utf-8"))
+            # fstat on the fd we already hold: no second open, so no AV rescan.
+            # Compare sizes rather than adding len(payload): os.open has no
+            # O_BINARY here, so on Windows each "\n" reaches disk as "\r\n" and
+            # the file grows by more bytes than we handed to os.write.
+            size_before = os.fstat(fd).st_size
+            os.write(fd, payload)
+            size_after = os.fstat(fd).st_size
         finally:
             os.close(fd)
+        key = str(path)
+        previous = _RING_LINES.get(key)
+        if previous is not None and previous[1] is not None \
+                and previous[0] == size_before:
+            _RING_LINES[key] = (size_after, previous[1] + 1)
+        else:
+            if len(_RING_LINES) >= _RING_LINES_MAX_ENTRIES:
+                _RING_LINES.clear()
+            _RING_LINES[key] = (size_after, None)
 
 
 def _rotate_ring_file(ring_path: Path) -> None:
@@ -266,24 +303,37 @@ def _rotate_ring_file(ring_path: Path) -> None:
     residual window (append after the re-stat, before os.replace) can drop at
     most one telemetry line in a rare race; the next emit re-checks.
     """
+    key = str(ring_path)
     try:
         if not ring_path.exists():
+            _RING_LINES.pop(key, None)
             return
         size_before = ring_path.stat().st_size
+        cached = _RING_LINES.get(key)
+        if cached is not None and cached[1] is not None \
+                and cached[0] == size_before and cached[1] <= MAX_LINES:
+            # We know the count and it is under the limit, so there is nothing
+            # to rotate and no reason to pay for a read of the whole file.
+            return
         with open(ring_path, "r", encoding="utf-8", errors="replace") as rf:
             lines = rf.readlines()
-        if len(lines) > MAX_LINES:
-            if ring_path.stat().st_size != size_before:
-                # A concurrent append landed during our read; don't drop it.
-                return
-            kept = lines[-KEEP_LINES:]
-            tmp_path = ring_path.with_name(f"{ring_path.name}.tmp.{uuid.uuid4()}")
-            with open(tmp_path, "w", encoding="utf-8") as tf:
-                tf.writelines(kept)
-                tf.flush()
-                os.fsync(tf.fileno())
-            os.replace(tmp_path, ring_path)
+        if len(lines) <= MAX_LINES:
+            _RING_LINES[key] = (size_before, len(lines))
+            return
+        if ring_path.stat().st_size != size_before:
+            # A concurrent append landed during our read; don't drop it.
+            _RING_LINES.pop(key, None)
+            return
+        kept = lines[-KEEP_LINES:]
+        tmp_path = ring_path.with_name(f"{ring_path.name}.tmp.{uuid.uuid4()}")
+        with open(tmp_path, "w", encoding="utf-8") as tf:
+            tf.writelines(kept)
+            tf.flush()
+            os.fsync(tf.fileno())
+        os.replace(tmp_path, ring_path)
+        _RING_LINES[key] = (ring_path.stat().st_size, len(kept))
     except Exception as exc:
+        _RING_LINES.pop(key, None)
         print(f"WARNING: cycle_stream rotation failed: {exc}", file=sys.stderr)
 
 

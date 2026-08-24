@@ -39,7 +39,8 @@ RUN = LIVE_ROOT / "runtime"
 @dataclass
 class LiveFleetResult:
     """One market's outcome from a single rotation visit."""
-    status: str                       # QUOTED | DRY_RUN | DECLINED | ERROR
+    status: str                       # QUOTED | DRY_RUN | DECLINED |
+                                      # CANCELLED | WARNED | ERROR
     condition_id: str = ""
     title: str = ""
     why: str = ""
@@ -161,6 +162,7 @@ def run(
     once: bool = False,
     live: bool = True,
     markets: Optional[list] = None,
+    markets_fn: Optional[Callable[[], list]] = None,
     sleep_fn: Optional[Callable] = None,
 ) -> list[LiveFleetResult]:
     """Rotate over `markets`: reconcile, then decide+submit per market, then sweep.
@@ -199,6 +201,7 @@ def run(
 
     once_results: list[LiveFleetResult] = []
     last_cycle: list[LiveFleetResult] = []
+    current_markets = list(markets or [])
     cycle = 0
     while True:
         cycle += 1
@@ -219,12 +222,41 @@ def run(
         except Exception as e:
             log.warning("reconcile failed: %s: %s", type(e).__name__, e)
 
+        # An empty refresh is never obeyed. `load_graduated_markets` raises on a
+        # missing, empty, malformed or stale feed, but a well-formed `[]` -- the
+        # ranker finding nothing that cycle -- returns cleanly. Adopting it would
+        # empty the active universe and hand every resting order to the dropped-
+        # market cleanup below, cancelling the whole book on a transient scan.
+        if markets_fn is not None:
+            try:
+                fresh = markets_fn()
+            except Exception as e:
+                log.warning("markets_fn failed: %s: %s", type(e).__name__, e)
+            else:
+                if fresh:
+                    current_markets = list(fresh)
+                else:
+                    log.warning(
+                        "markets_fn returned no markets; keeping the previous %d",
+                        len(current_markets))
+
         cycle_results: list[LiveFleetResult] = []
-        for spec in list(markets or []):
+        for spec in list(current_markets or []):
             cycle_results.append(_visit_one(
                 seam=seam, spec=spec, live=live, cycle=cycle,
                 emit_fn=emit_fn,
             ))
+
+        # An empty universe is not evidence that every market was dropped: it is
+        # the state before the first successful refresh, or after one that
+        # graduated nothing. "Dropped" is only meaningful against a real set.
+        if (live and current_markets and seam.registry is not None
+                and seam.cancel_fn is not None):
+            cycle_results.extend(_cancel_dropped_markets(
+                seam=seam, current_markets=current_markets, cycle=cycle,
+                emit_fn=emit_fn,
+            ))
+
         last_cycle = cycle_results
         if once:
             once_results.extend(cycle_results)
@@ -246,6 +278,104 @@ def run(
     return once_results if once else last_cycle
 
 
+def _cancel_dropped_markets(
+    seam: VenueSeam,
+    current_markets: list,
+    cycle: int = 0,
+    emit_fn: Optional[Callable] = None,
+) -> list[LiveFleetResult]:
+    """Cancel resting quotes on markets that left the active universe.
+
+    A market dropped by a refresh never reaches `_visit_one`, so `plan_orders`
+    never sees its orders and they rest untouched -- and a resting buy whose
+    paired leg fills becomes exactly the single buy nobody decided to take.
+
+    Three deliberate limits:
+
+    * Only `open` orders are cancelled. A `partial` has already bought shares;
+      cancelling it strands them as a naked leg with no counter-order working,
+      and this loop has no exit path -- `single_buy_saver` runs from
+      `order_manager`, not here. Partials are reported as WARNED so the operator
+      sees them instead of the loop quietly making the position worse.
+    * `pending` is left alone. Its row may have no venue id yet, so there is
+      nothing to cancel; reconcile's orphan adoption is what claims it.
+    * Every failure surfaces as a result row, never as a log line only. This
+      cleanup exists to reduce exposure, and a cleanup that can no-op invisibly
+      is worse than none.
+
+    One market's failure never stops the rest: each condition id is cancelled in
+    its own try block.
+    """
+    if emit_fn is None:
+        emit_fn = lambda *a, **k: None
+    out: list[LiveFleetResult] = []
+
+    try:
+        active_orders = list(seam.registry.get_active_orders())
+    except Exception as e:
+        log.warning("dropped-market cleanup could not read the registry: %s: %s",
+                    type(e).__name__, e)
+        emit_fn(service="decide", cycle=cycle, phase="quoting",
+                action="market_error", market_slug="",
+                reason=f"dropped_cleanup_registry: {type(e).__name__}: {e}")
+        return [LiveFleetResult(
+            status="ERROR", why="dropped_market_cleanup_failed",
+            error=f"dropped_cleanup_registry: {type(e).__name__}: {e}")]
+
+    current_cids = {_cid(s) for s in (current_markets or [])}
+    dropped = [o for o in active_orders
+               if o.condition_id and o.condition_id not in current_cids]
+
+    stranded = sorted({o.condition_id for o in dropped
+                       if getattr(o, "status", "") == "partial"})
+    for cid in stranded:
+        n = sum(1 for o in dropped
+                if o.condition_id == cid and getattr(o, "status", "") == "partial")
+        log.warning("dropped market %s has %d partially filled order(s) left "
+                    "resting: cancel would strand the filled shares", cid, n)
+        emit_fn(service="decide", cycle=cycle, phase="quoting",
+                action="dropped_partial", market_slug="",
+                reason="dropped_market_partial_retained",
+                extra={"condition_id": cid, "partial_orders": n})
+        out.append(LiveFleetResult(
+            status="WARNED", condition_id=cid,
+            why="dropped_market_partial_retained"))
+
+    open_cids = sorted({o.condition_id for o in dropped
+                        if getattr(o, "status", "") == "open"})
+    for dropped_cid in open_cids:
+        dropped_orders = [
+            {
+                "token_id": o.token_id,
+                "price": o.price,
+                "order_id": o.order_id or o.id,
+                "id": o.id,
+                "side": o.side,
+                "status": o.status,
+            }
+            for o in dropped
+            if o.condition_id == dropped_cid and getattr(o, "status", "") == "open"
+        ]
+        try:
+            cancelled = seam.cancel_fn(seam.client, seam.registry, dropped_orders)
+            out.append(LiveFleetResult(
+                status="CANCELLED", condition_id=dropped_cid,
+                why="dropped_market_cancelled", cancelled=cancelled,
+            ))
+        except Exception as ce:
+            log.warning("cancel dropped market %s failed: %s: %s",
+                        dropped_cid, type(ce).__name__, ce)
+            emit_fn(service="decide", cycle=cycle, phase="quoting",
+                    action="market_error", market_slug="",
+                    reason=f"dropped_cancel: {type(ce).__name__}: {ce}",
+                    extra={"condition_id": dropped_cid})
+            out.append(LiveFleetResult(
+                status="ERROR", condition_id=dropped_cid,
+                why="dropped_market_cancel_failed",
+                error=f"dropped_cancel: {type(ce).__name__}: {ce}",
+            ))
+
+    return out
 def _still_resting(seam: VenueSeam, to_cancel: list[dict]) -> list[str]:
     """Which of `to_cancel` the venue still shows resting, conservatively.
 
@@ -412,7 +542,7 @@ def _make_open_orders_fn(registry):
     def open_orders_fn(market) -> list[dict]:
         out = []
         for o in registry.get_active_orders():
-            if o.condition_id != market.condition_id or o.status != "open":
+            if o.condition_id != market.condition_id or o.status not in ("open", "partial"):
                 continue
             out.append({
                 "token_id": o.token_id,
@@ -782,6 +912,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     results = run(
         seam,
         interval=a.interval, once=a.once, live=a.live, markets=specs,
+        markets_fn=lambda: _market_specs(a.max_markets),
     )
     return 0 if results else 1
 

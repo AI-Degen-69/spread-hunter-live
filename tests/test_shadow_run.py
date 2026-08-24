@@ -248,6 +248,56 @@ class TestRunShadow:
         assert "sweep" in result.skipped_stages
 
 
+class TestLookupFetchMarket:
+    def test_lookup_falls_back_to_fetch_market_when_tokens_missing(self, monkeypatch):
+        from core_brain.shadow_run import _lookup_fetch_market
+
+        fetched = []
+        def mock_fetch_market(cid):
+            fetched.append(cid)
+            return FakeMarket(cid)
+
+        monkeypatch.setattr("core_brain.trader_loop._fetch_market", mock_fetch_market)
+
+        # Incomplete market spec lacking up_token / down_token
+        spec_dict = {"cid": "0x123", "title": "Incomplete"}
+        resolver = _lookup_fetch_market([spec_dict])
+
+        res = resolver("0x123")
+        assert res.condition_id == "0x123"
+        assert res.up_token == "tok-up"
+        assert fetched == ["0x123"]
+
+    def test_lookup_uses_cached_market_when_tokens_present(self, monkeypatch):
+        from core_brain.shadow_run import _lookup_fetch_market
+
+        fetched = []
+        monkeypatch.setattr("core_brain.trader_loop._fetch_market", lambda cid: fetched.append(cid))
+
+        complete_market = FakeMarket("0x456")
+        resolver = _lookup_fetch_market([complete_market])
+
+        res = resolver("0x456")
+        assert res == complete_market
+        assert fetched == []
+
+    def test_lookup_resolves_refreshed_markets_dynamically(self, monkeypatch):
+        from core_brain.shadow_run import _lookup_fetch_market
+
+        fetched = []
+        monkeypatch.setattr("core_brain.trader_loop._fetch_market", lambda cid: fetched.append(cid))
+
+        current_box = [[FakeMarket("0x1")]]
+        resolver = _lookup_fetch_market(lambda: current_box[0])
+
+        assert resolver("0x1").condition_id == "0x1"
+
+        # Dynamically refresh to cycle 2 markets
+        current_box[0] = [FakeMarket("0x2")]
+        assert resolver("0x2").condition_id == "0x2"
+        assert fetched == []
+
+
 class TestMain:
     """The command line: `python -m core_brain.shadow_run --minutes N`."""
 

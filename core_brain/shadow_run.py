@@ -181,10 +181,19 @@ def build_shadow_seam(
       cancel records nothing and returns 0. Milestone 2 gives them their full
       shape.
 
-    `reconcile_fn`/`sweep_fn` are no-ops on purpose -- they reconcile against
-    venue positions a shadow run does not have. Callers must report them as
-    deliberately skipped (`ShadowResult.skipped_stages`), never as stages that
-    silently passed.
+    `reconcile_fn` is a no-op on purpose -- it reconciles against venue
+    positions a shadow run does not have. Callers must report it as
+    deliberately skipped (`ShadowResult.skipped_stages`), never as a stage
+    that silently passed.
+
+    `sweep_fn` is a no-op ONLY at this layer: this function has no `cfg`
+    strong enough to build the pairs pass against (`cfg` here may be `None`,
+    resolved later), so it wires `noop_sweep` and leaves the real port to the
+    caller. `run_shadow` is that caller -- it overwrites `seam.sweep_fn` with
+    `shadow_sweep`, which runs `single_buy_saver.auto_manage_pairs` against
+    this same store every rotation. A test or script that calls
+    `build_shadow_seam` directly, bypassing `run_shadow`, gets the no-op and
+    must account for that itself.
 
     Without an injected `fetch_books` the session rehearses decisions against
     empty books and says so in the log; the entrypoint wires the real book
@@ -366,15 +375,23 @@ def run_shadow(
         from core_brain.single_buy_saver import auto_manage_pairs
 
         exec_client = ShadowExecutionClient(
-            seam.registry, db_path, book_fn=seam.fetch_books)
+            seam.registry, db_path, book_fn=seam.fetch_books,
+            clob_host=seam.clob_host)
         try:
             for pr in auto_manage_pairs(
                 exec_client, seam.registry, cfg,
                 venue_positions=shadow_positions(seam.registry, db_path),
             ):
                 action = pr.get("action", "?")
-                if action not in ("hold", "balanced"):
-                    log.info("pairs %s %s", pr.get("pair_id") or "?", action)
+                pair_id = pr.get("pair_id") or "?"
+                if action == "error":
+                    # WARNING, not INFO, and with the reason attached: a pass
+                    # that errors on every pair still looks like activity at
+                    # INFO with the reason dropped -- exactly the kind of
+                    # rehearsal that reads as working when it is not.
+                    log.warning("pairs %s error: %s", pair_id, pr.get("error"))
+                elif action not in ("hold", "balanced"):
+                    log.info("pairs %s %s", pair_id, action)
         except (sqlite3.Error, OSError, ValueError) as e:
             log.warning("shadow pairs pass failed: %s", e)
 

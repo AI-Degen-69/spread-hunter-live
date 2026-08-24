@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from core_brain.order_registry import (
-    FillRecord, OrderRecord, OrderRegistry, get_connection,
+    SIZE_EPS, FillRecord, OrderRecord, OrderRegistry, get_connection,
 )
 from core_brain.shadow_fills import (
     ShadowFill, ShadowRestingOrder, credit_fills, queue_ahead_at,
@@ -214,6 +214,28 @@ def settle_market(
     return fills
 
 
+def _book_side_to_levels(side, *, reverse: bool) -> list:
+    """A price-keyed dict side (`markets.parse_book`'s canonical shape) ->
+    a list of `{"price", "size"}` levels, sorted the way the venue returns
+    them.
+
+    `single_buy_saver._book_levels` iterates `bids`/`asks` expecting a list;
+    handed the canonical dict instead it iterates the dict's float keys, and
+    every one is discarded (`getattr(0.51, "price", None)` is `None`), so
+    `best_ask`/`best_bid` silently come back `None` for every book. Bids sort
+    best-first (highest price), asks best-first (lowest price) -- the same
+    order the CLOB's own `/book` endpoint returns.
+
+    A side that is not a dict (already a list, or absent) passes through
+    unchanged: `book_fn` need not always be `markets.parse_book`, and a
+    caller already handing over levels should not be reshaped.
+    """
+    if not isinstance(side, dict):
+        return list(side or [])
+    prices = sorted(side.keys(), reverse=reverse)
+    return [{"price": p, "size": side[p]} for p in prices]
+
+
 class ShadowExecutionClient:
     """The four client methods `single_buy_saver` calls, backed by the store.
 
@@ -238,7 +260,23 @@ class ShadowExecutionClient:
         self._clob_host = clob_host
 
     def get_order_book(self, token_id: str) -> dict:
-        return self._book_fn(self._clob_host, str(token_id))
+        """The book, adapted for `single_buy_saver._book_levels`.
+
+        `book_fn` (in production, `seam.fetch_books`, ultimately
+        `markets.parse_book`) returns the canonical shape this repo uses
+        everywhere else: `bids`/`asks` as price-keyed dicts, which is what
+        `queue_ahead_at` (this store's own queue-position math) wants.
+        `single_buy_saver._book_levels` wants a list of `{"price", "size"}`
+        levels per side instead. Both are real consumers of the same book
+        source, so the adaptation happens here, on the way out to the one
+        that needs it -- `markets.parse_book` and the production book source
+        stay untouched.
+        """
+        book = self._book_fn(self._clob_host, str(token_id))
+        adapted = dict(book)
+        adapted["bids"] = _book_side_to_levels(book.get("bids"), reverse=True)
+        adapted["asks"] = _book_side_to_levels(book.get("asks"), reverse=False)
+        return adapted
 
     def get_order(self, order_id: str) -> dict:
         """Venue-shaped order state, read by venue order id.
@@ -273,23 +311,73 @@ class ShadowExecutionClient:
             order.id, status="cancelled", last_polled_ts=now_ms)
         return {"success": True, "orderID": target}
 
-    def _source_row_for_token(self, token_id: str) -> tuple[str, str | None]:
-        """condition_id and pair_id for a token, taken from its latest order row.
+    def _naked_pair_for_token(self, token_id: str) -> tuple[str, str] | None:
+        """(condition_id, pair_id) of the oldest pair that is currently
+        naked on this token, or `None` if no pair on this token is naked.
 
-        `MarketOrderArgsV2` carries no condition id, only `token_id`, `amount`,
-        `side` and `price` -- so a completion buy has nowhere else to source
-        one. The light leg always has an earlier row (`record_submit` rested
-        it, `cancel_order` above may have just closed it) to read this from.
+        `MarketOrderArgsV2` carries no condition id or pair id -- only
+        `token_id`, `amount`, `side`, `price` -- so a completion buy has no
+        way to name its pair directly; this reconstructs it.
+
+        Scoping this to "the most recent order row on this token" (an
+        earlier version) is wrong whenever a token carries rows under more
+        than one `pair_id`, which is ordinary here: `record_submit` mints a
+        fresh `pair_id` every call, and a market re-quoted across rotations
+        accumulates several. If an older pair is still naked when a newer
+        one posts fresh orders on the same tokens, "most recent row" attaches
+        the completion to the newer pair, leaves the older one naked, and
+        the pairs pass buys it again next cycle -- a repeat-buy loop that
+        does not stop until `pairs_exit_window_sec` ages the fill out.
+
+        This instead reproduces the slice of `load_pair`'s heavy/light math
+        needed to tell WHICH pair(s) on this token are actually naked, and
+        picks the oldest by `posted_ts`: `auto_manage_pairs` discovers pairs
+        by fill age (oldest fills age out of the window first), so the
+        oldest naked pair is also the one it would have reached first.
         """
         with closing(get_connection(self._db_path)) as conn:
-            row = conn.execute(
-                "SELECT condition_id, pair_id FROM orders WHERE token_id = ? "
-                "ORDER BY posted_ts DESC LIMIT 1",
+            rows = conn.execute(
+                """
+                SELECT o.pair_id AS pair_id, o.condition_id AS condition_id,
+                       o.token_id AS token_id, o.posted_ts AS posted_ts,
+                       COALESCE(SUM(f.size), 0) AS matched
+                FROM orders o
+                LEFT JOIN fills f ON f.order_uuid = o.id
+                WHERE o.pair_id IN (
+                    SELECT DISTINCT pair_id FROM orders
+                    WHERE token_id = ? AND pair_id IS NOT NULL
+                )
+                GROUP BY o.pair_id, o.token_id
+                """,
                 (str(token_id),),
-            ).fetchone()
-        if row is None:
-            return "", None
-        return str(row["condition_id"] or ""), row["pair_id"]
+            ).fetchall()
+
+        by_pair: dict[str, dict] = {}
+        for r in rows:
+            pid = r["pair_id"]
+            slot = by_pair.setdefault(pid, {
+                "condition_id": r["condition_id"], "legs": {},
+                "posted_ts": r["posted_ts"],
+            })
+            slot["legs"][r["token_id"]] = float(r["matched"])
+            slot["posted_ts"] = min(slot["posted_ts"], r["posted_ts"])
+
+        target = str(token_id)
+        naked_candidates = []
+        for pid, info in by_pair.items():
+            legs = info["legs"]
+            this_matched = legs.get(target, 0.0)
+            other_matched = max(
+                (v for k, v in legs.items() if k != target), default=0.0)
+            naked = other_matched - this_matched
+            if naked > SIZE_EPS:
+                naked_candidates.append((info["posted_ts"], pid, info["condition_id"]))
+
+        if not naked_candidates:
+            return None
+        naked_candidates.sort(key=lambda c: c[0])
+        _, pid, cid = naked_candidates[0]
+        return str(cid or ""), pid
 
     def create_and_post_market_order(self, order_args) -> dict:
         """Cross the book in the rehearsal: called with one positional
@@ -334,11 +422,13 @@ class ShadowExecutionClient:
 
         shares = amount / price
 
-        condition_id, pair_id = self._source_row_for_token(token_id)
-        if not condition_id:
+        found = self._naked_pair_for_token(token_id)
+        if found is None:
             raise ShadowOrderRefused(
-                f"cannot record completion buy for {token_id[:12]}: no prior "
-                f"order row on this token to source a condition_id from")
+                f"cannot record completion buy for {token_id[:12]}: no pair "
+                f"on this token reads as naked in the store, so there is "
+                f"nothing to attach the fill to")
+        condition_id, pair_id = found
 
         now_ms = int(time.time() * 1000)
         local_id = str(uuid.uuid4())

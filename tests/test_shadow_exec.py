@@ -159,3 +159,88 @@ def test_oserror_on_second_leg_cancels_first_and_propagates(registry):
 
     # No rows should remain in active status (first order should be cancelled)
     assert reg.get_active_orders() == []
+
+
+def test_settle_writes_a_fill_row_and_marks_the_order_filled(registry):
+    from core_brain.order_registry import inventory_from_registry
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+
+    fills = settle_market(
+        reg, FakeMarket(), db_path=db, seen=set(),
+        traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}},
+    )
+
+    assert [f.token_id for f in fills] == ["tok-up"]
+    inv = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
+    assert inv.up_shares == 20.0
+    assert inv.down_shares == 0.0
+    assert [r.token_id for r in reg.get_active_orders()] == ["tok-dn"]
+
+
+def test_partial_credit_leaves_the_order_partial(registry):
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 5.0}})
+
+    up_row = next(r for r in reg.get_active_orders() if r.token_id == "tok-up")
+    assert up_row.status == "partial"
+
+
+def test_the_same_tape_volume_is_never_credited_twice(registry):
+    """`recent_trades` de-duplicates by trade identity through `seen`; the
+    settle step carries one `seen` set per market for the whole session."""
+    from core_brain.order_registry import inventory_from_registry
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+
+    calls = {"n": 0}
+
+    def traded_fn(cid, seen):
+        calls["n"] += 1
+        return {"tok-up": {0.47: 8.0}} if calls["n"] == 1 else {}
+
+    seen = set()
+    settle_market(reg, FakeMarket(), db_path=db, seen=seen, traded_fn=traded_fn)
+    settle_market(reg, FakeMarket(), db_path=db, seen=seen, traded_fn=traded_fn)
+
+    inv = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
+    assert inv.up_shares == 8.0
+
+
+def test_a_shrinking_queue_without_a_fill_is_remembered(registry):
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, read_queue_ahead, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db,
+                  book_fn=lambda h, t: {"bids": {0.47: 50.0, 0.51: 0.0}})
+
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 30.0}})
+
+    up_id = next(r.id for r in reg.get_active_orders() if r.token_id == "tok-up")
+    assert read_queue_ahead(db, up_id) == 20.0

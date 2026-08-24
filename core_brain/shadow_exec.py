@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Callable
 
 from core_brain.order_registry import (
-    OrderRecord, OrderRegistry, get_connection,
+    FillRecord, OrderRecord, OrderRegistry, get_connection,
 )
-from core_brain.shadow_fills import queue_ahead_at
+from core_brain.shadow_fills import ShadowRestingOrder, queue_ahead_at
 
 _log = logging.getLogger(__name__)
 
@@ -147,3 +147,68 @@ def record_submit(
         raise
 
     return placed
+
+
+def _filled_size(db_path: Path | str, local_id: str) -> float:
+    with closing(get_connection(Path(db_path))) as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(size), 0) AS s FROM fills WHERE order_uuid = ?",
+            (local_id,),
+        ).fetchone()
+    return float(row["s"]) if row else 0.0
+
+
+def settle_market(
+    registry: OrderRegistry,
+    market,
+    *,
+    db_path: Path | str,
+    traded_fn: Callable[[str, set], dict],
+    seen: set,
+    now_fn: Callable[[], float] = time.time,
+) -> list:
+    """Credit this market's resting rows from the tape, then persist the result.
+
+    One `seen` set per market for the whole session: `markets.recent_trades`
+    de-duplicates by trade identity against it, and a fresh set every cycle
+    would re-credit the same trades until the order looked full.
+    """
+    from core_brain.shadow_fills import credit_fills
+
+    resting = [
+        o for o in registry.get_active_orders()
+        if o.condition_id == market.condition_id and o.status in ("open", "partial")
+    ]
+    if not resting:
+        return []
+
+    traded = traded_fn(market.condition_id, seen)
+
+    orders = [
+        ShadowRestingOrder(
+            local_id=o.id, token_id=o.token_id, price=o.price,
+            size=o.original_size, filled=_filled_size(db_path, o.id),
+            queue_ahead=read_queue_ahead(db_path, o.id),
+        )
+        for o in resting
+    ]
+    fills, queues = credit_fills(orders, traded)
+
+    for local_id, queue_ahead in queues.items():
+        write_queue_ahead(db_path, local_id, queue_ahead)
+
+    now_ms = int(now_fn() * 1000)
+    by_id = {o.local_id: o for o in orders}
+    for f in fills:
+        registry.record_fill(FillRecord(
+            trade_id=f"{SHADOW_TRADE_PREFIX}{uuid.uuid4().hex[:16]}",
+            order_uuid=f.local_id, size=f.size, price=f.price,
+            venue_ts=now_ms, recorded_ts=now_ms,
+        ))
+        order = by_id[f.local_id]
+        total_filled = order.filled + f.size
+        status = "filled" if total_filled >= order.size - 1e-9 else "partial"
+        registry.update_order_status(f.local_id, status=status,
+                                     last_polled_ts=now_ms)
+
+    return fills

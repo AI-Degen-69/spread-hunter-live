@@ -544,3 +544,183 @@ class TestRunLoop:
 
         assert cancelled_calls == []
         assert results == []
+    def test_cancel_happens_before_submit_in_replacement_quote(self):
+        call_log = []
+
+        def decide(cfg, up, dn, inv, t_rem, wf):
+            # Propose new price for UP leg (triggering replace)
+            return [_intent(side="UP", token="tok-up", price=0.62)], ""
+
+        def open_orders_fn(m):
+            return [{"token_id": "tok-up", "price": 0.58, "order_id": "o-old", "id": "local-old", "side": "BUY", "status": "open"}]
+
+        def cancel_fn(client, registry, orders):
+            call_log.append("cancel")
+            return len(orders)
+
+        def submit_fn(client, registry, market, intents, cfg):
+            call_log.append("submit")
+            return len(intents)
+
+        seam = VenueSeam(
+            client=object(),
+            fetch_market=lambda cid: FakeMarket(cid),
+            fetch_books=lambda h, t: {"token_id": t, "best_bid": 0.59, "best_ask": 0.61, "bids": {0.59: 100}, "asks": {0.61: 100}},
+            decide=decide,
+            submit_fn=submit_fn,
+            cancel_fn=cancel_fn,
+            open_orders_fn=open_orders_fn,
+            reconcile_fn=lambda *a: None,
+            sweep_fn=lambda: None,
+        )
+        results = run(
+            seam, interval=0.0, once=True, live=True,
+            markets=[FakeMarket("0xabc")],
+            sleep_fn=lambda s: None,
+        )
+        assert results[0].status == "QUOTED"
+        assert call_log == ["cancel", "submit"]
+
+    def test_cancel_failure_aborts_submit_and_records_error(self):
+        call_log = []
+
+        def decide(cfg, up, dn, inv, t_rem, wf):
+            return [_intent(side="UP", token="tok-up", price=0.62)], ""
+
+        def open_orders_fn(m):
+            return [{"token_id": "tok-up", "price": 0.58, "order_id": "o-old", "id": "local-old", "side": "BUY", "status": "open"}]
+
+        def cancel_fn(client, registry, orders):
+            call_log.append("cancel")
+            return 0  # Failed to cancel orders
+
+        def submit_fn(client, registry, market, intents, cfg):
+            call_log.append("submit")
+            return len(intents)
+
+        seam = VenueSeam(
+            client=object(),
+            fetch_market=lambda cid: FakeMarket(cid),
+            fetch_books=lambda h, t: {"token_id": t, "best_bid": 0.59, "best_ask": 0.61, "bids": {0.59: 100}, "asks": {0.61: 100}},
+            decide=decide,
+            submit_fn=submit_fn,
+            cancel_fn=cancel_fn,
+            open_orders_fn=open_orders_fn,
+            reconcile_fn=lambda *a: None,
+            sweep_fn=lambda: None,
+        )
+        results = run(
+            seam, interval=0.0, once=True, live=True,
+            markets=[FakeMarket("0xabc")],
+            sleep_fn=lambda s: None,
+        )
+        assert results[0].status == "ERROR"
+        assert "cancel failed" in str(results[0].error).lower()
+        assert "submit" not in call_log
+
+    def _replacement_seam(self, call_log, cancel_fn, resting_order_ids_fn=None):
+        """A seam whose market wants a new UP price while an old quote rests."""
+        def decide(cfg, up, dn, inv, t_rem, wf):
+            return [_intent(side="UP", token="tok-up", price=0.62)], ""
+
+        def open_orders_fn(m):
+            return [{"token_id": "tok-up", "price": 0.58, "order_id": "o-old",
+                     "id": "local-old", "side": "BUY", "status": "open"}]
+
+        def submit_fn(client, registry, market, intents, cfg):
+            call_log.append("submit")
+            return len(intents)
+
+        return VenueSeam(
+            client=object(),
+            fetch_market=lambda cid: FakeMarket(cid),
+            fetch_books=lambda h, t: {"token_id": t, "best_bid": 0.59, "best_ask": 0.61,
+                                      "bids": {0.59: 100}, "asks": {0.61: 100}},
+            decide=decide,
+            submit_fn=submit_fn,
+            cancel_fn=cancel_fn,
+            open_orders_fn=open_orders_fn,
+            resting_order_ids_fn=resting_order_ids_fn,
+            reconcile_fn=lambda *a: None,
+            sweep_fn=lambda: None,
+        )
+
+    def test_short_cancel_still_submits_when_venue_shows_order_gone(self):
+        """An order that filled between planning and cancelling is not a blocker.
+
+        `cancel_fn` comes up short, but the venue reports nothing resting, so the
+        replacement is safe and the market must quote rather than park in ERROR.
+        """
+        call_log = []
+
+        def cancel_fn(client, registry, orders):
+            call_log.append("cancel")
+            return 0
+
+        seam = self._replacement_seam(
+            call_log, cancel_fn, resting_order_ids_fn=lambda c: set())
+        results = run(seam, interval=0.0, once=True, live=True,
+                      markets=[FakeMarket("0xabc")], sleep_fn=lambda s: None)
+
+        assert results[0].status == "QUOTED"
+        assert call_log == ["cancel", "submit"]
+
+    def test_short_cancel_aborts_when_venue_shows_order_still_resting(self):
+        call_log = []
+
+        def cancel_fn(client, registry, orders):
+            call_log.append("cancel")
+            return 0
+
+        seam = self._replacement_seam(
+            call_log, cancel_fn, resting_order_ids_fn=lambda c: {"o-old"})
+        results = run(seam, interval=0.0, once=True, live=True,
+                      markets=[FakeMarket("0xabc")], sleep_fn=lambda s: None)
+
+        assert results[0].status == "ERROR"
+        assert "still resting" in str(results[0].error).lower()
+        assert "submit" not in call_log
+
+    def test_short_cancel_aborts_when_venue_read_fails(self):
+        """Unverifiable is treated as unsafe, never as \"nothing is resting\"."""
+        call_log = []
+
+        def cancel_fn(client, registry, orders):
+            call_log.append("cancel")
+            return 0
+
+        def exploding_read(client):
+            raise RuntimeError("clob unreachable")
+
+        seam = self._replacement_seam(
+            call_log, cancel_fn, resting_order_ids_fn=exploding_read)
+        results = run(seam, interval=0.0, once=True, live=True,
+                      markets=[FakeMarket("0xabc")], sleep_fn=lambda s: None)
+
+        assert results[0].status == "ERROR"
+        assert "still resting" in str(results[0].error).lower()
+        assert "submit" not in call_log
+
+    def test_venue_resting_order_ids_returns_none_when_venue_unreachable(self):
+        from core_brain.trader_loop import _venue_resting_order_ids
+
+        class Dead:
+            def get_open_orders(self):
+                raise RuntimeError("boom")
+
+        class Alive:
+            def get_open_orders(self):
+                return [{"id": "o-1"}, {"orderID": "o-2"}, {"orderId": "o-2b"},
+                        {"order_id": "o-3"}, {"id": "o-4", "orderID": "venue-4"}, {}]
+
+        class Silent:
+            def get_open_orders(self):
+                return None
+
+        assert _venue_resting_order_ids(Dead()) is None
+        # A None response is "the venue did not answer", never "nothing rests".
+        assert _venue_resting_order_ids(Silent()) is None
+        # Every spelling on an order is collected, not just the first that hits:
+        # a missed id would wave a live order through as gone.
+        assert _venue_resting_order_ids(Alive()) == {
+            "o-1", "o-2", "o-2b", "o-3", "o-4", "venue-4"}

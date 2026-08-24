@@ -5,11 +5,11 @@ paths:
 ---
 # Python Hooks
 
-> This file extends [common/hooks.md](../common/hooks.md) with Python specific content.
+> This file extends [common/hooks.md](common-hooks.md) with Python-specific content.
 
 ## PostToolUse Hooks
 
-Configure in `~/.claude/settings.json`:
+Recommended auto-formatting on save:
 
 - **black/ruff**: Auto-format `.py` files after edit
 - **mypy/pyright**: Run type checking after editing `.py` files

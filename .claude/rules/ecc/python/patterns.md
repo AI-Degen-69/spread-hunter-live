@@ -5,7 +5,7 @@ paths:
 ---
 # Python Patterns
 
-> This file extends [common/patterns.md](../common/patterns.md) with Python specific content.
+> This file extends [common/patterns.md](common-patterns.md) with Python-specific content.
 
 ## Protocol (Duck Typing)
 
@@ -32,8 +32,6 @@ class CreateUserRequest:
 ## Context Managers & Generators
 
 - Use context managers (`with` statement) for resource management
+- **Never close a connection inside `with get_connection(...)`** — the context manager
+  commits on exit; use `contextlib.closing`
 - Use generators for lazy evaluation and memory-efficient iteration
-
-## Reference
-
-See skill: `python-patterns` for comprehensive patterns including decorators, concurrency, and package organization.

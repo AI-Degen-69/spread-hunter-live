@@ -9,8 +9,6 @@
 
 Types: feat, fix, refactor, docs, test, chore, perf, ci
 
-Note: To disable co-author attribution on commits, set `"includeCoAuthoredBy": false` in `~/.claude/settings.json` (Claude Code appends `Co-Authored-By` by default; ECC does not ship this setting).
-
 ## Pull Request Workflow
 
 When creating PRs:
@@ -21,4 +19,12 @@ When creating PRs:
 5. Push with `-u` flag if new branch
 
 > For the full development process (planning, TDD, code review) before git operations,
-> see [development-workflow.md](./development-workflow.md).
+> see [development-workflow.md](common-development-workflow.md).
+
+## Repo-Specific Rules
+
+See [docs/agents/git-workflow.md](../../docs/agents/git-workflow.md) for:
+- One push per review round
+- Summary comment per round (no `@coderabbitai` handle)
+- Stop pushing after 3rd review round
+- Stacked merge checks before merging

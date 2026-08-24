@@ -6,25 +6,15 @@
 - **PostToolUse**: After tool execution (auto-format, checks)
 - **Stop**: When session ends (final verification)
 
-## Auto-Accept Permissions
+## Project-Specific Hooks
 
-Use with caution:
-- Enable for trusted, well-defined plans
-- Disable for exploratory work
-- Never use dangerously-skip-permissions flag
-- Configure `allowedTools` in `~/.claude.json` instead
+This repo uses a `PreToolUse` hook (`scripts/hooks/git_workflow_guard.py`) that:
+- **Reminds** on push discipline (one push per review round)
+- **Blocks** pushes after 3 automatic reviews
+- **Blocks** merges of PRs touching `core_brain/`, `scoring/`, or `dashboard/server.py`
+  without operator sign-off
 
-## TodoWrite Best Practices
-
-Use TodoWrite tool to:
-- Track progress on multi-step tasks
-- Verify understanding of instructions
-- Enable real-time steering
-- Show granular implementation steps
-
-Todo list reveals:
-- Out of order steps
-- Missing items
-- Extra unnecessary items
-- Wrong granularity
-- Misinterpreted requirements
+Record sign-off with:
+```bash
+python scripts/hooks/git_workflow_guard.py --approve <pr>
+```

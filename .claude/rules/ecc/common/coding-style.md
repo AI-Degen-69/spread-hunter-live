@@ -1,21 +1,27 @@
 # Coding Style
 
-> **Scoped in this repo.** This file is written for TypeScript. Naming, imports, error
-> handling and file size for spread-hunter-live live in `docs/agents/python-conventions.md`,
-> which wins wherever the two disagree. KISS/DRY/YAGNI and the error-handling principles
-> below still apply.
+## Naming
 
-## Immutability (CRITICAL)
+This is a Python-only codebase. Follow these conventions consistently:
 
-ALWAYS create new objects, NEVER mutate existing ones:
+| Element           | Convention            | Example                                  |
+| ----------------- | --------------------- | ---------------------------------------- |
+| Files / modules   | `snake_case`          | `order_registry.py`, `live_fill.py`      |
+| Functions / vars  | `snake_case`          | `complete_pair`, `best_ask`              |
+| Classes           | `PascalCase`          | `OrderRegistry`, `LiveFillEngine`        |
+| Constants         | `SCREAMING_SNAKE_CASE` | `MIN_ORDER_SHARES`, `DEFAULT_TICK_SIZE` |
+| Booleans          | prefix `is_`, `has_`, `should_`, `can_` | `is_filled`, `has_depth` |
 
-```
-// Pseudocode
-WRONG:  modify(original, field, value) → changes original in-place
-CORRECT: update(original, field, value) → returns new copy with change
-```
+## Immutability
 
-Rationale: Immutable data prevents hidden side effects, makes debugging easier, and enables safe concurrency.
+Prefer immutable data where practical:
+
+- Use `@dataclass(frozen=True)` or `NamedTuple` for value objects.
+- Avoid mutating function arguments.
+- Return new collections instead of modifying existing ones.
+
+**Exception:** Mutable state stores (e.g., `OrderRegistry` backed by SQLite) are fine
+when mutation is intentional, auditable, and tested.
 
 ## Core Principles
 
@@ -41,16 +47,17 @@ Rationale: Immutable data prevents hidden side effects, makes debugging easier, 
 
 MANY SMALL FILES > FEW LARGE FILES:
 - High cohesion, low coupling
+- 200-400 lines typical, 800 max
 - Extract utilities from large modules
 - Organize by feature/domain, not by type
 
 ## Error Handling
 
 ALWAYS handle errors comprehensively:
-- Handle errors explicitly at every level
-- Provide user-friendly error messages in UI-facing code
+- Raise domain-specific exceptions that name the refusal
+- Use narrow `except` clauses (`except sqlite3.Error`, `except OSError`)
+- Never silently swallow errors — a bare `except Exception: pass` hides money-losing state
 - Log detailed error context on the server side
-- Never silently swallow errors
 
 ## Input Validation
 
@@ -62,24 +69,16 @@ ALWAYS validate at system boundaries:
 
 ## Code Smells to Avoid
 
-### Deep Nesting
-
-Prefer early returns over nested conditionals once the logic starts stacking.
-
-### Magic Numbers
-
-Use named constants for meaningful thresholds, delays, and limits.
-
-### Long Functions
-
-Split large functions into focused pieces with clear responsibilities.
+- **Deep nesting:** prefer early returns over nested conditionals
+- **Magic numbers:** use named constants for thresholds, delays, and limits
+- **Long functions:** split into focused pieces with clear responsibilities
 
 ## Code Quality Checklist
 
 Before marking work complete:
-- [ ] Code is readable and well-named
+- [ ] Code is readable and well-named (snake_case functions, PascalCase classes)
 - [ ] Functions are small (<50 lines)
+- [ ] Files are focused (<800 lines)
 - [ ] No deep nesting (>4 levels)
-- [ ] Proper error handling
+- [ ] Proper error handling with narrow except clauses
 - [ ] No hardcoded values (use constants or config)
-- [ ] No mutation (immutable patterns used)

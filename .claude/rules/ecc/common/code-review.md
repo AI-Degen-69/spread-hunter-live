@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Code review ensures quality, security, and maintainability before code is merged. This rule defines when and how to conduct code reviews.
+Code review ensures quality, security, and maintainability before code is merged.
 
 ## When to Review
 
@@ -10,7 +10,7 @@ Code review ensures quality, security, and maintainability before code is merged
 
 - After writing or modifying code
 - Before any commit to shared branches
-- When security-sensitive code is changed (auth, payments, user data)
+- When security-sensitive code is changed (venue interaction, order sizing, risk limits)
 - When architectural changes are made
 - Before merging pull requests
 
@@ -26,27 +26,26 @@ Before requesting review, ensure:
 
 Before marking code complete:
 
-- [ ] Code is readable and well-named
+- [ ] Code is readable and well-named (snake_case functions, PascalCase classes)
 - [ ] Functions are focused (<50 lines)
 - [ ] Files are cohesive (<800 lines)
 - [ ] No deep nesting (>4 levels)
-- [ ] Errors are handled explicitly
+- [ ] Errors are handled explicitly with narrow except clauses
 - [ ] No hardcoded secrets or credentials
-- [ ] No console.log or debug statements
+- [ ] No stray print() statements (use logging)
 - [ ] Tests exist for new functionality
 - [ ] Test coverage meets 80% minimum
 
 ## Security Review Triggers
 
-**STOP and use security-reviewer agent when:**
+**STOP and carefully review when touching:**
 
-- Authentication or authorization code
-- User input handling
-- Database queries
-- File system operations
+- Order sizing or fill attribution code
+- Venue interaction (CLOB client calls)
+- Wallet or private key handling
+- Risk limits (`MAX_ORDER_USD`, `MAX_TOTAL_USD`)
+- Database queries (parameterized only)
 - External API calls
-- Cryptographic operations
-- Payment or financial code
 
 ## Review Severity Levels
 
@@ -57,19 +56,6 @@ Before marking code complete:
 | MEDIUM | Maintainability concern | **INFO** - Consider fixing |
 | LOW | Style or minor suggestion | **NOTE** - Optional |
 
-## Agent Usage
-
-Use these agents for code review:
-
-| Agent | Purpose |
-|-------|---------|
-| **code-reviewer** | General code quality, patterns, best practices |
-| **security-reviewer** | Security vulnerabilities, OWASP Top 10 |
-| **typescript-reviewer** | TypeScript/JavaScript specific issues |
-| **python-reviewer** | Python specific issues |
-| **go-reviewer** | Go specific issues |
-| **rust-reviewer** | Rust specific issues |
-
 ## Review Workflow
 
 ```
@@ -78,19 +64,16 @@ Use these agents for code review:
 3. Review code quality checklist
 4. Run relevant tests
 5. Verify coverage >= 80%
-6. Use appropriate agent for detailed review
 ```
 
 ## Common Issues to Catch
 
 ### Security
 
-- Hardcoded credentials (API keys, passwords, tokens)
+- Hardcoded credentials (API keys, private keys, tokens)
 - SQL injection (string concatenation in queries)
-- XSS vulnerabilities (unescaped user input)
 - Path traversal (unsanitized file paths)
-- CSRF protection missing
-- Authentication bypasses
+- Error messages leaking sensitive data
 
 ### Code Quality
 
@@ -98,7 +81,6 @@ Use these agents for code review:
 - Large files (>800 lines) - extract modules
 - Deep nesting (>4 levels) - use early returns
 - Missing error handling - handle explicitly
-- Mutation patterns - prefer immutable operations
 - Missing tests - add test coverage
 
 ### Performance
@@ -106,7 +88,6 @@ Use these agents for code review:
 - N+1 queries - use JOINs or batching
 - Missing pagination - add LIMIT to queries
 - Unbounded queries - add constraints
-- Missing caching - cache expensive operations
 
 ## Approval Criteria
 
@@ -118,7 +99,7 @@ Use these agents for code review:
 
 This rule works with:
 
-- [testing.md](testing.md) - Test coverage requirements
-- [security.md](security.md) - Security checklist
-- [git-workflow.md](git-workflow.md) - Commit standards
-- [agents.md](agents.md) - Agent delegation
+- [testing.md](common-testing.md) - Test coverage requirements
+- [security.md](common-security.md) - Security checklist
+- [git-workflow.md](common-git-workflow.md) - Commit standards
+- [agents.md](common-agents.md) - Agent delegation

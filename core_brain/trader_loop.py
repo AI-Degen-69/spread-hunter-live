@@ -150,6 +150,7 @@ class VenueSeam:
     inventory_fn: Optional[Callable] = None
     open_orders_fn: Optional[Callable] = None
     fleet_state_fn: Optional[Callable] = None
+    resting_order_ids_fn: Optional[Callable] = None
     emit_fn: Optional[Callable] = None
 
 
@@ -245,6 +246,39 @@ def run(
     return once_results if once else last_cycle
 
 
+def _still_resting(seam: VenueSeam, to_cancel: list[dict]) -> list[str]:
+    """Which of `to_cancel` the venue still shows resting, conservatively.
+
+    `cancel_fn` returns how many orders it actually cancelled, and a short count
+    has two very different causes. Either the order is genuinely still resting
+    (cancel rejected, the venue is degraded) -- submitting a replacement on top
+    of it double-quotes the token and can breach MAX_TOTAL_USD -- or the order
+    was already gone (filled or cancelled between planning and cancelling), in
+    which case nothing rests and the replacement is safe.
+
+    Treating both as "still resting" parks the market in ERROR for a cycle every
+    time a quote fills at the wrong moment, which on a fast rotation is often.
+    So ask the venue.
+
+    Unverifiable means unsafe: with no `resting_order_ids_fn`, or a read that
+    fails, every order is reported as still resting so the caller aborts. The
+    row status is deliberately left alone -- an order that vanished may have
+    FILLED, and reconcile is what attributes that, not this check.
+    """
+    ids = [str(o.get("order_id") or o.get("id") or "") for o in to_cancel]
+    if seam.resting_order_ids_fn is None:
+        return [i for i in ids if i]
+    try:
+        resting = seam.resting_order_ids_fn(seam.client)
+    except Exception as e:
+        log.warning("resting-order read failed: %s: %s", type(e).__name__, e)
+        return [i for i in ids if i]
+    if resting is None:
+        return [i for i in ids if i]
+    resting = {str(r) for r in resting}
+    return [i for i in ids if i and i in resting]
+
+
 def _visit_one(
     seam: VenueSeam,
     spec,
@@ -305,9 +339,12 @@ def _visit_one(
         if to_cancel:
             cancelled = seam.cancel_fn(seam.client, seam.registry, to_cancel)
             if cancelled < len(to_cancel):
-                raise RuntimeError(
-                    f"cancel failed: {cancelled}/{len(to_cancel)} cancelled; aborting replacement submission"
-                )
+                still_resting = _still_resting(seam, to_cancel)
+                if still_resting:
+                    raise RuntimeError(
+                        f"cancel failed: {len(still_resting)}/{len(to_cancel)} still "
+                        f"resting; aborting replacement submission"
+                    )
         if to_submit:
             submitted = seam.submit_fn(seam.client, seam.registry, market, to_submit, cfg)
     except Exception as e:
@@ -575,6 +612,28 @@ def _cancel_orders(client, registry, orders) -> int:
     return cancelled
 
 
+def _venue_resting_order_ids(client) -> Optional[set[str]]:
+    """Venue order ids currently resting, or None when the venue cannot say.
+
+    Returning None rather than an empty set on failure is the whole point: an
+    unreachable venue must not read as "nothing is resting", which would let a
+    replacement go out on top of a live order. Mirrors `venue.open_notional`,
+    which refuses the same way for the MAX_TOTAL_USD cap.
+    """
+    try:
+        orders = client.get_open_orders() or []
+    except Exception as e:
+        log.warning("get_open_orders failed: %s: %s", type(e).__name__, e)
+        return None
+    out: set[str] = set()
+    for o in orders:
+        oid = (o.get("id") or o.get("orderID") or o.get("order_id")
+               if isinstance(o, dict) else getattr(o, "id", None))
+        if oid:
+            out.add(str(oid))
+    return out
+
+
 def _make_sweep_fn(funder: Optional[str], db_path: Path, registry):
     """Sweep the account and log a float mark, without failing the loop."""
     def sweep_fn() -> None:
@@ -707,6 +766,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         inventory_fn=_make_inventory_fn(registry, db_path),
         open_orders_fn=_make_open_orders_fn(registry),
         fleet_state_fn=lambda r: _fleet_state(r, cfg),
+        resting_order_ids_fn=_venue_resting_order_ids,
         emit_fn=partial(_emit_cycle_event, db_path=db_path),
     )
     results = run(

@@ -1379,6 +1379,14 @@ def test_app_js_does_not_fabricate_sequential_gate_flow():
     assert 'advanced to next stage' not in app_js
 
 
+def test_app_js_suppresses_an_eligible_card_already_shown_as_quoting():
+    """A market quoting on the venue must appear once, not twice."""
+    app_js = _read_static("app.js")
+    assert 'renderedCids' in app_js
+    assert 'el.cid || el.condition_id' in app_js
+    assert 'renderedCids.has(cid)' in app_js
+
+
 def test_app_js_preserves_kanban_scroll_across_renders():
     """A poll must not yank a scrolled operator back to the first stage."""
     app_js = _read_static("app.js")

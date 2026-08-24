@@ -938,6 +938,10 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
 
     def _row(r: dict) -> dict:
         return {
+            # The dashboard suppresses an eligible runner-up that is already
+            # shown as quoting, and it matches on this id. Without it every
+            # picked market rendered twice in the passed column.
+            "cid": r.get("cid") or "",
             "title": r["title"], "source": r["source"],
             "income": r.get("est_income"), "capital": r.get("est_capital"),
             "ret_day_pct": r.get("return_pct_day"),

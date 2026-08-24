@@ -112,6 +112,23 @@ def test_funnel_carries_every_gate_bar(tmp_path):
     assert f["max_pair_cost"] == 0.995
 
 
+def test_funnel_passes_the_condition_id_through_to_the_final_rows(tmp_path):
+    """The id the dashboard dedupes on survives the funnel unchanged."""
+    pipeline = _write(tmp_path / "pipeline.json", {
+        "counts": {"funded": 1, "spread_universe": 0, "eligible": 1},
+        "rejections": [],
+        "final": [{"cid": "0xabc", "title": "Tigers vs Pirates"}],
+        "picked": [{"cid": "0xabc", "title": "Tigers vs Pirates"}],
+    })
+
+    f = _funnel_from_pipeline({}, pipeline_path=pipeline,
+                              markets_path=tmp_path / "missing.json")
+
+    assert f is not None
+    assert f["final"][0]["cid"] == "0xabc"
+    assert f["picked"][0]["cid"] == "0xabc"
+
+
 def test_funnel_from_pipeline_returns_none_when_absent(tmp_path):
     assert _funnel_from_pipeline({}, pipeline_path=tmp_path / "missing.json") is None
 

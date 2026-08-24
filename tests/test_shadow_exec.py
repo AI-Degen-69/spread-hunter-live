@@ -129,3 +129,33 @@ def test_mid_loop_failure_cancels_all_created_rows(registry):
 
     # No rows should remain in active status (they should all be cancelled)
     assert reg.get_active_orders() == []
+
+
+def test_oserror_on_second_leg_cancels_first_and_propagates(registry):
+    from unittest.mock import patch
+    from core_brain.shadow_exec import ensure_shadow_tables, record_submit
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+
+    original_write_queue_ahead = None
+    call_count = [0]  # Use list to allow modification in nested function
+
+    def mock_write_queue_ahead(db_path, local_id, queue_ahead):
+        call_count[0] += 1
+        if call_count[0] == 2:  # Fail on second leg
+            raise OSError("Simulated system error in write_queue_ahead")
+        # Call original for first leg
+        return original_write_queue_ahead(db_path, local_id, queue_ahead)
+
+    import core_brain.shadow_exec
+    original_write_queue_ahead = core_brain.shadow_exec.write_queue_ahead
+
+    # OSError from write_queue_ahead should propagate and trigger cancellation
+    with patch("core_brain.shadow_exec.write_queue_ahead", side_effect=mock_write_queue_ahead):
+        with pytest.raises(OSError, match="Simulated system error"):
+            record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                          db_path=db, book_fn=_books)
+
+    # No rows should remain in active status (first order should be cancelled)
+    assert reg.get_active_orders() == []

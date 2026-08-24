@@ -12,6 +12,8 @@ store before any of these functions can be reached.
 """
 from __future__ import annotations
 
+import logging
+import sqlite3
 import time
 import uuid
 from contextlib import closing
@@ -22,6 +24,8 @@ from core_brain.order_registry import (
     OrderRecord, OrderRegistry, get_connection,
 )
 from core_brain.shadow_fills import queue_ahead_at
+
+_log = logging.getLogger(__name__)
 
 SHADOW_ORDER_PREFIX = "shadow-"
 SHADOW_TRADE_PREFIX = "shadow-"
@@ -133,13 +137,13 @@ def record_submit(
                 book = {"bids": {round(float(i.price), 4): float(i.size)}}
             write_queue_ahead(db_path, local_id, queue_ahead_at(book, i.price))
             placed += 1
-    except (OSError, ValueError):
-        # Book fetch or other expected failures pass through without cancellation.
-        raise
     except Exception:
-        # Any unexpected exception mid-loop: cancel all created orders and re-raise.
+        # Any exception mid-loop: cancel all created orders and re-raise.
         for local_id in created_local_ids:
-            registry.update_order_status(local_id, status="cancelled", last_polled_ts=now_ms)
+            try:
+                registry.update_order_status(local_id, status="cancelled", last_polled_ts=now_ms)
+            except (KeyError, sqlite3.Error) as e:
+                _log.exception(f"Failed to cancel order {local_id}: {e}")
         raise
 
     return placed

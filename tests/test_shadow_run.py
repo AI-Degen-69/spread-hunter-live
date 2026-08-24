@@ -169,18 +169,45 @@ class TestRunShadow:
         assert recorded.size == 2
         assert recorded.condition_id == "0x0"
 
-    def test_the_client_is_the_denying_proxy_by_default(self, tmp_path):
+    def test_the_client_is_the_denying_proxy_by_default(self, tmp_path,
+                                                         monkeypatch):
         """No injected client means the real one -- which cannot sign."""
+        import core_brain.shadow_guard as sg
         from core_brain.shadow_guard import ReadOnlyVenue
         from core_brain.shadow_run import build_shadow_seam
 
+        monkeypatch.setattr(
+            sg, "_build_unauthenticated_client", lambda host: object())
+
         seam = build_shadow_seam(
             db_path=tmp_path / "shadow.db",
-            client_fn=lambda: ReadOnlyVenue(object()),
             intents_sink=[],
         )
 
         assert isinstance(seam.client, ReadOnlyVenue)
+
+    def test_an_injected_raw_client_is_wrapped_in_the_denying_proxy(
+            self, tmp_path):
+        """client_fn is an injection seam, not a way to hand shadow mode a
+        raw signer. Whatever arrives unwrapped leaves through the proxy, so a
+        future wiring change cannot put a signing-capable object on the seam.
+        """
+        from core_brain.shadow_guard import ReadOnlyVenue, ShadowSafetyViolation
+        from core_brain.shadow_run import build_shadow_seam
+
+        class RawClient:
+            def post_order(self, *a, **k):
+                return {"orderID": "should-never-happen"}
+
+        seam = build_shadow_seam(
+            db_path=tmp_path / "shadow.db",
+            client_fn=lambda: RawClient(),
+            intents_sink=[],
+        )
+
+        assert isinstance(seam.client, ReadOnlyVenue)
+        with pytest.raises(ShadowSafetyViolation, match="post_order"):
+            seam.client.post_order({"price": 0.48})
 
     def test_live_caps_are_used_unchanged(self, tmp_path):
         """Same config as live, or the rehearsal rehearses something we do not ship."""

@@ -47,18 +47,15 @@ the change, and a **How to verify** block written for the operator. Report the o
 the impression. Rules and examples: [docs/agents/verifying.md](docs/agents/verifying.md).
 
 ## Pushing and merging
-
-Pushes and merges reach GitHub and cannot be undone from here. These four rules are
-here, rather than only in the linked file, because reading that file *partway* is how
-they get missed. Full rules: [docs/agents/git-workflow.md](docs/agents/git-workflow.md).
+You are managing repo actions and work with the remote git hub repo. Keep organized work and branch names. use best convention globally that supports clarity ease of use understanding and harmony with coderabbit ai reviewer.
+Full rules: [docs/agents/git-workflow.md](docs/agents/git-workflow.md).
 
 1. **One push per review round.** Batch every accepted fix into one commit and push
    once. Each push starts its own incremental review.
 2. **One summary comment per round** — what you changed, what you declined, why. The
    `@coderabbitai` handle must not appear in it. Post `@coderabbitai resolve` as a
    separate comment. Never ask for a review; they fire on their own.
-3. **A fourth automatic review means stop, not grind.** Decline the rest in the summary
-   and say so.
+3. **Stop pushing after the 3rd round of fix** upon getting a 4th review conclude wether can be merged or is searious blocker like MAJOR or HIGH or is touching core critical files that must be addressed. LESS than HIGH severity can be skipped when reviewd 3 times already. 
 4. **Read the full diff and check the stack before merging.** A stacked merge can carry
    another PR onto `main` with it. Anything touching order sizing, fill attribution,
    risk limits, the merge path or live execution waits for operator sign-off, however
@@ -67,8 +64,7 @@ they get missed. Full rules: [docs/agents/git-workflow.md](docs/agents/git-workf
 A `PreToolUse` hook (`scripts/hooks/git_workflow_guard.py`) puts these rules at the
 command. It **reminds** on rule 1, printing the round discipline before a push, and
 **blocks** on rules 3 and 4: a push once the PR has had three automatic reviews, and a
-merge of any PR touching `core_brain/`, `scoring/` or `dashboard/server.py` until the
-operator signs off. Record sign-off with
+merge of any PR touching `core_brain/`, `scoring/` or `dashboard/server.py`. Record sign-off with
 `python scripts/hooks/git_workflow_guard.py --approve <pr>`; it is bound to the head
 commit and lapses on the next push.
 

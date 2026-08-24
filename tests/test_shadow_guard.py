@@ -124,6 +124,13 @@ class _RecordingEnv(dict):
         self.read_keys.append(key)
         return super().get(key, default)
 
+    def __contains__(self, key):
+        # `if "POLY_KEY" in os.environ:` is a read too, and it reaches neither
+        # __getitem__ nor get. Without this, a builder could branch on a
+        # credential's presence while the recording said it read nothing.
+        self.read_keys.append(key)
+        return super().__contains__(key)
+
 
 def test_shadow_client_never_reads_a_credential(monkeypatch):
     """The structural guarantee, asserted rather than assumed.
@@ -223,16 +230,21 @@ def test_the_real_builder_reads_no_credential(monkeypatch):
 
     shadow_client()  # no build_fn: the real builder runs
 
-    forbidden = {
-        "POLY_PRIVATE_KEY", "POLY_KEY", "PRIVATE_KEY",
-        "POLY_API_KEY", "POLY_API_SECRET", "POLY_API_PASSPHRASE",
-    }
-    leaked = forbidden.intersection(env.read_keys)
-    assert not leaked, f"the real builder read credential env vars: {sorted(leaked)}"
-    assert captured["kwargs"].keys().isdisjoint(
-        {"key", "signature_type", "funder"}), (
-        f"the real builder passed credential-ish kwargs: "
-        f"{sorted(captured['kwargs'])}")
+    # Allowlists, not denylists. Naming the bad keys only catches the ones we
+    # thought of: a credential arriving as `creds`, `api_key` or `private_key`
+    # would walk past a list of three forbidden names. Naming what the builder
+    # is *allowed* to touch fails closed on anything new instead.
+    allowed_env = {"CLOB_HOST"}
+    unexpected = set(env.read_keys) - allowed_env
+    assert not unexpected, (
+        f"the real builder read env vars beyond {sorted(allowed_env)}: "
+        f"{sorted(unexpected)}")
+
+    allowed_kwargs = {"chain_id"}
+    extra = set(captured["kwargs"]) - allowed_kwargs
+    assert not extra, (
+        f"the real builder passed kwargs beyond {sorted(allowed_kwargs)}: "
+        f"{sorted(extra)}")
 
 
 # --- shadow store guard ------------------------------------------------------

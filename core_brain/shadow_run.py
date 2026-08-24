@@ -137,7 +137,8 @@ def build_shadow_seam(
     Identical to the live seam except at exactly two ports:
 
     - `client` comes from `shadow_guard.shadow_client` (no signer, denying
-      proxy) unless `client_fn` injects one.
+      proxy) unless `client_fn` injects one -- and an injected client is
+      wrapped in the same proxy, so the seam never holds a raw client.
     - `submit_fn`/`cancel_fn` are recorders: submit appends each decided intent
       (stamped with its condition id) to `intents_sink` and returns the count;
       cancel records nothing and returns 0. Milestone 2 gives them their full
@@ -171,7 +172,14 @@ def build_shadow_seam(
         init_db(db_path)
         registry = OrderRegistry(db_path=Path(db_path))
 
+    from core_brain.shadow_guard import ReadOnlyVenue
+
     client = client_fn() if client_fn else shadow_client()
+    # An injected client is an unwrapped object by definition -- tests hand in
+    # plain stubs. Whatever arrives leaves through the deny-by-default proxy,
+    # so no wiring path can put a raw signing-capable client on the seam.
+    if not isinstance(client, ReadOnlyVenue):
+        client = ReadOnlyVenue(client)
     decide = decide_fn or decide_quotes
 
     empty_book = {"bids": {}, "asks": {}}

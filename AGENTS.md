@@ -50,6 +50,11 @@ the impression. Rules and examples: [docs/agents/verifying.md](docs/agents/verif
 You are managing repo actions and work with the remote git hub repo. Keep organized work and branch names. use best convention globally that supports clarity ease of use understanding and harmony with coderabbit ai reviewer.
 Full rules: [docs/agents/git-workflow.md](docs/agents/git-workflow.md).
 
+Routine GitHub operations are **delegated to the agent** end to end (operator
+directive, 2026-08-24): commit, push, branch, PR, review rounds and merge are decided
+by the agent, which reports outcomes and escalates only genuine dilemmas. The
+sign-off gate in rule 4 still applies.
+
 1. **One push per review round.** Batch every accepted fix into one commit and push
    once. Each push starts its own incremental review.
 2. **One summary comment per round** — what you changed, what you declined, why. The

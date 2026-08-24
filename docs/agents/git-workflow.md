@@ -4,6 +4,16 @@ Repo: `AI-Degen-69/spread-hunter-live` (`origin`), default branch `main`. CodeRa
 reviews every pull request; the conventions below match its configuration, so its title
 check passes on the first try.
 
+## Delegation
+
+Operator directive (2026-08-24): the agent owns GitHub operations end to end --
+commits, pushes, branches, PRs, review rounds and merges -- deciding the actions
+itself and reporting what happened afterwards. It answers its own questions and
+escalates only genuine dilemmas. The sign-off gate below still applies: a PR
+touching order sizing, fill attribution, risk limits, the merge path or live
+execution waits for explicit operator sign-off before merging, however green
+the checks are.
+
 ## Tags
 
 One vocabulary, used for the PR title, the branch name and the commit type:

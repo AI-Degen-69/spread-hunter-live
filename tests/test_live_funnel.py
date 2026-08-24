@@ -55,6 +55,78 @@ def test_funnel_from_pipeline_reuses_screener_gate_names(tmp_path):
     assert f["graduated"][0]["fills"] == 2
     assert f["graduated"][0]["pnl"] == 0.5
     assert f["graduated"][1]["fills"] == 0
+    assert f["counts"]["funded"] == 999
+    assert "raw" in f
+    assert "final" in f
+    assert "picked" in f
+
+
+def test_funnel_carries_near_miss_counters(tmp_path):
+    """would_fund/traps reach the dashboard so the near-miss footer can render."""
+    pipeline = _write(tmp_path / "pipeline.json", {
+        "counts": {"funded": 4, "spread_universe": 0, "eligible": 1},
+        "rejections": [
+            {"cause": "volume", "n": 9, "would_fund": 3, "traps": 1, "examples": []},
+            {"cause": "horizon", "n": 2, "examples": []},
+        ],
+    })
+
+    f = _funnel_from_pipeline({}, pipeline_path=pipeline,
+                              markets_path=tmp_path / "missing.json")
+
+    assert f is not None
+    assert f["filters"][0]["would_fund"] == 3
+    assert f["filters"][0]["traps"] == 1
+    # A bucket the snapshot wrote without counters reads as zero, not missing.
+    assert f["filters"][1]["would_fund"] == 0
+    assert f["filters"][1]["traps"] == 0
+
+
+def test_funnel_carries_every_gate_bar(tmp_path):
+    """The spread, horizon, payout and pair-cost bars reach the dashboard.
+
+    The kanban hero blocks state the contract the screener gated on. Reading
+    them from the snapshot is what stops the panel claiming a stale pair-cost
+    cap after the config changes.
+    """
+    pipeline = _write(tmp_path / "pipeline.json", {
+        "counts": {"funded": 1, "spread_universe": 0, "eligible": 0},
+        "rejections": [],
+        "depth_gate_usd": 1000.0,
+        "volume_gate_usd": 250000.0,
+        "spread_gate": 0.06,
+        "horizon_gate_days": 30.0,
+        "reward_min_income_usd_day": 1.5,
+        "spread_min_income_usd_day": 0.0,
+        "max_pair_cost": 0.995,
+    })
+
+    f = _funnel_from_pipeline({}, pipeline_path=pipeline,
+                              markets_path=tmp_path / "missing.json")
+
+    assert f is not None
+    assert f["spread_gate"] == 0.06
+    assert f["horizon_gate_days"] == 30.0
+    assert f["reward_min_income_usd_day"] == 1.5
+    assert f["spread_min_income_usd_day"] == 0.0
+    assert f["max_pair_cost"] == 0.995
+
+
+def test_funnel_passes_the_condition_id_through_to_the_final_rows(tmp_path):
+    """The id the dashboard dedupes on survives the funnel unchanged."""
+    pipeline = _write(tmp_path / "pipeline.json", {
+        "counts": {"funded": 1, "spread_universe": 0, "eligible": 1},
+        "rejections": [],
+        "final": [{"cid": "0xabc", "title": "Tigers vs Pirates"}],
+        "picked": [{"cid": "0xabc", "title": "Tigers vs Pirates"}],
+    })
+
+    f = _funnel_from_pipeline({}, pipeline_path=pipeline,
+                              markets_path=tmp_path / "missing.json")
+
+    assert f is not None
+    assert f["final"][0]["cid"] == "0xabc"
+    assert f["picked"][0]["cid"] == "0xabc"
 
 
 def test_funnel_from_pipeline_returns_none_when_absent(tmp_path):

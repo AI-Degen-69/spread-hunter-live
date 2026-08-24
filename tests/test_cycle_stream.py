@@ -6,6 +6,7 @@ All tests use tmp_path; nothing ever touches live/run/.
 """
 from __future__ import annotations
 
+import builtins
 import json
 import sqlite3
 import threading
@@ -13,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from core_brain.cycle_stream import emit, read_ring
+from core_brain.cycle_stream import KEEP_LINES, emit, read_ring
 
 REQUIRED_FIELDS = {
     "ts", "service", "cycle", "phase", "action",
@@ -99,6 +100,42 @@ class TestRingFile:
         events = read_ring(ring_path=ring, tail=10)
         assert len(events) == 10
         assert [e["cycle"] for e in events] == list(range(41, 51))
+
+    def test_ring_is_not_reread_on_every_append(self, tmp_path, monkeypatch):
+        # The rotation check used to open and readlines() the whole ring on
+        # every single emit. On Windows that read-open costs ~20ms once the
+        # file has just been modified (Defender rescans it), so a 500-emit
+        # loop spent ten seconds inside open(). The line count is knowable
+        # without re-reading, so the read must be rare, not per-append.
+        ring = tmp_path / "cycle_events.jsonl"
+        reads: list[str] = []
+        real_open = builtins.open
+
+        def counting_open(file, mode="r", *args, **kwargs):
+            if str(file) == str(ring) and "r" in str(mode):
+                reads.append(str(file))
+            return real_open(file, mode, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", counting_open)
+        for i in range(1, 201):
+            emit(i, "reconciling", "reconcile_ok", service="query",
+                 ring_path=ring)
+        assert len(reads) <= 2, f"{len(reads)} full reads for 200 appends"
+
+    def test_rotation_still_fires_after_an_external_writer_appends(self, tmp_path):
+        # The fleet and screener append to the ring without importing
+        # core_brain, so the in-process line count can go stale. A size that
+        # does not match our own bookkeeping must fall back to a real read.
+        ring = tmp_path / "cycle_events.jsonl"
+        for i in range(1, 100):
+            emit(i, "reconciling", "reconcile_ok", service="query",
+                 ring_path=ring)
+        with open(ring, "a", encoding="utf-8") as fh:
+            for i in range(450):
+                fh.write(json.dumps({"cycle": 1000 + i}) + "\n")
+        emit(999, "reconciling", "reconcile_ok", service="query",
+             ring_path=ring)
+        assert len(_parse_lines(ring)) == KEEP_LINES
 
     def test_concurrent_appends(self, tmp_path):
         ring = tmp_path / "cycle_events.jsonl"

@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from core_brain.cycle_stream import emit, read_ring
+from core_brain.cycle_stream import close_intent_connections, emit, read_ring
 
 REQUIRED_FIELDS = {
     "ts", "service", "cycle", "phase", "action",
@@ -176,6 +176,44 @@ class TestCycleIntent:
              extra={"submitted": 1, "cancelled": 0}, ring_path=ring, db_path=db)
         rows = _query_intent(db, "SELECT submitted, cancelled FROM cycle_intent")
         assert rows[0] == (1, 0)
+
+    def test_one_connection_serves_many_intent_writes(self, tmp_path, monkeypatch):
+        """Connecting costs ~3ms, and emit() runs once per market visit.
+
+        The engine writes one registry for its whole life, so the connection
+        is opened once and kept, not rebuilt per decide event.
+        """
+        ring = tmp_path / "events.jsonl"
+        db = tmp_path / "live.db"
+        connects: list[str] = []
+        real_connect = sqlite3.connect
+
+        def counting_connect(target, *args, **kwargs):
+            connects.append(str(target))
+            return real_connect(target, *args, **kwargs)
+
+        monkeypatch.setattr(sqlite3, "connect", counting_connect)
+        for i in range(1, 51):
+            emit(i, "quoting", "decide", market_slug="m",
+                 ring_path=ring, db_path=db)
+
+        assert connects.count(str(db)) == 1,             f"{connects.count(str(db))} connections for 50 decide events"
+
+    def test_a_broken_connection_is_rebuilt_rather_than_poisoning_the_cache(
+            self, tmp_path):
+        """A cached handle must not turn one failure into a permanent one."""
+        ring = tmp_path / "events.jsonl"
+        db = tmp_path / "live.db"
+        emit(1, "quoting", "decide", market_slug="m",
+             ring_path=ring, db_path=db)
+
+        close_intent_connections()  # the handle the next emit would reuse
+
+        emit(2, "quoting", "decide", market_slug="m",
+             ring_path=ring, db_path=db)
+        cycles = [row[0] for row in
+                  _query_intent(db, "SELECT cycle FROM cycle_intent ORDER BY id")]
+        assert cycles == [1, 2]
 
     def test_cycle_intent_retention_200(self, tmp_path):
         ring = tmp_path / "events.jsonl"

@@ -121,6 +121,41 @@ class ShadowResult:
     skipped_stages: tuple = ()
 
 
+def _make_logging_emit(db_path) -> Callable[..., None]:
+    """`emit`, plus one INFO line per market visit.
+
+    A shadow run exists to be watched, and before this the only thing it wrote
+    to the terminal was the banner and, ten minutes later, the summary. Every
+    decision went to the ring file and the store, where reading it means
+    querying SQLite beside a running loop.
+
+    Only the `quoting/decide` event logs: that is the one event per market visit
+    that carries both the intent count and the rationale. Logging every phase
+    would bury the decisions in rotation bookkeeping. Telemetry is unchanged --
+    the wrapper calls `emit` first and adds to it, never in place of it.
+    """
+    from core_brain.cycle_stream import emit as _emit_cycle_event
+
+    def emit_fn(cycle, phase, action, **kw) -> None:
+        _emit_cycle_event(cycle, phase, action, db_path=db_path, **kw)
+
+        if phase != "quoting" or action != "decide":
+            return
+
+        extra = kw.get("extra") or {}
+        count = int(extra.get("intent_count", 0) or 0)
+        reason = (kw.get("reason") or "").strip()
+        log.info(
+            "cycle=%s %s intents=%d%s",
+            cycle,
+            kw.get("market_slug") or extra.get("condition_id") or "?",
+            count,
+            f" -- {reason}" if reason else "",
+        )
+
+    return emit_fn
+
+
 def build_shadow_seam(
     *,
     db_path,
@@ -153,9 +188,6 @@ def build_shadow_seam(
     empty books and says so in the log; the entrypoint wires the real book
     source. Degrade, do not stop.
     """
-    from functools import partial
-
-    from core_brain.cycle_stream import emit as _emit_cycle_event
     from core_brain.order_registry import OrderRegistry, init_db
     from core_brain.quotes import decide_quotes
     from core_brain.shadow_guard import (
@@ -221,7 +253,7 @@ def build_shadow_seam(
         sweep_fn=noop_sweep,
         inventory_fn=_make_inventory_fn(registry, Path(db_path)),
         open_orders_fn=_make_open_orders_fn(registry),
-        emit_fn=partial(_emit_cycle_event, db_path=db_path),
+        emit_fn=_make_logging_emit(db_path),
     )
 
 

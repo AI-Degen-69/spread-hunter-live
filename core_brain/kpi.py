@@ -738,7 +738,14 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # fall back to runtime market-event telemetry when the ranker hasn't written
     # a snapshot, or when serving a non-production db (a test/smoke db), where
     # the repo's snapshot would misrepresent that db's own telemetry.
-    if db_path is None or Path(db_path).resolve() == DEFAULT_DB_PATH.resolve():
+    from core_brain.shadow_run import DEFAULT_SHADOW_DB
+    resolved_db = Path(db_path).resolve() if db_path is not None else None
+    if (
+        resolved_db is None
+        or resolved_db == DEFAULT_DB_PATH.resolve()
+        or resolved_db == (REPO_ROOT / DEFAULT_SHADOW_DB).resolve()
+        or resolved_db.name == "shadow.db"
+    ):
         pipeline_funnel = _funnel_from_pipeline(by_mkt)
     else:
         pipeline_funnel = None

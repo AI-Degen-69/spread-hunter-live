@@ -83,6 +83,63 @@ class FakeMarket:
         self.neg_risk = False
 
 
+class FakeOrderRow:
+    def __init__(self, condition_id, status):
+        self.condition_id = condition_id
+        self.status = status
+
+
+class FakeRegistry:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def get_active_orders(self):
+        return list(self._rows)
+
+
+def _resolver(*cycles):
+    """A markets callable yielding one result per cycle; an Exception is raised."""
+    state = {"n": 0}
+
+    def resolve():
+        out = cycles[min(state["n"], len(cycles) - 1)]
+        state["n"] += 1
+        if isinstance(out, Exception):
+            raise out
+        return list(out)
+
+    return resolve
+
+
+def _drive_cycles(markets, cycles=2, registry=None):
+    """Run `cycles` rotations and return the condition ids visited, in order."""
+    visited: list[str] = []
+    slept = {"n": 0}
+
+    def fetch_market(cid):
+        visited.append(cid)
+        return FakeMarket(cid)
+
+    def sleep_fn(_s):
+        slept["n"] += 1
+        if slept["n"] >= cycles:
+            raise KeyboardInterrupt  # the loop's own hands-off stop path
+
+    run(
+        VenueSeam(
+            client=object(), registry=registry, fetch_market=fetch_market,
+            fetch_books=lambda host, token: {
+                "token_id": token, "best_bid": 0.59, "best_ask": 0.61,
+                "bids": {0.59: 100}, "asks": {0.61: 100}},
+            decide=lambda *a, **k: ([], "declined"),
+            submit_fn=lambda *a, **k: 0, cancel_fn=lambda *a, **k: 0,
+            reconcile_fn=lambda *a, **k: None, sweep_fn=lambda: None,
+        ),
+        interval=0.0, once=False, live=False, markets=markets, sleep_fn=sleep_fn,
+    )
+    return visited
+
+
 class TestRunLoop:
     def _run(self, live, intents, fetch_raises=False, once=True):
         calls = {"submitted": [], "cancelled": [], "reconciled": 0, "swept": 0}
@@ -196,6 +253,38 @@ class TestRunLoop:
         )
         assert [r.status for r in results] == ["ERROR", "ERROR"]
         assert calls["reconciled"] == 1
+
+    def test_universe_refreshes_between_cycles_when_markets_is_callable(self):
+        # The ranker rewrites runtime/markets.json every 10 minutes; a Trader
+        # that resolved its universe once at startup quotes a dead universe
+        # until an operator restarts it.
+        visited = _drive_cycles(_resolver([FakeMarket("0xa")], [FakeMarket("0xb")]))
+        assert visited == ["0xa", "0xb"]
+
+    def test_universe_falls_back_to_last_good_when_resolver_raises(self):
+        # A half-written or missing markets.json must never empty the universe.
+        visited = _drive_cycles(_resolver([FakeMarket("0xa")], RuntimeError("no feed")))
+        assert visited == ["0xa", "0xa"]
+
+    def test_dropped_market_with_open_orders_stays_in_rotation(self):
+        # Nothing else cancels orders on a market that leaves the universe, so
+        # dropping it from the rotation would strand the resting legs.
+        registry = FakeRegistry([FakeOrderRow("0xa", "open")])
+        visited = _drive_cycles(
+            _resolver([FakeMarket("0xa")], [FakeMarket("0xb")]), registry=registry)
+        assert visited[0] == "0xa"
+        assert sorted(visited[1:]) == ["0xa", "0xb"]
+
+    def test_dropped_market_without_open_orders_leaves_the_rotation(self):
+        registry = FakeRegistry([FakeOrderRow("0xa", "filled")])
+        visited = _drive_cycles(
+            _resolver([FakeMarket("0xa")], [FakeMarket("0xb")]), registry=registry)
+        assert visited == ["0xa", "0xb"]
+
+    def test_a_plain_list_of_markets_is_still_accepted(self):
+        # Regression guard: shadow_run and the tests above pass a resolved list.
+        visited = _drive_cycles([FakeMarket("0xa")])
+        assert visited == ["0xa", "0xa"]
 
     def test_fleet_state_is_injected_into_decide_cfg(self):
         seen = {}

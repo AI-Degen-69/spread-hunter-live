@@ -4,7 +4,7 @@ Paths are relative to this repo: the log lands in runtime/rerank.log, the cycle 
 lives in runtime/, and the filter writes runtime/markets.json for the Trader to adopt.
 The scoring rules it leans on live in scoring/.
 
-The Trader adopts runtime/markets.json every `rerank_interval_sec`, but
+The Trader re-reads runtime/markets.json at the top of every rotation, but
 nothing regenerates that file -- and the U6 universe is short-dated by
 construction, so every market in it resolves within a day. Left alone, the
 fleet re-reads the same file until its whole universe has settled and then
@@ -37,9 +37,9 @@ LOG = ROOT / "runtime" / "rerank.log"
 # Rotation of the ring is owned by the Query Polymarket process (Q3).
 RING_PATH = ROOT / "runtime" / "cycle_events.jsonl"
 
-# How often to regenerate runtime/markets.json. The fleet adopts the file within
-# a second of its mtime changing, so this is the whole "how fast do new
-# markets appear" budget. 3600 was the original: a universe that emptied at
+# How often to regenerate runtime/markets.json. The Trader adopts the rewritten
+# file on its next rotation (seconds), so this interval is the whole "how fast
+# do new markets appear" budget. 3600 was the original: a universe that emptied at
 # 09:58 left the fleet quoting nothing until the next hourly sweep found
 # nothing new. 600 (10 min) keeps the venue scoring (a full pass over ~200
 # candidates) from becoming a burden while cutting the worst-case wait from an

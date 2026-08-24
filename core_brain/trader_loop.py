@@ -153,16 +153,46 @@ class VenueSeam:
     emit_fn: Optional[Callable] = None
 
 
+def _retain_markets_with_open_orders(fresh: list, previous: list, registry) -> list:
+    """`fresh`, plus any dropped market that still has an order resting.
+
+    A market the ranker drops is no longer visited, so `plan_orders` never sees
+    its resting orders and nothing else cancels them -- `reconcile_orders`
+    reconciles state, it does not cancel on universe exit. Keeping it in the
+    rotation until it is flat is what stops a refresh stranding live orders.
+    """
+    if not previous or registry is None:
+        return fresh
+    fresh_cids = {_cid(s) for s in fresh}
+    dropped = [s for s in previous if _cid(s) not in fresh_cids]
+    if not dropped:
+        return fresh
+    try:
+        resting = {o.condition_id for o in registry.get_active_orders()
+                   if o.status == "open"}
+    except Exception as e:
+        # The registry read is advisory; a failure must not drop the refresh.
+        log.warning("open-order retention check failed: %s: %s", type(e).__name__, e)
+        return fresh
+    return fresh + [s for s in dropped if _cid(s) in resting]
+
+
 def run(
     seam: VenueSeam,
     *,
     interval: float = 1.0,
     once: bool = False,
     live: bool = True,
-    markets: Optional[list] = None,
+    markets: Optional[Any] = None,
     sleep_fn: Optional[Callable] = None,
 ) -> list[LiveFleetResult]:
     """Rotate over `markets`: reconcile, then decide+submit per market, then sweep.
+
+    `markets` is either a resolved list, used unchanged for the whole run, or a
+    zero-argument callable re-read at the top of every rotation. The ranker
+    rewrites `runtime/markets.json` every 10 minutes and the U6 universe is
+    short-dated, so a list resolved once at startup decays into markets that
+    have all resolved -- quoting nothing while the loop still looks healthy.
 
     All venue-touching behaviour comes off `seam`; only loop control stays on
     the signature. The three venue-touching steps that could kill the loop --
@@ -198,9 +228,22 @@ def run(
 
     once_results: list[LiveFleetResult] = []
     last_cycle: list[LiveFleetResult] = []
+    specs: list = [] if callable(markets) else list(markets or [])
     cycle = 0
     while True:
         cycle += 1
+        if callable(markets):
+            # A raise here -- absent, stale or half-written feed -- degrades to
+            # the previous cycle's universe. A transient read must never empty
+            # the rotation, same posture as fleet_state_fn below.
+            try:
+                specs = _retain_markets_with_open_orders(
+                    list(markets() or []), specs, seam.registry)
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                log.warning("market refresh failed, reusing %d markets: %s: %s",
+                            len(specs), type(e).__name__, e)
         # Fleet-wide aggregates (naked cost, committed capital, pooled posture)
         # are recomputed once per cycle and merged into the base config, so the
         # fleet-level gates inside decide_quotes see live numbers rather than
@@ -219,7 +262,7 @@ def run(
             log.warning("reconcile failed: %s: %s", type(e).__name__, e)
 
         cycle_results: list[LiveFleetResult] = []
-        for spec in list(markets or []):
+        for spec in specs:
             cycle_results.append(_visit_one(
                 seam=seam, spec=spec, live=live, cycle=cycle,
                 emit_fn=emit_fn,
@@ -654,7 +697,8 @@ def main(argv: Optional[list[str]] = None) -> int:
     except Exception as e:
         log.warning("live balance read failed, using config bankroll: %s", e)
 
-    specs = _market_specs(a.max_markets)
+    markets_fn = partial(_market_specs, a.max_markets)
+    specs = markets_fn()
     if not specs:
         log.warning("no graduated markets in runtime/markets.json; "
                     "run scripts/rank_markets.py first -- idling")
@@ -704,7 +748,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     results = run(
         seam,
-        interval=a.interval, once=a.once, live=a.live, markets=specs,
+        interval=a.interval, once=a.once, live=a.live, markets=markets_fn,
     )
     return 0 if results else 1
 

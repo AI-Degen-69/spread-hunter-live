@@ -315,6 +315,12 @@ def _default_fetch_market() -> Callable[[str], Any]:
     return _fetch_market
 
 
+def _default_fetch_books() -> Callable[[str, str], dict]:
+    """The live loop's real orderbook resolver (network)."""
+    from core_brain.markets import full_book
+    return full_book
+
+
 def _lookup_fetch_market(markets: list) -> Callable[[str], Any]:
     """Resolve a cid first against the session's own market objects.
 
@@ -328,7 +334,7 @@ def _lookup_fetch_market(markets: list) -> Callable[[str], Any]:
 
     def fetch(cid: str):
         m = by_cid.get(cid)
-        return m if m is not None else _fetch_market(cid)
+        return m if (m is not None and hasattr(m, "up_token")) else _fetch_market(cid)
 
     return fetch
 
@@ -389,7 +395,7 @@ def main(
         ),
         client_fn=client_fn,
         decide_fn=decide_fn,
-        fetch_books=fetch_books,
+        fetch_books=fetch_books or _default_fetch_books(),
         interval=a.interval,
         funder=a.funder,
     )

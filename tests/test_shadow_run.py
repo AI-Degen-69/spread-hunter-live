@@ -230,12 +230,16 @@ class TestRunShadow:
         assert seen["max_order_usd"] == MAX_ORDER_USD
         assert seen["max_total_usd"] == MAX_TOTAL_USD
 
-    def test_reconcile_and_sweep_are_skipped_not_silently_passed(self, tmp_path):
-        """They reconcile against venue positions a shadow run does not have.
+    def test_reconcile_is_skipped_not_silently_passed(self, tmp_path):
+        """Reconcile compares against venue positions a shadow run does not
+        have, so it stays a no-op and the result must say so rather than
+        reporting it as having run clean.
 
-        Milestone 6's loop-health report must be able to say these were
-        deliberately skipped rather than that they ran clean, so the result
-        records it.
+        `sweep` is deliberately NOT asserted here any more: `run_shadow` now
+        wires `shadow_sweep`, which runs the single-buy pairs pass against
+        the shadow store every rotation (see `TestPairsSweep` below).
+        Reporting a stage that ran as "skipped" would be the same lie in the
+        other direction.
         """
         from core_brain.shadow_run import run_shadow
 
@@ -244,8 +248,98 @@ class TestRunShadow:
             markets_fn=self._markets(), client_fn=lambda: object(),
         )
 
-        assert "reconcile" in result.skipped_stages
-        assert "sweep" in result.skipped_stages
+        assert result.skipped_stages == ("reconcile",)
+
+
+class TestPairsSweep:
+    """`shadow_sweep`: the single-buy pairs pass, wired to run once per
+    rotation via `sweep_fn` -- the same seam port `trader_loop.run` already
+    calls every cycle, previously a no-op in shadow mode.
+    """
+
+    def _seed_single_buy(self, db_path) -> None:
+        """A naked pair in the shadow store: tok-up filled 20 at 0.47,
+        tok-dn still resting -- the exact fixture the unit test in
+        `tests/test_shadow_exec.py` uses, seeded here directly against the
+        store rather than through a market visit.
+        """
+        from core_brain.order_registry import OrderRegistry, init_db
+        from core_brain.quotes import QuoteIntent
+        from core_brain.shadow_exec import (
+            ensure_shadow_tables, record_submit, settle_market,
+        )
+        from core_brain.config import load
+
+        init_db(db_path)
+        reg = OrderRegistry(db_path=db_path)
+        ensure_shadow_tables(db_path)
+        intents = [
+            QuoteIntent(side="UP", token_id="tok-up", price=0.47, size=20,
+                       mid=0.5, edge_vs_mid=0.0),
+            QuoteIntent(side="DOWN", token_id="tok-dn", price=0.51, size=20,
+                       mid=0.5, edge_vs_mid=0.0),
+        ]
+        record_submit(object(), reg, FakeMarket("0xabc"), intents, load(),
+                      db_path=db_path, book_fn=lambda h, t: {"bids": {}})
+        settle_market(reg, FakeMarket("0xabc"), db_path=db_path, seen=set(),
+                      traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
+
+    def test_a_naked_pair_is_completed_by_the_sweep(self, tmp_path):
+        """A single-buy pair seeded before the run is completed by the pairs
+        pass `shadow_sweep` runs each rotation -- not by the quoting loop,
+        which this run starves of intents (empty market list, so nothing is
+        visited) to isolate the sweep as the only thing that could act.
+        """
+        from core_brain.order_registry import inventory_from_registry
+        from core_brain.shadow_run import run_shadow
+
+        db = tmp_path / "shadow.db"
+        self._seed_single_buy(db)
+
+        # `single_buy_saver._book_levels` wants bids/asks as a LIST of
+        # {"price", "size"} levels, not the price-keyed dict shape
+        # `record_submit`'s own book reads use.
+        def book_fn(_clob_host, token_id):
+            return {"token_id": token_id,
+                    "bids": [{"price": 0.50, "size": 500.0}],
+                    "asks": [{"price": 0.51, "size": 500.0}]}
+
+        run_shadow(
+            minutes=0.0, db_path=db,
+            markets_fn=lambda max_markets=None: [],
+            client_fn=lambda: object(),
+            fetch_books=book_fn,
+        )
+
+        inv = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
+        assert inv.up_shares == pytest.approx(20.0)
+        assert inv.down_shares == pytest.approx(20.0)
+
+    def test_the_sweep_logs_the_completion(self, tmp_path, caplog):
+        """`shadow_sweep` logs every non-hold/balanced outcome, mirroring the
+        production U35 pass so an operator watching the run sees it act.
+        """
+        import logging
+
+        from core_brain.shadow_run import run_shadow
+
+        db = tmp_path / "shadow.db"
+        self._seed_single_buy(db)
+
+        def book_fn(_clob_host, token_id):
+            return {"token_id": token_id,
+                    "bids": [{"price": 0.50, "size": 500.0}],
+                    "asks": [{"price": 0.51, "size": 500.0}]}
+
+        with caplog.at_level(logging.INFO, logger="shadow_run"):
+            run_shadow(
+                minutes=0.0, db_path=db,
+                markets_fn=lambda max_markets=None: [],
+                client_fn=lambda: object(),
+                fetch_books=book_fn,
+            )
+
+        assert any("completed" in r.message for r in caplog.records)
 
 
 class TestSettleWiring:

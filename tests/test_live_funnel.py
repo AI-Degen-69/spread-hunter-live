@@ -157,3 +157,46 @@ def test_funnel_from_pipeline_defaults_to_repo_run_dir(monkeypatch, tmp_path):
     assert f["raw_count"] == 15
     assert [g["cause"] for g in f["filters"]] == ["volume"]
     assert f["graduated"][0]["condition_id"] == "0x1"
+
+
+def test_report_funnel_allowed_for_default_shadow_db(monkeypatch, tmp_path):
+    """The default shadow database path resolves to pipeline snapshot funnel."""
+    import core_brain.kpi as kpi_mod
+    from core_brain.order_registry import init_db
+
+    shadow_db = tmp_path / "data" / "shadow.db"
+    shadow_db.parent.mkdir(parents=True, exist_ok=True)
+    init_db(shadow_db)
+
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    _write(runtime_dir / "pipeline.json", {
+        "counts": {"funded": 10, "spread_universe": 5, "eligible": 2},
+        "rejections": [{"cause": "volume", "n": 1, "examples": []}],
+    })
+    _write(runtime_dir / "markets.json", [{"cid": "0x1", "slug": "m", "title": "T"}])
+    monkeypatch.setattr(kpi_mod, "REPO_ROOT", tmp_path)
+
+    rep = kpi_mod.report(db_path=shadow_db)
+    assert rep["funnel"]["source"] == "screener"
+
+
+def test_report_funnel_excluded_for_custom_db_path(monkeypatch, tmp_path):
+    """Custom databases (e.g. isolated test or custom shadow db) fall back to runtime telemetry."""
+    import core_brain.kpi as kpi_mod
+    from core_brain.order_registry import init_db
+
+    custom_db = tmp_path / "custom_test" / "shadow.db"
+    custom_db.parent.mkdir(parents=True, exist_ok=True)
+    init_db(custom_db)
+
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    _write(runtime_dir / "pipeline.json", {
+        "counts": {"funded": 10, "spread_universe": 5, "eligible": 2},
+        "rejections": [{"cause": "volume", "n": 1, "examples": []}],
+    })
+    monkeypatch.setattr(kpi_mod, "REPO_ROOT", tmp_path)
+
+    rep = kpi_mod.report(db_path=custom_db)
+    assert rep["funnel"]["source"] == "runtime"

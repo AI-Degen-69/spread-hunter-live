@@ -290,8 +290,9 @@ class TestRunLoop:
         from unittest.mock import MagicMock
 
         registry = MagicMock()
-        o_dropped = MagicMock(condition_id="0xdropped", status="open", token_id="tok-up", price=0.55, order_id="v_drop", id="row_drop", side="BUY")
-        registry.get_active_orders.return_value = [o_dropped]
+        o_dropped_open = MagicMock(condition_id="0xdropped", status="open", token_id="tok-up", price=0.55, order_id="v_drop_open", id="row_drop_1", side="BUY")
+        o_dropped_partial = MagicMock(condition_id="0xdropped", status="partial", token_id="tok-dn", price=0.45, order_id="v_drop_partial", id="row_drop_2", side="BUY")
+        registry.get_active_orders.return_value = [o_dropped_open, o_dropped_partial]
 
         cancelled_calls = []
         def fake_cancel(client, reg, orders):
@@ -317,5 +318,100 @@ class TestRunLoop:
         )
 
         assert len(cancelled_calls) == 1
-        assert cancelled_calls[0][0]["order_id"] == "v_drop"
+        order_ids = {o["order_id"] for o in cancelled_calls[0]}
+        assert order_ids == {"v_drop_open", "v_drop_partial"}
         assert any(r.condition_id == "0xdropped" and r.why == "dropped_market_cancelled" for r in results)
+
+    def test_markets_fn_error_retains_last_successful_markets(self):
+        from unittest.mock import MagicMock
+
+        call_count = [0]
+        m_dynamic = FakeMarket("0xdynamic")
+
+        def failing_market_supplier():
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return [m_dynamic]
+            raise RuntimeError("API fetch error")
+
+        visited = []
+        def fake_fetch_market(cid):
+            visited.append(cid)
+            return FakeMarket(cid)
+
+        registry = MagicMock()
+        o_dynamic = MagicMock(condition_id="0xdynamic", status="open", token_id="tok-up", price=0.55, order_id="v_dyn", id="row_dyn", side="BUY")
+        registry.get_active_orders.return_value = [o_dynamic]
+
+        cancelled_calls = []
+        def fake_cancel(client, reg, orders):
+            cancelled_calls.append(orders)
+            return len(orders)
+
+        seam = VenueSeam(
+            client=object(),
+            registry=registry,
+            fetch_market=fake_fetch_market,
+            fetch_books=lambda h, t: {"token_id": t, "bids": {}, "asks": {}},
+            decide=lambda *a: ([], "declined"),
+            submit_fn=lambda *a, **k: 0,
+            cancel_fn=fake_cancel,
+            reconcile_fn=lambda *a, **k: None,
+            sweep_fn=lambda: None,
+        )
+
+        cycles = [0]
+        def sleep_stop(s):
+            cycles[0] += 1
+            if cycles[0] >= 2:
+                raise KeyboardInterrupt()
+
+        run(
+            seam, interval=0.0, once=False, live=True,
+            markets=[FakeMarket("0xinitial")],
+            markets_fn=failing_market_supplier,
+            sleep_fn=sleep_stop,
+        )
+
+        # 0xdynamic visited in both cycles; because it remained current in cycle 2, its order was never cancelled as dropped
+        assert visited == ["0xdynamic", "0xdynamic"]
+        assert cancelled_calls == []
+
+    def test_dropped_market_cancellation_isolates_errors(self):
+        from unittest.mock import MagicMock
+
+        registry = MagicMock()
+        o_drop1 = MagicMock(condition_id="0xdrop1", status="open", token_id="tok-up", price=0.55, order_id="v1", id="r1", side="BUY")
+        o_drop2 = MagicMock(condition_id="0xdrop2", status="open", token_id="tok-dn", price=0.45, order_id="v2", id="r2", side="BUY")
+        registry.get_active_orders.return_value = [o_drop1, o_drop2]
+
+        cancelled_cids = []
+        def fake_cancel(client, reg, orders):
+            cid = orders[0]["order_id"]
+            if cid == "v1":
+                raise RuntimeError("venue reject on drop1")
+            cancelled_cids.append(cid)
+            return len(orders)
+
+        seam = VenueSeam(
+            client=object(),
+            registry=registry,
+            fetch_market=lambda cid: FakeMarket(cid),
+            fetch_books=lambda h, t: {"token_id": t, "bids": {}, "asks": {}},
+            decide=lambda *a: ([], "declined"),
+            submit_fn=lambda *a, **k: 0,
+            cancel_fn=fake_cancel,
+            reconcile_fn=lambda *a, **k: None,
+            sweep_fn=lambda: None,
+        )
+
+        results = run(
+            seam, interval=0.0, once=True, live=True,
+            markets=[FakeMarket("0xactive")],
+            sleep_fn=lambda s: None,
+        )
+
+        # drop2 cancelled despite drop1 failing
+        assert cancelled_cids == ["v2"]
+        assert any(r.condition_id == "0xdrop1" and r.status == "ERROR" for r in results)
+        assert any(r.condition_id == "0xdrop2" and r.status == "DECLINED" for r in results)

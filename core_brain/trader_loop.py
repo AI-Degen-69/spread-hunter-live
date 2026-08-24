@@ -199,6 +199,7 @@ def run(
 
     once_results: list[LiveFleetResult] = []
     last_cycle: list[LiveFleetResult] = []
+    current_markets = list(markets or [])
     cycle = 0
     while True:
         cycle += 1
@@ -219,13 +220,11 @@ def run(
         except Exception as e:
             log.warning("reconcile failed: %s: %s", type(e).__name__, e)
 
-        current_markets = markets
         if markets_fn is not None:
             try:
                 current_markets = markets_fn()
             except Exception as e:
                 log.warning("markets_fn failed: %s: %s", type(e).__name__, e)
-                current_markets = markets
 
         cycle_results: list[LiveFleetResult] = []
         for spec in list(current_markets or []):
@@ -258,11 +257,19 @@ def run(
                         if o.condition_id == dropped_cid and getattr(o, "status", "") in ("open", "partial")
                     ]
                     if dropped_orders:
-                        cancelled = seam.cancel_fn(seam.client, seam.registry, dropped_orders)
-                        cycle_results.append(LiveFleetResult(
-                            status="DECLINED", condition_id=dropped_cid,
-                            why="dropped_market_cancelled", cancelled=cancelled,
-                        ))
+                        try:
+                            cancelled = seam.cancel_fn(seam.client, seam.registry, dropped_orders)
+                            cycle_results.append(LiveFleetResult(
+                                status="DECLINED", condition_id=dropped_cid,
+                                why="dropped_market_cancelled", cancelled=cancelled,
+                            ))
+                        except Exception as ce:
+                            log.warning("cancel dropped market %s failed: %s: %s", dropped_cid, type(ce).__name__, ce)
+                            cycle_results.append(LiveFleetResult(
+                                status="ERROR", condition_id=dropped_cid,
+                                why="dropped_market_cancel_failed",
+                                error=f"dropped_cancel: {type(ce).__name__}: {ce}",
+                            ))
             except Exception as e:
                 log.warning("cleanup of dropped markets failed: %s: %s", type(e).__name__, e)
 

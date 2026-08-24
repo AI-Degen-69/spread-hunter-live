@@ -317,10 +317,18 @@ class TestRunLoop:
             sleep_fn=lambda s: None,
         )
 
+        # Only the `open` leg is cancelled. The `partial` has already bought
+        # shares; cancelling it would strand them as a naked single buy that this
+        # loop has no exit path for.
         assert len(cancelled_calls) == 1
         order_ids = {o["order_id"] for o in cancelled_calls[0]}
-        assert order_ids == {"v_drop_open", "v_drop_partial"}
-        assert any(r.condition_id == "0xdropped" and r.why == "dropped_market_cancelled" for r in results)
+        assert order_ids == {"v_drop_open"}
+        assert any(r.condition_id == "0xdropped"
+                   and r.status == "CANCELLED"
+                   and r.why == "dropped_market_cancelled" for r in results)
+        assert any(r.condition_id == "0xdropped"
+                   and r.status == "WARNED"
+                   and r.why == "dropped_market_partial_retained" for r in results)
 
     def test_markets_fn_error_retains_last_successful_markets(self):
         from unittest.mock import MagicMock
@@ -414,4 +422,96 @@ class TestRunLoop:
         # drop2 cancelled despite drop1 failing
         assert cancelled_cids == ["v2"]
         assert any(r.condition_id == "0xdrop1" and r.status == "ERROR" for r in results)
-        assert any(r.condition_id == "0xdrop2" and r.status == "DECLINED" for r in results)
+        assert any(r.condition_id == "0xdrop2" and r.status == "CANCELLED" for r in results)
+
+    @staticmethod
+    def _cleanup_seam(registry, cancel_fn):
+        return VenueSeam(
+            client=object(),
+            registry=registry,
+            fetch_market=lambda cid: FakeMarket(cid),
+            fetch_books=lambda h, t: {"token_id": t, "bids": {}, "asks": {}},
+            decide=lambda *a: ([], "declined"),
+            submit_fn=lambda *a, **k: 0,
+            cancel_fn=cancel_fn,
+            reconcile_fn=lambda *a, **k: None,
+            sweep_fn=lambda: None,
+        )
+
+    def test_empty_markets_refresh_is_ignored_and_keeps_the_book(self):
+        """A ranker cycle that graduates nothing must not cancel the whole book.
+
+        `load_graduated_markets` raises on a missing, stale or malformed feed but
+        returns cleanly for a well-formed `[]`. Adopting that empties the active
+        universe, and every resting order then looks dropped.
+        """
+        from unittest.mock import MagicMock
+
+        registry = MagicMock()
+        o_live = MagicMock(condition_id="0xlive", status="open", token_id="tok-up",
+                           price=0.55, order_id="v_live", id="row_live", side="BUY")
+        registry.get_active_orders.return_value = [o_live]
+
+        cancelled_calls = []
+        def fake_cancel(client, reg, orders):
+            cancelled_calls.append(orders)
+            return len(orders)
+
+        visited = []
+        seam = self._cleanup_seam(registry, fake_cancel)
+        seam.fetch_market = lambda cid: (visited.append(cid) or FakeMarket(cid))
+
+        results = run(
+            seam, interval=0.0, once=True, live=True,
+            markets=[FakeMarket("0xlive")],
+            markets_fn=lambda: [],
+            sleep_fn=lambda s: None,
+        )
+
+        assert visited == ["0xlive"]
+        assert cancelled_calls == []
+        assert all(r.why != "dropped_market_cancelled" for r in results)
+
+    def test_pending_orders_on_a_dropped_market_are_left_to_reconcile(self):
+        """A pending row may have no venue id yet; orphan adoption owns it."""
+        from unittest.mock import MagicMock
+
+        registry = MagicMock()
+        o_pending = MagicMock(condition_id="0xdropped", status="pending",
+                              token_id="tok-up", price=0.55, order_id=None,
+                              id="row_pending", side="BUY")
+        registry.get_active_orders.return_value = [o_pending]
+
+        cancelled_calls = []
+        def fake_cancel(client, reg, orders):
+            cancelled_calls.append(orders)
+            return len(orders)
+
+        results = run(
+            self._cleanup_seam(registry, fake_cancel),
+            interval=0.0, once=True, live=True,
+            markets=[FakeMarket("0xactive")],
+            sleep_fn=lambda s: None,
+        )
+
+        assert cancelled_calls == []
+        assert all(r.condition_id != "0xdropped" for r in results)
+
+    def test_registry_read_failure_in_cleanup_surfaces_as_a_result(self):
+        """A cleanup that can no-op invisibly is worse than none."""
+        from unittest.mock import MagicMock
+
+        registry = MagicMock()
+        registry.get_active_orders.side_effect = RuntimeError("db locked")
+
+        results = run(
+            self._cleanup_seam(registry, lambda *a, **k: 0),
+            interval=0.0, once=True, live=True,
+            markets=[FakeMarket("0xactive")],
+            sleep_fn=lambda s: None,
+        )
+
+        err = [r for r in results if r.why == "dropped_market_cleanup_failed"]
+        assert len(err) == 1
+        assert err[0].status == "ERROR"
+        assert "db locked" in err[0].error

@@ -337,6 +337,7 @@ class TestMain:
                 markets_fn=lambda max_markets=None: [FakeMarket("0xabc")],
                 client_fn=lambda: object(),
                 decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([], "declined"),
+                fetch_books=_books,
             )
         text = caplog.text.lower()
         assert "shadow" in text
@@ -356,6 +357,39 @@ class TestMain:
             markets_fn=markets,
             client_fn=lambda: object(),
             decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([], "declined"),
+            fetch_books=_books,
         )
 
         assert rc == 0
+
+    def test_main_wires_the_real_book_source_when_none_is_injected(
+            self, tmp_path, monkeypatch):
+        """A rehearsal against empty books rehearses nothing.
+
+        `/book` is a public endpoint -- no key, no API credentials, and not on
+        the CLOB client the deny-by-default proxy guards -- so the entrypoint
+        reads it exactly as the live loop does. Unwired, every market decides
+        against `{"bids": {}, "asks": {}}` and declines with "no two-sided
+        book", which reads on the dashboard as a quiet venue rather than as a
+        seam nobody connected.
+        """
+        import core_brain.markets as markets_mod
+        from core_brain.shadow_run import main
+
+        calls = []
+
+        def fake_full_book(clob_host, token_id):
+            calls.append((clob_host, token_id))
+            return _books(clob_host, token_id)
+
+        monkeypatch.setattr(markets_mod, "full_book", fake_full_book)
+
+        main(
+            ["--minutes", "0", "--db", str(tmp_path / "shadow.db")],
+            markets_fn=lambda max_markets=None: [FakeMarket("0xabc")],
+            client_fn=lambda: object(),
+            decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([], "declined"),
+        )
+
+        assert {t for _, t in calls} == {"tok-up", "tok-dn"}
+        assert all(h.startswith("http") for h, _ in calls)

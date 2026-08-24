@@ -1642,6 +1642,41 @@ def test_start_bot_refusal_leaves_no_start_lock(monkeypatch, tmp_path):
     assert not (tmp_path / "runtime" / ".bot_start.lock").exists()
 
 
+@pytest.mark.skipif(NODE is None, reason="node not installed")
+def test_shadow_view_toggle_never_prompts_or_posts_a_start():
+    """The click itself is tested, not the words in the file.
+
+    The server refuses a shadow-view START, but the page must not offer it
+    either: a prompt that reads "this rests REAL maker bids" on a view that
+    cannot show them teaches the operator the wrong thing about what the page
+    is. Driven through the real handler in `app.js`, with the DOM stubbed --
+    the same click on a LIVE view still prompts and still POSTs, which is what
+    makes this fail if the guard is removed.
+    """
+    harness = Path(__file__).resolve().parent / "js" / "start_toggle_harness.js"
+    app_js = Path(__file__).resolve().parent.parent / "dashboard" / "static" / "app.js"
+
+    res = subprocess.run(
+        [NODE, str(harness), str(app_js)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout)
+
+    # Shadow view: refused on the page, before any control request.
+    assert out["shadow"]["prompts"] == 0
+    assert out["shadow"]["starts"] == 0
+    assert out["shadow"]["alerts"] == 1
+    assert "production registry" in out["shadow"]["alertMsg"]
+    assert "SHADOW" in out["badgeText"] and "shadow.db" in out["badgeText"]
+    assert "shadow" in out["badgeClass"]
+
+    # Live view: unchanged behaviour, so the assertions above are about the
+    # guard and not about a handler that stopped working.
+    assert out["live"]["prompts"] == 1
+    assert out["live"]["starts"] == 1
+
+
 def test_page_surfaces_the_active_database_mode():
     """The badge and its wiring ship with the page, not just in the payload."""
     assert "db-mode-badge" in _read_static("index.html")

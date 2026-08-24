@@ -1271,7 +1271,19 @@ async function pollStatus() {
 }
 
 /* ── Start ── */
-initKanbanCarousel();
-pollStatus();
-renderParameters();
-setInterval(pollStatus, POLL_MS);
+// Skipped only when this file is loaded as a CommonJS module, which is how the
+// test harness reaches the handlers. A browser has no `module`, so the page
+// bootstraps exactly as it always has -- and a harness never starts the poll
+// loop, the SSE reconnect timer or the carousel behind the handler it drives.
+if (typeof module === 'undefined' || !module.exports) {
+  initKanbanCarousel();
+  pollStatus();
+  renderParameters();
+  setInterval(pollStatus, POLL_MS);
+}
+
+// Node-only: lets tests reach the handlers. Browsers have no `module`, so this
+// is dead code in the page.
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { renderDbMode, renderServiceCards };
+}

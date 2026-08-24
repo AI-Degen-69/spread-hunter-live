@@ -317,6 +317,25 @@ def _default_markets_fn() -> Callable[..., list]:
     return _market_specs
 
 
+def _default_fetch_books() -> Callable[[str, str], dict]:
+    """The live loop's real book source: `GET {clob_host}/book`.
+
+    Public endpoint, no key and no API credentials, and it does not travel
+    through the CLOB client the deny-by-default proxy guards -- so wiring it
+    here spends nothing and loads nothing that could sign. Without it the
+    session decides every market against an empty book, which is a rehearsal of
+    a venue that does not exist.
+
+    `full_book` is imported per call so the entrypoint reads the module
+    attribute at call time rather than binding it at wiring time.
+    """
+    def fetch(clob_host: str, token_id: str) -> dict:
+        from core_brain.markets import full_book
+        return full_book(clob_host, token_id)
+
+    return fetch
+
+
 def _default_fetch_market() -> Callable[[str], Any]:
     """The live loop's real market resolver (network)."""
     from core_brain.trader_loop import _fetch_market
@@ -403,7 +422,7 @@ def main(
         ),
         client_fn=client_fn,
         decide_fn=decide_fn,
-        fetch_books=fetch_books,
+        fetch_books=fetch_books or _default_fetch_books(),
         interval=a.interval,
         funder=a.funder,
     )

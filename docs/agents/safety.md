@@ -57,9 +57,11 @@ while it does: the stack it launches always writes `data/orders.db`, so its orde
 be invisible on a page reading anything else.
 
 What a shadow view shows is the decision path -- scan state, decisions logged, skip and
-pass reasons, the cycle stream. Orders, fills, positions and PnL stay at zero, because a
-shadow run's submit is a recorder, not a registry write. That is the rehearsal working,
-not a broken panel.
+pass reasons, the cycle stream. Everything it holds is simulated rehearsal data: recorded
+intents, never venue executions. The order, fill, position and PnL panels read zero today
+because the shadow submit records intents in the session rather than writing registry
+rows. Read a zero there as "no execution happened", which is the truth, and never as a
+result.
 
 One caveat the badge cannot fix: the cycle-stream ring (`runtime/cycle_events.jsonl`) is
 one file for every process, so a shadow run's events land beside whatever a live run left

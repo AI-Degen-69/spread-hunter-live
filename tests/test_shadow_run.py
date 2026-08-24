@@ -284,6 +284,20 @@ class TestPairsSweep:
         settle_market(reg, FakeMarket("0xabc"), db_path=db_path, seen=set(),
                       traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
 
+    @staticmethod
+    def _canonical_book(_clob_host, token_id):
+        """`markets.parse_book`'s exact shape: bids/asks as PRICE-KEYED
+        DICTS. This is what `fetch_books` actually returns in production
+        (`_default_fetch_books` -> `markets.full_book` -> `markets.parse_book`)
+        -- never the list-of-levels shape `single_buy_saver._book_levels`
+        wants. `ShadowExecutionClient.get_order_book` is responsible for that
+        adaptation; a test fixture that hands over the already-adapted shape
+        would not exercise it.
+        """
+        return {"token_id": token_id, "bids": {0.50: 500.0},
+                "asks": {0.51: 500.0}, "best_bid": 0.50, "best_ask": 0.51,
+                "malformed": 0}
+
     def test_a_naked_pair_is_completed_by_the_sweep(self, tmp_path):
         """A single-buy pair seeded before the run is completed by the pairs
         pass `shadow_sweep` runs each rotation -- not by the quoting loop,
@@ -296,19 +310,11 @@ class TestPairsSweep:
         db = tmp_path / "shadow.db"
         self._seed_single_buy(db)
 
-        # `single_buy_saver._book_levels` wants bids/asks as a LIST of
-        # {"price", "size"} levels, not the price-keyed dict shape
-        # `record_submit`'s own book reads use.
-        def book_fn(_clob_host, token_id):
-            return {"token_id": token_id,
-                    "bids": [{"price": 0.50, "size": 500.0}],
-                    "asks": [{"price": 0.51, "size": 500.0}]}
-
         run_shadow(
             minutes=0.0, db_path=db,
             markets_fn=lambda max_markets=None: [],
             client_fn=lambda: object(),
-            fetch_books=book_fn,
+            fetch_books=self._canonical_book,
         )
 
         inv = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
@@ -326,20 +332,63 @@ class TestPairsSweep:
         db = tmp_path / "shadow.db"
         self._seed_single_buy(db)
 
-        def book_fn(_clob_host, token_id):
-            return {"token_id": token_id,
-                    "bids": [{"price": 0.50, "size": 500.0}],
-                    "asks": [{"price": 0.51, "size": 500.0}]}
-
         with caplog.at_level(logging.INFO, logger="shadow_run"):
             run_shadow(
                 minutes=0.0, db_path=db,
                 markets_fn=lambda max_markets=None: [],
                 client_fn=lambda: object(),
-                fetch_books=book_fn,
+                fetch_books=self._canonical_book,
             )
 
         assert any("completed" in r.message for r in caplog.records)
+
+    def test_one_fetch_books_serves_both_quoting_and_the_pairs_sweep(
+            self, tmp_path):
+        """The regression pin for the get_order_book book-shape bug.
+
+        ONE canonical `fetch_books` -- `markets.parse_book`'s exact shape --
+        drives BOTH consumers in a SINGLE run: `queue_ahead_at`, which reads
+        the canonical price-keyed dict as the quoting path rests a fresh
+        order, and `single_buy_saver._book_levels`, which reads a list of
+        levels, as the sweep completes a naked pair on the same tokens off
+        the same book source. The other two tests in this class isolate the
+        sweep with an empty market list -- rigorous for what they check, but
+        that isolation is also what would hide a shape conflict between the
+        two consumers, which is exactly what broke before this fix (see
+        Critical 1/2 in the task-5 review). Both must work off one
+        `fetch_books` in one run for this to mean anything.
+        """
+        from core_brain.order_registry import OrderRegistry, inventory_from_registry
+        from core_brain.quotes import QuoteIntent
+        from core_brain.shadow_run import run_shadow
+
+        db = tmp_path / "shadow.db"
+        self._seed_single_buy(db)
+
+        intent = QuoteIntent(side="UP", token_id="tok-up", price=0.48,
+                             size=2, mid=0.5, edge_vs_mid=0.02)
+
+        run_shadow(
+            minutes=0.0, db_path=db,
+            markets_fn=lambda max_markets=None: [FakeMarket("0x0")],
+            client_fn=lambda: object(),
+            decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([intent], ""),
+            fetch_books=self._canonical_book,
+        )
+
+        # queue_ahead_at consumed the canonical dict without error: the
+        # freshly-quoted market's intent rests.
+        reg = OrderRegistry(db_path=db)
+        fresh = [o for o in reg.get_active_orders()
+                if o.condition_id == "0x0" and o.token_id == "tok-up"]
+        assert fresh, "the quoting path never rested its intent"
+
+        # ShadowExecutionClient.get_order_book adapted the same canonical
+        # dict into levels single_buy_saver._book_levels can read: the
+        # pre-seeded naked pair on condition 0xabc was completed.
+        inv = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
+        assert inv.up_shares == pytest.approx(20.0)
+        assert inv.down_shares == pytest.approx(20.0)
 
 
 class TestSettleWiring:

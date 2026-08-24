@@ -335,19 +335,19 @@ def test_a_single_buy_is_completed_against_the_shadow_store(registry):
     settle_market(reg, FakeMarket(), db_path=db, seen=set(),
                   traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
 
-    # `single_buy_saver._book_levels` parses `bids`/`asks` as a LIST of
-    # {"price", "size"} levels (or objects with those attributes), not the
-    # price-keyed dict shape `record_submit`'s own book_fn uses -- the two
-    # book readers in this codebase disagree on shape, so the fixture must
-    # match the one the client under test actually feeds.
-    client = ShadowExecutionClient(
-        reg, db,
-        book_fn=lambda h, t: {
-            "token_id": t,
-            "bids": [{"price": 0.50, "size": 500.0}],
-            "asks": [{"price": 0.51, "size": 500.0}],
-        },
-    )
+    # `markets.parse_book`'s canonical shape -- bids/asks as PRICE-KEYED
+    # DICTS -- exactly what `book_fn` returns in production
+    # (`shadow_run._default_fetch_books` -> `markets.full_book` ->
+    # `markets.parse_book`). `ShadowExecutionClient.get_order_book` is the
+    # thing under test that adapts this into the list-of-levels shape
+    # `single_buy_saver._book_levels` wants; feeding the client the already-
+    # adapted shape here would test nothing about that adaptation.
+    def book_fn(_clob_host, token_id):
+        return {"token_id": token_id, "bids": {0.50: 500.0},
+                "asks": {0.51: 500.0}, "best_bid": 0.50, "best_ask": 0.51,
+                "malformed": 0}
+
+    client = ShadowExecutionClient(reg, db, book_fn=book_fn)
     results = auto_manage_pairs(
         client, reg, _cfg(), venue_positions=shadow_positions(reg, db),
     )
@@ -359,9 +359,79 @@ def test_a_single_buy_is_completed_against_the_shadow_store(registry):
     assert inv.up_shares == pytest.approx(20.0)
     assert inv.down_shares == pytest.approx(20.0)
 
-    down_order = next(r for r in reg.get_orders_by_pair(results[0]["pair_id"])
-                      if r.token_id == "tok-dn")
-    assert (down_order.order_id or "").startswith("shadow-")
+    # The completion writes a SECOND tok-dn row (status "filled"); the
+    # ORIGINAL resting tok-dn row from record_submit is still there too, now
+    # "cancelled", and was already `shadow-` labelled before the completion
+    # ever ran -- asserting against whichever row `next()` happens to return
+    # first (posted_ts ASC, so the original) would pass even if the new
+    # completion row's id were unlabelled. Select the completion row
+    # explicitly by its status.
+    completion_order = next(
+        r for r in reg.get_orders_by_pair(results[0]["pair_id"])
+        if r.token_id == "tok-dn" and r.status == "filled"
+    )
+    assert (completion_order.order_id or "").startswith("shadow-")
+
+    completion_fill = next(
+        f for f in reg.get_all_fills()
+        if f["order_uuid"] == completion_order.id
+    )
+    assert completion_fill["trade_id"].startswith("shadow-")
+
+
+def test_a_completion_lands_on_the_older_naked_pair_when_two_pairs_share_a_token(registry):
+    """Two pairs post rows on tok-dn, both currently naked; the completion
+    under test is for the OLDER one.
+
+    A version of this shim that resolves condition_id/pair_id by "the most
+    recent order row on this token" (an earlier version of
+    `ShadowExecutionClient.create_and_post_market_order` did exactly this)
+    would attach the completion to the NEWER pair instead -- record_submit
+    mints a fresh pair_id every call, so a market re-quoted across rotations
+    always has one. That leaves the older pair naked, and the pairs pass buys
+    it again next cycle: a repeat-buy loop that does not stop until the fill
+    ages out of pairs_exit_window_sec.
+    """
+    from py_clob_client_v2.clob_types import MarketOrderArgsV2
+
+    from core_brain.shadow_exec import (
+        ShadowExecutionClient, ensure_shadow_tables, record_submit,
+        settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+
+    # Older pair: tok-up filled 20, tok-dn naked (open, unfilled).
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
+    older_pair_id = next(
+        r.pair_id for r in reg.get_active_orders() if r.token_id == "tok-dn")
+
+    # Newer pair on the SAME tokens, posted strictly after: also tok-up
+    # filled 20, tok-dn naked. A posted_ts-only lookup on tok-dn finds this
+    # one first.
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
+    newer_pair_id = next(
+        r.pair_id for r in reg.get_active_orders()
+        if r.token_id == "tok-dn" and r.pair_id != older_pair_id
+    )
+    assert newer_pair_id != older_pair_id
+
+    client = ShadowExecutionClient(reg, db, book_fn=lambda h, t: {})
+    resp = client.create_and_post_market_order(
+        MarketOrderArgsV2(token_id="tok-dn", amount=10.2, side="BUY",
+                          price=0.51))
+
+    completion_order = reg.get_order(resp["orderID"])
+    assert completion_order is not None
+    assert completion_order.pair_id == older_pair_id
+    assert completion_order.pair_id != newer_pair_id
 
 
 def test_the_shim_refuses_a_method_it_does_not_implement(registry):

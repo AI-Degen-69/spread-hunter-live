@@ -5,7 +5,7 @@ paths:
 ---
 # Python Security
 
-> This file extends [common/security.md](../common/security.md) with Python specific content.
+> This file extends [common/security.md](common-security.md) with Python-specific content.
 
 ## Secret Management
 
@@ -15,16 +15,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-api_key = os.environ["OPENAI_API_KEY"]  # Raises KeyError if missing
+api_key = os.environ["POLYMARKET_API_KEY"]  # Raises KeyError if missing
 ```
 
 ## Security Scanning
 
 - Use **bandit** for static security analysis:
   ```bash
-  bandit -r src/
+  bandit -r core_brain/
   ```
-
-## Reference
-
-See skill: `django-security` for Django-specific security guidelines (if applicable).

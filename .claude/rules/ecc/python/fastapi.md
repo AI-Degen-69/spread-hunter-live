@@ -1,12 +1,12 @@
 ---
 paths:
-  - "**/app/**/*.py"
-  - "**/fastapi/**/*.py"
+  - "**/dashboard/**/*.py"
   - "**/*_api.py"
+  - "**/server.py"
 ---
 # FastAPI Rules
 
-Use these rules for FastAPI projects alongside the general Python rules.
+> Use these rules for `dashboard/server.py` and any future API endpoints.
 
 ## Structure
 
@@ -19,7 +19,8 @@ Use these rules for FastAPI projects alongside the general Python rules.
 
 - Use `async def` for endpoints that perform I/O.
 - Use async database and HTTP clients from async endpoints.
-- Do not call `requests`, sync SQLAlchemy sessions, or blocking file/network operations from async routes.
+- Do not call `requests`, sync SQLAlchemy sessions, or blocking file/network operations
+  from async routes.
 
 ## Dependency Injection
 
@@ -37,15 +38,16 @@ Do not create `SessionLocal()` or long-lived clients inside route handlers.
 
 ## Schemas
 
-- Never include passwords, password hashes, access tokens, refresh tokens, or internal auth state in response models.
+- Never include passwords, password hashes, access tokens, refresh tokens, or internal
+  auth state in response models.
 - Use `response_model` on endpoints that return application data.
-- Use field constraints instead of hand-written validation when Pydantic can express the rule.
+- Use field constraints instead of hand-written validation when Pydantic can express the
+  rule.
 
 ## Security
 
 - Keep CORS origins environment-specific.
 - Do not combine wildcard origins with credentialed CORS.
-- Validate JWT expiry, issuer, audience, and algorithm.
 - Rate-limit auth and write-heavy endpoints.
 - Redact credentials, cookies, authorization headers, and tokens from logs.
 
@@ -54,5 +56,3 @@ Do not create `SessionLocal()` or long-lived clients inside route handlers.
 - Override the exact dependency used by `Depends`.
 - Clear `app.dependency_overrides` after tests.
 - Prefer async test clients for async applications.
-
-See skill: `fastapi-patterns`.

@@ -7,7 +7,9 @@ All tests use tmp_path; nothing ever touches live/run/.
 from __future__ import annotations
 
 import builtins
+import contextlib
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -52,7 +54,10 @@ def _count_ring_reads(monkeypatch, ring: Path) -> list[str]:
 
 
 def _query_intent(db: Path, sql: str, params=()) -> list[tuple]:
-    with sqlite3.connect(str(db)) as conn:
+    # closing(), not a bare `with`: a sqlite3 connection's context manager
+    # commits on exit but leaves the handle open, and on Windows that open
+    # handle blocks anything that later replaces the file.
+    with contextlib.closing(sqlite3.connect(str(db))) as conn:
         return conn.execute(sql, params).fetchall()
 
 
@@ -299,6 +304,30 @@ class TestCycleIntent:
         cycles = [row[0] for row in
                   _query_intent(db, "SELECT cycle FROM cycle_intent ORDER BY id")]
         assert cycles == [1, 2]
+
+    def test_replacing_the_store_needs_the_handle_closed_first(self, tmp_path):
+        """Swapping the file under a live handle is not something the retry
+        can rescue: on POSIX the open handle stays bound to the old inode, the
+        write lands in a file nobody reads, and no error is raised to retry on.
+        Closing first is the procedure, and this pins it -- after the close,
+        the next event lands in the database that is actually on the path.
+        """
+        ring = tmp_path / "events.jsonl"
+        db = tmp_path / "live.db"
+        emit(1, "quoting", "decide", market_slug="m",
+             ring_path=ring, db_path=db)
+        assert _query_intent(db, "SELECT COUNT(*) FROM cycle_intent")[0] == (1,)
+
+        close_intent_connections()  # nothing holds the file now
+        replacement = tmp_path / "fresh.db"
+        replacement.write_bytes(b"")
+        os.replace(replacement, db)
+
+        emit(2, "quoting", "decide", market_slug="m",
+             ring_path=ring, db_path=db)
+        cycles = [row[0] for row in
+                  _query_intent(db, "SELECT cycle FROM cycle_intent ORDER BY id")]
+        assert cycles == [2], "the record must land in the database on the path"
 
     def test_a_locked_database_warns_and_never_stalls_the_loop(
             self, tmp_path, capsys):

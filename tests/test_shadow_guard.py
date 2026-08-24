@@ -132,6 +132,21 @@ class _RecordingEnv(dict):
         return super().__contains__(key)
 
 
+def test_the_recorder_counts_a_membership_check_as_a_read():
+    """`if "POLY_KEY" in os.environ:` is how a credential read hides.
+
+    It reaches neither __getitem__ nor get, so without __contains__ the
+    allowlist in test_the_real_builder_reads_no_credential would pass while
+    the builder branched on a credential. That assertion is only as good as
+    this, so this gets its own test rather than riding along.
+    """
+    env = _RecordingEnv({"POLY_KEY": "0xdeadbeef"})
+
+    assert "POLY_KEY" in env
+    assert "NOT_SET" not in env
+    assert env.read_keys == ["POLY_KEY", "NOT_SET"]
+
+
 def test_shadow_client_never_reads_a_credential(monkeypatch):
     """The structural guarantee, asserted rather than assumed.
 

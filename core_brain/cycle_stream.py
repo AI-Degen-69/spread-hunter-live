@@ -118,10 +118,21 @@ def _intent_connection(path: Path) -> sqlite3.Connection:
 def _with_intent_connection(path: Path, work):
     """Run `work(conn)` on the cached connection, rebuilding it once on error.
 
-    A handle can go bad on its own -- the file replaced underneath it, the
-    process resumed from a suspend -- and a cached bad handle would turn one
-    failure into every future one. So a `sqlite3.Error` drops the handle and
-    retries exactly once; a second failure belongs to the caller's warning.
+    A cached handle that has gone bad would otherwise turn one failure into
+    every future one, so a `sqlite3.Error` drops it and retries exactly once;
+    a second failure belongs to the caller's warning. That covers the errors
+    SQLite actually reports: a closed handle, a lock it could not take, a
+    statement it refused.
+
+    It does NOT cover the database file being replaced underneath a live
+    handle, and nothing here should be read as promising otherwise. On POSIX
+    the open handle stays bound to the old inode, the write "succeeds" into a
+    file nobody reads, and no exception is raised for a retry to catch --
+    SQLite documents unlinking or renaming a database in use as unsafe. The
+    supported way to swap the store is to call `close_intent_connections()`
+    first and replace it while nothing holds it open; `test_replacing_the_
+    store_needs_the_handle_closed_first` pins that procedure. Nothing in this
+    repo replaces `data/orders.db` under a running engine today.
     """
     with _DB_LOCK:
         try:

@@ -67,7 +67,7 @@ the default-db assertion compares `Path` objects, not strings (Windows separator
 
 ```
 python -m pytest -q
-→ 2 failed, 644 passed, 1 skipped in 41.21s
+→ 2 failed, 646 passed, 1 skipped in 36.66s
 ```
 
 The 2 failures (`tests/test_market_feed.py::test_load_graduated_markets_real_file`,

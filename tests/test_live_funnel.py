@@ -183,20 +183,30 @@ def test_report_funnel_allowed_for_default_shadow_db(monkeypatch, tmp_path):
 
 def test_report_funnel_excluded_for_custom_db_path(monkeypatch, tmp_path):
     """Custom databases (e.g. isolated test or custom shadow db) fall back to runtime telemetry."""
+    import time
     import core_brain.kpi as kpi_mod
-    from core_brain.order_registry import init_db
+    from core_brain.order_registry import OrderRegistry, MarketEventRecord, init_db
 
     custom_db = tmp_path / "custom_test" / "shadow.db"
     custom_db.parent.mkdir(parents=True, exist_ok=True)
     init_db(custom_db)
 
+    reg = OrderRegistry(db_path=custom_db)
+    reg.log_market_event(MarketEventRecord(
+        ts=time.time(), market_slug="custom-slug", condition_id="0xcustom",
+        kind="BLOCKED", reason="depth $5 < $1000", reason_code="CUSTOM_DEPTH_LOW",
+    ))
+
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir(parents=True, exist_ok=True)
     _write(runtime_dir / "pipeline.json", {
         "counts": {"funded": 10, "spread_universe": 5, "eligible": 2},
-        "rejections": [{"cause": "volume", "n": 1, "examples": []}],
+        "rejections": [{"cause": "screener_volume", "n": 1, "examples": []}],
     })
     monkeypatch.setattr(kpi_mod, "REPO_ROOT", tmp_path)
 
     rep = kpi_mod.report(db_path=custom_db)
     assert rep["funnel"]["source"] == "runtime"
+    assert len(rep["funnel"]["filters"]) == 1
+    assert rep["funnel"]["filters"][0]["cause"] == "CUSTOM_DEPTH_LOW"
+    assert rep["funnel"]["filters"][0]["n"] == 1

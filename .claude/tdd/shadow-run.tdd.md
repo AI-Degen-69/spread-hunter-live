@@ -17,7 +17,7 @@
 
 | Plan task | Test target | RED evidence | GREEN evidence |
 |---|---|---|---|
-| 1. `ShadowSafetyViolation`, no-signer client | `tests/test_shadow_guard.py` (11 parametrised bypass cases, 23 tests total) | Prior session RED; all green at start of this run | `python -m pytest -q tests/test_shadow_guard.py` → 23 passed |
+| 1. `ShadowSafetyViolation`, no-signer client | `tests/test_shadow_guard.py` (11 parametrised bypass cases, 25 tests total) | Prior session RED; all green at start of this run | `python -m pytest -q tests/test_shadow_guard.py` → 25 passed |
 | 2. Shadow store + registry guard | same parametrised block | Same | Same run |
 | 4. Time box (`_Deadline`) | `tests/test_shadow_run.py::TestDeadline` (4 tests) | Same | `python -m pytest -q tests/test_shadow_run.py::TestDeadline` → 4 passed |
 | 3. Entrypoint | `tests/test_shadow_run.py::TestRunShadow` (6), `TestMain` (4); 14 in the file | Commit `707654a`: 9 failed / 4 passed — `ImportError: cannot import name 'run_shadow'/'build_shadow_seam'/'main'`, i.e. failure caused solely by the missing implementation | Commit `06f8215`; review-round wrap regression RED then GREEN (see below) |
@@ -67,13 +67,13 @@ the default-db assertion compares `Path` objects, not strings (Windows separator
 
 ```
 python -m pytest -q
-→ 2 failed, 620 passed, 1 skipped in 70.83s
+→ 2 failed, 644 passed, 1 skipped in 41.21s
 ```
 
 The 2 failures (`tests/test_market_feed.py::test_load_graduated_markets_real_file`,
 `::test_get_market_by_cid`) are pre-existing and environmental: they read the
-generated feed `run/markets.json`, which on this machine is 90,324s old (> the
-24h staleness gate). They touch no shadow module and fail identically without
+generated feed `run/markets.json`, which on this machine is past the 24h
+staleness gate. CI skips them, since a fresh checkout has no feed to read. They touch no shadow module and fail identically without
 this change. Re-running the ranker refreshes the file.
 
 ## Coverage and known gaps

@@ -621,9 +621,14 @@ def _venue_resting_order_ids(client) -> Optional[set[str]]:
     which refuses the same way for the MAX_TOTAL_USD cap.
     """
     try:
-        orders = client.get_open_orders() or []
+        orders = client.get_open_orders()
     except Exception as e:
         log.warning("get_open_orders failed: %s: %s", type(e).__name__, e)
+        return None
+    if orders is None:
+        # `or []` here would launder "the venue did not answer" into "nothing is
+        # resting", and the caller submits a replacement on that.
+        log.warning("get_open_orders returned None; treating as unknown")
         return None
     # Every id spelling the SDK has used goes into the set, not just the first
     # that matches. The set answers one question -- "is this id still resting?"

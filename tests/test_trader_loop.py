@@ -394,7 +394,13 @@ class TestRunLoop:
                 return [{"id": "o-1"}, {"orderID": "o-2"}, {"orderId": "o-2b"},
                         {"order_id": "o-3"}, {"id": "o-4", "orderID": "venue-4"}, {}]
 
+        class Silent:
+            def get_open_orders(self):
+                return None
+
         assert _venue_resting_order_ids(Dead()) is None
+        # A None response is "the venue did not answer", never "nothing rests".
+        assert _venue_resting_order_ids(Silent()) is None
         # Every spelling on an order is collected, not just the first that hits:
         # a missed id would wave a live order through as gone.
         assert _venue_resting_order_ids(Alive()) == {

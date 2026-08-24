@@ -212,3 +212,171 @@ def settle_market(
                                      last_polled_ts=now_ms)
 
     return fills
+
+
+class ShadowExecutionClient:
+    """The four client methods `single_buy_saver` calls, backed by the store.
+
+    Deliberately narrow: an SDK method this class does not implement raises
+    `AttributeError` at the call site -- ordinary Python attribute lookup on a
+    class that never defined it -- which is a loud failure rather than a
+    silent no-op that would make a rehearsal look successful.
+
+    A market order here is a fill, immediately, at the price the caller
+    already chose (the book's best bid or ask, applied by `single_buy_saver`
+    before this is ever called). That is the optimistic end of what a taker
+    gets, and it is stated rather than hidden: a completion that clears in a
+    rehearsal is not evidence that the same completion clears live.
+    """
+
+    def __init__(self, registry: OrderRegistry, db_path: Path | str, *,
+                 book_fn: Callable[[str, str], dict],
+                 clob_host: str = "https://clob.polymarket.com") -> None:
+        self._registry = registry
+        self._db_path = Path(db_path)
+        self._book_fn = book_fn
+        self._clob_host = clob_host
+
+    def get_order_book(self, token_id: str) -> dict:
+        return self._book_fn(self._clob_host, str(token_id))
+
+    def get_order(self, order_id: str) -> dict:
+        """Venue-shaped order state, read by venue order id.
+
+        Looked up with `get_order_by_venue_id`, which queries by id
+        regardless of status -- not `get_active_orders`, which filters to
+        pending/open/partial. `single_buy_saver` always calls this right
+        after `cancel_order` on the same order, so by the time it asks the
+        row is already `cancelled`; a status-filtered lookup would see
+        nothing and the caller would refuse the whole pass believing the
+        venue returned an unrecognisable response.
+        """
+        order = self._registry.get_order_by_venue_id(str(order_id))
+        if order is None:
+            return {}
+        return {
+            "id": order.order_id or order.id,
+            "status": order.status,
+            "size_matched": _filled_size(self._db_path, order.id),
+            "original_size": order.original_size,
+            "price": order.price,
+        }
+
+    def cancel_order(self, payload) -> dict:
+        target = (getattr(payload, "orderID", None)
+                  or getattr(payload, "order_id", None))
+        order = self._registry.get_order_by_venue_id(str(target)) if target else None
+        if order is None:
+            return {"success": False, "orderID": target}
+        now_ms = int(time.time() * 1000)
+        self._registry.update_order_status(
+            order.id, status="cancelled", last_polled_ts=now_ms)
+        return {"success": True, "orderID": target}
+
+    def _source_row_for_token(self, token_id: str) -> tuple[str, str | None]:
+        """condition_id and pair_id for a token, taken from its latest order row.
+
+        `MarketOrderArgsV2` carries no condition id, only `token_id`, `amount`,
+        `side` and `price` -- so a completion buy has nowhere else to source
+        one. The light leg always has an earlier row (`record_submit` rested
+        it, `cancel_order` above may have just closed it) to read this from.
+        """
+        with closing(get_connection(self._db_path)) as conn:
+            row = conn.execute(
+                "SELECT condition_id, pair_id FROM orders WHERE token_id = ? "
+                "ORDER BY posted_ts DESC LIMIT 1",
+                (str(token_id),),
+            ).fetchone()
+        if row is None:
+            return "", None
+        return str(row["condition_id"] or ""), row["pair_id"]
+
+    def create_and_post_market_order(self, order_args) -> dict:
+        """Cross the book in the rehearsal: called with one positional
+        `MarketOrderArgsV2(token_id=..., amount=..., side=..., price=...)`.
+
+        `amount` is not shares on both sides. On a BUY it is notional dollars
+        -- the maker amount the SDK's `get_market_order_amounts` treats as
+        what we give -- so shares received are `amount / price`. On a SELL
+        `amount` already is shares. Reading a BUY's dollar amount as a share
+        count is exactly the bug `single_buy_saver.py:905-915` documents:
+        the guards that validated the dollar figure would not catch it.
+
+        A SELL writes nothing to the store: `single_buy_saver._record_exit_close`
+        records the close as the sole ledger entry for that trade (the
+        docstring on `exit_single_buy` explains why -- a taker SELL has no
+        resting row for reconcile to adopt), and a fill row here would
+        double-count the same exit. A BUY writes both an order and a fill row
+        itself: a shadow run has no poll loop or reconcile to pick a
+        completion fill up otherwise.
+        """
+        token_id = str(getattr(order_args, "token_id", "") or "")
+        amount = float(getattr(order_args, "amount", 0.0) or 0.0)
+        side = str(getattr(order_args, "side", "") or "").upper()
+        raw_price = getattr(order_args, "price", None)
+        price = float(raw_price) if raw_price is not None else None
+
+        if not token_id or amount <= 0 or price is None or price <= 0:
+            raise ShadowOrderRefused(
+                f"cannot cross {token_id[:12] or '?'} for amount={amount}: "
+                f"missing token, amount or price")
+
+        if side == "SELL":
+            return {
+                "success": True,
+                "orderID": f"{SHADOW_ORDER_PREFIX}{uuid.uuid4().hex[:12]}",
+                "status": "matched", "price": price, "size": amount,
+            }
+
+        if side != "BUY":
+            raise ShadowOrderRefused(
+                f"unrecognised order side {side!r} for {token_id[:12]}")
+
+        shares = amount / price
+
+        condition_id, pair_id = self._source_row_for_token(token_id)
+        if not condition_id:
+            raise ShadowOrderRefused(
+                f"cannot record completion buy for {token_id[:12]}: no prior "
+                f"order row on this token to source a condition_id from")
+
+        now_ms = int(time.time() * 1000)
+        local_id = str(uuid.uuid4())
+        self._registry.create_order(OrderRecord(
+            id=local_id,
+            order_id=f"{SHADOW_ORDER_PREFIX}{uuid.uuid4().hex[:12]}",
+            condition_id=condition_id, token_id=token_id, side="BUY",
+            price=price, original_size=shares, status="filled",
+            posted_ts=now_ms, last_polled_ts=now_ms, pair_id=pair_id,
+        ))
+        self._registry.record_fill(FillRecord(
+            trade_id=f"{SHADOW_TRADE_PREFIX}{uuid.uuid4().hex[:16]}",
+            order_uuid=local_id, size=shares, price=price,
+            venue_ts=now_ms, recorded_ts=now_ms,
+        ))
+        return {"success": True, "orderID": local_id, "status": "matched",
+                "price": price, "size": shares}
+
+
+def shadow_positions(registry: OrderRegistry, db_path: Path | str) -> dict[str, float]:
+    """Positions as the shadow store knows them, shaped like `fetch_positions`.
+
+    Passed to `auto_manage_pairs` explicitly so the pass never reaches for the
+    Data API. That read fails the pass closed on any error, and failing closed
+    on every cycle would keep the pairs pass from ever running in a rehearsal
+    that has no funder to read a live position from.
+    """
+    out: dict[str, float] = {}
+    with closing(get_connection(Path(db_path))) as conn:
+        rows = conn.execute(
+            """
+            SELECT o.token_id AS token_id, COALESCE(SUM(f.size), 0) AS shares
+            FROM orders o LEFT JOIN fills f ON f.order_uuid = o.id
+            GROUP BY o.token_id
+            """
+        ).fetchall()
+    for r in rows:
+        shares = float(r["shares"])
+        if shares > 0:
+            out[str(r["token_id"])] = shares
+    return out

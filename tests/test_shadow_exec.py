@@ -309,3 +309,68 @@ def test_stale_tape_does_not_credit_to_fresh_orders(registry):
 
     inv = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
     assert inv.up_shares == 10.0
+
+
+def test_a_single_buy_is_completed_against_the_shadow_store(registry):
+    """One leg filled, the other not: the pairs pass completes it, and the
+    completing buy lands as a shadow fill rather than a venue order.
+
+    tok-up fills 20 at 0.47, tok-dn rests unfilled. With the light ask at
+    0.51 the pair costs 0.98 -- under the default max_pair_cost of 0.995 --
+    so `auto_manage_pairs` routes this to `complete_pair`, not the exit. That
+    makes `completed` the only correct outcome for this fixture; asserting a
+    looser `("completed", "exited")` would hide a routing regression.
+    """
+    from core_brain.order_registry import inventory_from_registry
+    from core_brain.shadow_exec import (
+        ShadowExecutionClient, ensure_shadow_tables, record_submit,
+        settle_market, shadow_positions,
+    )
+    from core_brain.single_buy_saver import auto_manage_pairs
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
+
+    # `single_buy_saver._book_levels` parses `bids`/`asks` as a LIST of
+    # {"price", "size"} levels (or objects with those attributes), not the
+    # price-keyed dict shape `record_submit`'s own book_fn uses -- the two
+    # book readers in this codebase disagree on shape, so the fixture must
+    # match the one the client under test actually feeds.
+    client = ShadowExecutionClient(
+        reg, db,
+        book_fn=lambda h, t: {
+            "token_id": t,
+            "bids": [{"price": 0.50, "size": 500.0}],
+            "asks": [{"price": 0.51, "size": 500.0}],
+        },
+    )
+    results = auto_manage_pairs(
+        client, reg, _cfg(), venue_positions=shadow_positions(reg, db),
+    )
+
+    assert results, "auto_manage_pairs produced no result for the naked pair"
+    assert results[0]["action"] == "completed", results
+
+    inv = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
+    assert inv.up_shares == pytest.approx(20.0)
+    assert inv.down_shares == pytest.approx(20.0)
+
+    down_order = next(r for r in reg.get_orders_by_pair(results[0]["pair_id"])
+                      if r.token_id == "tok-dn")
+    assert (down_order.order_id or "").startswith("shadow-")
+
+
+def test_the_shim_refuses_a_method_it_does_not_implement(registry):
+    """A silent no-op for an unimplemented SDK call would make a rehearsal look
+    successful where the live path would have done something."""
+    from core_brain.shadow_exec import ShadowExecutionClient
+
+    reg, db = registry
+    client = ShadowExecutionClient(reg, db, book_fn=lambda h, t: {})
+
+    with pytest.raises(AttributeError):
+        client.post_orders([])

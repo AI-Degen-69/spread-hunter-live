@@ -351,6 +351,35 @@ def run_shadow(
     # see the same shape of numbers they would live.
     seam.fleet_state_fn = lambda r: _fleet_state(r, cfg)
 
+    def shadow_sweep() -> None:
+        """The Order Manager's U35 pass, rehearsed. Closing actions only.
+
+        Runs `auto_manage_pairs` against the shadow store instead of the
+        venue: `ShadowExecutionClient` supplies the four calls that module
+        makes, and `shadow_positions` stands in for the Data API read so an
+        unreachable funder never fails the pass closed. Uses `seam.fetch_books`
+        -- the same book source the rest of this seam decides against -- so a
+        session (or test) that injects `fetch_books` drives this pass too,
+        rather than always hitting the live default underneath it.
+        """
+        from core_brain.shadow_exec import ShadowExecutionClient, shadow_positions
+        from core_brain.single_buy_saver import auto_manage_pairs
+
+        exec_client = ShadowExecutionClient(
+            seam.registry, db_path, book_fn=seam.fetch_books)
+        try:
+            for pr in auto_manage_pairs(
+                exec_client, seam.registry, cfg,
+                venue_positions=shadow_positions(seam.registry, db_path),
+            ):
+                action = pr.get("action", "?")
+                if action not in ("hold", "balanced"):
+                    log.info("pairs %s %s", pr.get("pair_id") or "?", action)
+        except (sqlite3.Error, OSError, ValueError) as e:
+            log.warning("shadow pairs pass failed: %s", e)
+
+    seam.sweep_fn = shadow_sweep
+
     deadline_ts = time.time() + max(0.0, minutes * 60.0)
     results = loop_run(
         seam,
@@ -364,9 +393,14 @@ def run_shadow(
     return ShadowResult(
         results=results,
         intents=list(intents_sink),
-        # Deliberately skipped, and reported as such -- they reconcile against
-        # venue positions a shadow run does not have. Never "passed silently".
-        skipped_stages=("reconcile", "sweep"),
+        # Deliberately skipped, and reported as such -- reconcile compares
+        # against venue positions a shadow run does not have. Never "passed
+        # silently". `sweep` no longer belongs here: `shadow_sweep` above
+        # wires it to run the single-buy pairs pass every rotation, and
+        # listing a stage that ran as "skipped" is the same lie in the other
+        # direction -- reporting something that happened as something that
+        # did not.
+        skipped_stages=("reconcile",),
     )
 
 

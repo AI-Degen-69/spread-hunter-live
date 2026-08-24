@@ -1,0 +1,223 @@
+"""Tests for the shadow-run safety guard.
+
+A shadow run exists so the operator can watch the whole loop without spending
+money. That guarantee is worth nothing if it rests on a boolean: this repo runs
+LIVE by default, and `except Exception` is everywhere in the loop's error
+isolation. So the guard raises a BaseException subclass from a client that never
+holds a credential, and the tests below are the proof.
+"""
+from __future__ import annotations
+
+import pytest
+
+from core_brain.order_registry import DEFAULT_DB_PATH as _PROD_DB
+from core_brain.shadow_guard import (
+    ReadOnlyVenue,
+    ShadowSafetyViolation,
+    assert_not_production_registry,
+)
+
+
+class _StubClient:
+    """Stands in for the CLOB client. Records what the proxy let through."""
+
+    def __init__(self):
+        self.calls = []
+
+    def get_order_book(self, token_id):
+        self.calls.append(("get_order_book", token_id))
+        return {"bids": [], "asks": []}
+
+    def post_order(self, *a, **k):
+        self.calls.append(("post_order", a))
+        return {"orderID": "should-never-happen"}
+
+    def create_and_post_market_order(self, *a, **k):
+        self.calls.append(("create_and_post_market_order", a))
+        return {"orderID": "should-never-happen"}
+
+    def some_future_sdk_method(self, *a, **k):
+        self.calls.append(("some_future_sdk_method", a))
+        return "should-never-happen"
+
+
+def test_violation_is_not_swallowed_by_a_blanket_except_exception():
+    """The regression this class exists to prevent.
+
+    `core_brain/trader_loop.py` isolates reconcile, sweep and every market visit
+    behind `except Exception` so one failure degrades the cycle instead of
+    stopping it. A safety violation caught by one of those handlers would be
+    logged as a warning and the run would carry on -- exactly the outcome the
+    guard is meant to make impossible. Same reasoning as
+    `tests/conftest.py:ProductionRegistryWriteError`.
+    """
+    with pytest.raises(ShadowSafetyViolation):
+        try:
+            raise ShadowSafetyViolation("reached a signing path")
+        except Exception:  # noqa: BLE001 - the point of the test
+            pytest.fail("a blanket except Exception swallowed the safety violation")
+
+
+def test_an_allowlisted_read_reaches_the_client():
+    """Shadow mode is useless if it cannot read the book."""
+    inner = _StubClient()
+    venue = ReadOnlyVenue(inner)
+
+    book = venue.get_order_book("token-1")
+
+    assert book == {"bids": [], "asks": []}
+    assert inner.calls == [("get_order_book", "token-1")]
+
+
+def test_post_order_raises_and_never_reaches_the_client():
+    """The whole point. A submit attempt must die at the proxy, not at the venue."""
+    inner = _StubClient()
+    venue = ReadOnlyVenue(inner)
+
+    with pytest.raises(ShadowSafetyViolation, match="post_order"):
+        venue.post_order({"price": 0.48, "size": 2})
+
+    assert inner.calls == []
+
+
+def test_market_order_submission_raises_and_never_reaches_the_client():
+    """`single_buy_saver` reaches for this one when a leg is stranded."""
+    inner = _StubClient()
+    venue = ReadOnlyVenue(inner)
+
+    with pytest.raises(ShadowSafetyViolation, match="create_and_post_market_order"):
+        venue.create_and_post_market_order()
+
+    assert inner.calls == []
+
+
+def test_an_unknown_method_is_denied_rather_than_passed_through():
+    """Deny by default.
+
+    An allowlist of writes would be a list we have to keep in sync with an SDK
+    we do not control: the day py_clob_client adds a new submit spelling, an
+    allowlist of writes silently lets it through. Only reads we have vetted are
+    permitted; everything else is a violation, including methods that are
+    perfectly harmless.
+    """
+    inner = _StubClient()
+    venue = ReadOnlyVenue(inner)
+
+    with pytest.raises(ShadowSafetyViolation, match="some_future_sdk_method"):
+        venue.some_future_sdk_method()
+
+    assert inner.calls == []
+
+
+class _RecordingEnv(dict):
+    """An os.environ stand-in that remembers every key anyone looked at."""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.read_keys = []
+
+    def __getitem__(self, key):
+        self.read_keys.append(key)
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        self.read_keys.append(key)
+        return super().get(key, default)
+
+
+def test_shadow_client_never_reads_a_credential(monkeypatch):
+    """The structural guarantee, asserted rather than assumed.
+
+    `core_brain/venue.py:client` reads POLY_PRIVATE_KEY and derives L2 creds.
+    The shadow client must read neither -- not the signing key, and not the API
+    creds either. A run that holds no credential cannot authenticate a write no
+    matter what bug it contains.
+    """
+    import os
+
+    env = _RecordingEnv({
+        "POLY_PRIVATE_KEY": "0xdeadbeef",
+        "POLY_KEY": "0xdeadbeef",
+        "POLY_API_KEY": "api-key",
+        "POLY_API_SECRET": "api-secret",
+        "POLY_API_PASSPHRASE": "api-passphrase",
+        "POLY_FUNDER": "0xfunder",
+    })
+    monkeypatch.setattr(os, "environ", env)
+
+    from core_brain.shadow_guard import shadow_client
+
+    built = []
+
+    def fake_build(host):
+        built.append(host)
+        return _StubClient()
+
+    venue = shadow_client(build_fn=fake_build)
+
+    forbidden = {
+        "POLY_PRIVATE_KEY", "POLY_KEY", "PRIVATE_KEY",
+        "POLY_API_KEY", "POLY_API_SECRET", "POLY_API_PASSPHRASE",
+    }
+    leaked = forbidden.intersection(env.read_keys)
+    assert not leaked, f"shadow client read credential env vars: {sorted(leaked)}"
+    assert len(built) == 1, "the client should be built exactly once"
+
+
+def test_shadow_client_returns_a_denying_proxy(monkeypatch):
+    """Whatever the builder hands back, callers get it wrapped."""
+    from core_brain.shadow_guard import shadow_client
+
+    inner = _StubClient()
+    venue = shadow_client(build_fn=lambda host: inner)
+
+    assert isinstance(venue, ReadOnlyVenue)
+    with pytest.raises(ShadowSafetyViolation):
+        venue.post_order({"price": 0.48})
+    assert inner.calls == []
+
+
+# --- shadow store guard ------------------------------------------------------
+#
+# `data/orders.db` is the production registry. A shadow run must never open it
+# as a write target. The bypasses below are the ones `tests/conftest.py`
+# already learned about the hard way: sqlite percent-decodes a URI path and
+# accepts a `localhost` authority, so a guard that only strips the scheme is
+# not a guard.
+
+_ABS_ORDERS_DB = str(_PROD_DB).replace("\\", "/")
+
+
+@pytest.mark.parametrize("target", [
+    "data/orders.db",
+    r"data\orders.db",
+    str(_PROD_DB),
+    "./data/orders.db",
+    "data/../data/orders.db",
+    "file:data/orders.db",
+    "file:data/orders.db?mode=rwc",
+    "file:data/orders%2edb",
+    "file:data%2Forders.db",
+    "file:///" + _ABS_ORDERS_DB,
+    "file://localhost/" + _ABS_ORDERS_DB,
+])
+def test_production_registry_is_refused_as_a_shadow_store(target):
+    with pytest.raises(ShadowSafetyViolation, match="production registry"):
+        assert_not_production_registry(target)
+
+
+def test_the_default_shadow_store_is_accepted():
+    assert_not_production_registry("data/shadow.db")
+
+
+def test_an_arbitrary_temp_db_is_accepted(tmp_path):
+    assert_not_production_registry(tmp_path / "shadow.db")
+
+
+def test_a_differently_named_db_in_the_data_directory_is_accepted():
+    """The guard names one file, not a directory.
+
+    Refusing all of `data/` would be a false positive that makes the shadow
+    store hard to place, and the invariant is about one file.
+    """
+    assert_not_production_registry("data/orders_shadow.db")

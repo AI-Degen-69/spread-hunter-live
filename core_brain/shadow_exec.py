@@ -23,7 +23,9 @@ from typing import Callable
 from core_brain.order_registry import (
     FillRecord, OrderRecord, OrderRegistry, get_connection,
 )
-from core_brain.shadow_fills import ShadowRestingOrder, queue_ahead_at
+from core_brain.shadow_fills import (
+    ShadowFill, ShadowRestingOrder, credit_fills, queue_ahead_at,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -166,14 +168,14 @@ def settle_market(
     traded_fn: Callable[[str, set], dict],
     seen: set,
     now_fn: Callable[[], float] = time.time,
-) -> list:
+) -> list[ShadowFill]:
     """Credit this market's resting rows from the tape, then persist the result.
 
     One `seen` set per market for the whole session: `markets.recent_trades`
     de-duplicates by trade identity against it, and a fresh set every cycle
     would re-credit the same trades until the order looked full.
     """
-    from core_brain.shadow_fills import credit_fills
+    traded = traded_fn(market.condition_id, seen)
 
     resting = [
         o for o in registry.get_active_orders()
@@ -181,8 +183,6 @@ def settle_market(
     ]
     if not resting:
         return []
-
-    traded = traded_fn(market.condition_id, seen)
 
     orders = [
         ShadowRestingOrder(

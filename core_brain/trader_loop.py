@@ -299,10 +299,17 @@ def _visit_one(
 
     submitted = cancelled = 0
     try:
-        if to_submit:
-            submitted = seam.submit_fn(seam.client, seam.registry, market, to_submit, cfg)
+        # Cancel first: cancelling old quotes before submitting replacements
+        # prevents exceeding MAX_TOTAL_USD notional exposure and avoids double
+        # quoting if replacement submission occurs while stale orders rest.
         if to_cancel:
             cancelled = seam.cancel_fn(seam.client, seam.registry, to_cancel)
+            if cancelled < len(to_cancel):
+                raise RuntimeError(
+                    f"cancel failed: {cancelled}/{len(to_cancel)} cancelled; aborting replacement submission"
+                )
+        if to_submit:
+            submitted = seam.submit_fn(seam.client, seam.registry, market, to_submit, cfg)
     except Exception as e:
         # A submit/cancel failure (venue rejection, a split couple rolled back)
         # must degrade this market to ERROR, never stop the rotation.

@@ -224,3 +224,77 @@ class TestRunLoop:
             sleep_fn=lambda s: None,
         )
         assert seen["fleet_naked_usd"] == 12.5
+
+    def test_cancel_happens_before_submit_in_replacement_quote(self):
+        call_log = []
+
+        def decide(cfg, up, dn, inv, t_rem, wf):
+            # Propose new price for UP leg (triggering replace)
+            return [_intent(side="UP", token="tok-up", price=0.62)], ""
+
+        def open_orders_fn(m):
+            return [{"token_id": "tok-up", "price": 0.58, "order_id": "o-old", "id": "local-old", "side": "BUY", "status": "open"}]
+
+        def cancel_fn(client, registry, orders):
+            call_log.append("cancel")
+            return len(orders)
+
+        def submit_fn(client, registry, market, intents, cfg):
+            call_log.append("submit")
+            return len(intents)
+
+        seam = VenueSeam(
+            client=object(),
+            fetch_market=lambda cid: FakeMarket(cid),
+            fetch_books=lambda h, t: {"token_id": t, "best_bid": 0.59, "best_ask": 0.61, "bids": {0.59: 100}, "asks": {0.61: 100}},
+            decide=decide,
+            submit_fn=submit_fn,
+            cancel_fn=cancel_fn,
+            open_orders_fn=open_orders_fn,
+            reconcile_fn=lambda *a: None,
+            sweep_fn=lambda: None,
+        )
+        results = run(
+            seam, interval=0.0, once=True, live=True,
+            markets=[FakeMarket("0xabc")],
+            sleep_fn=lambda s: None,
+        )
+        assert results[0].status == "QUOTED"
+        assert call_log == ["cancel", "submit"]
+
+    def test_cancel_failure_aborts_submit_and_records_error(self):
+        call_log = []
+
+        def decide(cfg, up, dn, inv, t_rem, wf):
+            return [_intent(side="UP", token="tok-up", price=0.62)], ""
+
+        def open_orders_fn(m):
+            return [{"token_id": "tok-up", "price": 0.58, "order_id": "o-old", "id": "local-old", "side": "BUY", "status": "open"}]
+
+        def cancel_fn(client, registry, orders):
+            call_log.append("cancel")
+            return 0  # Failed to cancel orders
+
+        def submit_fn(client, registry, market, intents, cfg):
+            call_log.append("submit")
+            return len(intents)
+
+        seam = VenueSeam(
+            client=object(),
+            fetch_market=lambda cid: FakeMarket(cid),
+            fetch_books=lambda h, t: {"token_id": t, "best_bid": 0.59, "best_ask": 0.61, "bids": {0.59: 100}, "asks": {0.61: 100}},
+            decide=decide,
+            submit_fn=submit_fn,
+            cancel_fn=cancel_fn,
+            open_orders_fn=open_orders_fn,
+            reconcile_fn=lambda *a: None,
+            sweep_fn=lambda: None,
+        )
+        results = run(
+            seam, interval=0.0, once=True, live=True,
+            markets=[FakeMarket("0xabc")],
+            sleep_fn=lambda s: None,
+        )
+        assert results[0].status == "ERROR"
+        assert "cancel failed" in str(results[0].error).lower()
+        assert "submit" not in call_log

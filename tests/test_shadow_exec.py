@@ -244,3 +244,68 @@ def test_a_shrinking_queue_without_a_fill_is_remembered(registry):
 
     up_id = next(r.id for r in reg.get_active_orders() if r.token_id == "tok-up")
     assert read_queue_ahead(db, up_id) == 20.0
+
+
+def test_settle_calls_traded_fn_even_with_no_resting_orders(registry):
+    """settle_market always calls traded_fn to keep `seen` current, even when
+    there are no resting orders. Without this, a fresh order's first settle
+    would credit tape volume from before it was posted."""
+    from core_brain.shadow_exec import ensure_shadow_tables, settle_market
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+
+    calls = {"n": 0}
+
+    def traded_fn(cid, seen):
+        calls["n"] += 1
+        return {}
+
+    # Call settle with no resting orders — traded_fn must still be called to
+    # update `seen`
+    result = settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                           traded_fn=traded_fn)
+
+    assert calls["n"] == 1
+    assert result == []
+
+
+def test_stale_tape_does_not_credit_to_fresh_orders(registry):
+    """Sequence: settle with nothing resting (seen is updated), then
+    record_submit a new order, then settle again. The second settle must only
+    see what traded_fn returns on that call, not the stale volume from the
+    first settle."""
+    from core_brain.order_registry import inventory_from_registry
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+
+    tape_history = {"call": 0}
+
+    def tape_feed(cid, seen):
+        tape_history["call"] += 1
+        # First call (no orders resting): return stale 50 units
+        # Second call (order now resting): return only fresh 10 units
+        if tape_history["call"] == 1:
+            return {"tok-up": {0.47: 50.0}}
+        else:
+            return {"tok-up": {0.47: 10.0}}
+
+    seen = set()
+
+    # First settle with no resting orders — seen is updated with the 50 units
+    settle_market(reg, FakeMarket(), db_path=db, seen=seen, traded_fn=tape_feed)
+
+    # Record a new order
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+
+    # Second settle with the order now resting — only 10 units are available
+    # because the earlier 50 units were already in `seen`
+    settle_market(reg, FakeMarket(), db_path=db, seen=seen, traded_fn=tape_feed)
+
+    inv = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
+    assert inv.up_shares == 10.0

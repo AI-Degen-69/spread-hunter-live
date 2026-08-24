@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import sqlite3
 import sys
 import time
 from dataclasses import dataclass, field
@@ -164,6 +165,7 @@ def build_shadow_seam(
     decide_fn: Optional[Callable] = None,
     fetch_market: Optional[Callable] = None,
     fetch_books: Optional[Callable] = None,
+    traded_fn: Optional[Callable[[str, set], dict]] = None,
     cfg=None,
     registry=None,
 ):
@@ -190,6 +192,9 @@ def build_shadow_seam(
     """
     from core_brain.order_registry import OrderRegistry, init_db
     from core_brain.quotes import decide_quotes
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_submit, settle_market,
+    )
     from core_brain.shadow_guard import (
         assert_not_production_registry,
         shadow_client,
@@ -197,6 +202,7 @@ def build_shadow_seam(
     from core_brain.trader_loop import VenueSeam, _make_inventory_fn, _make_open_orders_fn
 
     assert_not_production_registry(db_path)
+    ensure_shadow_tables(db_path)
 
     if intents_sink is None:
         intents_sink = []
@@ -224,11 +230,32 @@ def build_shadow_seam(
             return dict(empty_book)
         return fetch_books(clob_host, token_id)
 
-    def record_submit(_client, _registry, market, intents, _cfg) -> int:
+    resolved_traded_fn = traded_fn or _default_traded_fn()
+    seen_by_market: dict[str, set] = {}
+    base_inventory_fn = _make_inventory_fn(registry, Path(db_path))
+
+    def settling_inventory_fn(market):
+        """Settle this market, then report what it now holds.
+
+        Order matters: a decision taken against a pre-settle inventory is a
+        decision taken against a position the market has already left.
+        """
+        seen = seen_by_market.setdefault(market.condition_id, set())
+        try:
+            settle_market(registry, market, db_path=db_path,
+                          traded_fn=resolved_traded_fn, seen=seen)
+        except (sqlite3.Error, OSError, ValueError) as e:
+            # Degrade, do not stop: an unsettled visit decides against a stale
+            # inventory, which the next visit corrects. Raising here would take
+            # the market out of the rotation entirely.
+            log.warning("settle failed for %s: %s", market.condition_id[:12], e)
+        return base_inventory_fn(market)
+
+    def shadow_submit(client, reg, market, intents, cfg_in) -> int:
         for qi in intents:
-            intents_sink.append(ShadowIntent.from_quote(
-                qi, market.condition_id))
-        return len(intents)
+            intents_sink.append(ShadowIntent.from_quote(qi, market.condition_id))
+        return record_submit(client, reg, market, intents, cfg_in,
+                             db_path=db_path, book_fn=shadow_fetch_books)
 
     def record_cancel(_client, _registry, orders) -> int:
         return 0
@@ -247,11 +274,11 @@ def build_shadow_seam(
         fetch_market=fetch_market or _default_fetch_market(),
         fetch_books=shadow_fetch_books,
         decide=decide,
-        submit_fn=record_submit,
+        submit_fn=shadow_submit,
         cancel_fn=record_cancel,
         reconcile_fn=noop_reconcile,
         sweep_fn=noop_sweep,
-        inventory_fn=_make_inventory_fn(registry, Path(db_path)),
+        inventory_fn=settling_inventory_fn,
         open_orders_fn=_make_open_orders_fn(registry),
         emit_fn=_make_logging_emit(db_path),
     )
@@ -366,6 +393,15 @@ def _default_fetch_books() -> Callable[[str, str], dict]:
         return full_book(clob_host, token_id)
 
     return fetch
+
+
+def _default_traded_fn() -> Callable[[str, set], dict]:
+    """The live tape reader. Public endpoint, no credentials, no signer."""
+    def traded(condition_id: str, seen: set) -> dict:
+        from core_brain.markets import recent_trades
+        return recent_trades(condition_id, seen)
+
+    return traded
 
 
 def _default_fetch_market() -> Callable[[str], Any]:

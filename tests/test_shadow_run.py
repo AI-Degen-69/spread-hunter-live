@@ -248,6 +248,51 @@ class TestRunShadow:
         assert "sweep" in result.skipped_stages
 
 
+class TestSettleWiring:
+    """Rest, then fill, then decide -- in that order, inside one visit."""
+
+    def test_the_seam_settles_before_it_reports_inventory(self, tmp_path):
+        from core_brain.shadow_run import build_shadow_seam
+
+        seen_markets = []
+        seam = build_shadow_seam(
+            db_path=tmp_path / "shadow.db",
+            client_fn=lambda: object(),
+            traded_fn=lambda cid, seen: seen_markets.append(cid) or {},
+        )
+        seam.inventory_fn(FakeMarket("0xabc"))
+
+        assert seen_markets == ["0xabc"]
+
+    def test_submitted_intents_become_rows_in_the_shadow_store(self, tmp_path):
+        from core_brain.order_registry import OrderRegistry
+        from core_brain.shadow_run import build_shadow_seam
+
+        db = tmp_path / "shadow.db"
+        seam = build_shadow_seam(
+            db_path=db, client_fn=lambda: object(),
+            fetch_books=lambda h, t: {"bids": {0.47: 10.0}},
+        )
+        placed = seam.submit_fn(
+            seam.client, seam.registry, FakeMarket("0xabc"),
+            [QuoteIntent(side="UP", token_id="tok-up", price=0.47, size=20,
+                        mid=0.5, edge_vs_mid=0.0)],
+            seam.base_cfg,
+        )
+
+        assert placed == 1
+        assert len(OrderRegistry(db_path=db).get_active_orders()) == 1
+
+    def test_the_production_registry_is_still_refused(self):
+        """The new writers must not have moved the guard off the front door."""
+        from core_brain.order_registry import DEFAULT_DB_PATH
+        from core_brain.shadow_guard import ShadowSafetyViolation
+        from core_brain.shadow_run import build_shadow_seam
+
+        with pytest.raises(ShadowSafetyViolation):
+            build_shadow_seam(db_path=DEFAULT_DB_PATH)
+
+
 class TestLookupFetchMarket:
     def test_lookup_falls_back_to_fetch_market_when_tokens_missing(self, monkeypatch):
         from core_brain.shadow_run import _lookup_fetch_market

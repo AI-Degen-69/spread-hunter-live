@@ -269,7 +269,14 @@ def run_shadow(
         except Exception as e:  # noqa: BLE001 - degrade, do not stop
             log.warning("live balance read failed, using config bankroll: %s", e)
 
-    markets = (markets_fn or _default_markets_fn())()
+    resolved_markets_fn = markets_fn or _default_markets_fn()
+    markets = resolved_markets_fn()
+    markets_holder = [markets]
+
+    def dynamic_markets_fn():
+        current = resolved_markets_fn()
+        markets_holder[0] = current
+        return current
 
     intents_sink: list = []
     seam = build_shadow_seam(
@@ -277,7 +284,7 @@ def run_shadow(
         client_fn=client_fn,
         intents_sink=intents_sink,
         decide_fn=decide_fn,
-        fetch_market=_lookup_fetch_market(markets),
+        fetch_market=_lookup_fetch_market(lambda: markets_holder[0]),
         fetch_books=fetch_books,
         cfg=cfg,
     )
@@ -286,14 +293,13 @@ def run_shadow(
     seam.fleet_state_fn = lambda r: _fleet_state(r, cfg)
 
     deadline_ts = time.time() + max(0.0, minutes * 60.0)
-    resolved_markets_fn = markets_fn or _default_markets_fn()
     results = loop_run(
         seam,
         interval=interval,
         once=False,
         live=True,  # safe: submit/cancel are recorders, the client cannot sign
         markets=markets,
-        markets_fn=resolved_markets_fn,
+        markets_fn=dynamic_markets_fn,
         sleep_fn=make_deadline_sleep(deadline_ts),
     )
     return ShadowResult(
@@ -317,7 +323,7 @@ def _default_fetch_market() -> Callable[[str], Any]:
     return _fetch_market
 
 
-def _lookup_fetch_market(markets: list) -> Callable[[str], Any]:
+def _lookup_fetch_market(markets_source: Any) -> Callable[[str], Any]:
     """Resolve a cid first against the session's own market objects.
 
     A session handed fully-formed market objects (tests, or a caller that
@@ -327,9 +333,9 @@ def _lookup_fetch_market(markets: list) -> Callable[[str], Any]:
     """
     from core_brain.trader_loop import _cid, _fetch_market
 
-    by_cid = {_cid(m): m for m in markets}
-
     def fetch(cid: str):
+        mkts = markets_source() if callable(markets_source) else markets_source
+        by_cid = {_cid(m): m for m in (mkts or [])}
         m = by_cid.get(cid)
         if m is not None:
             up = getattr(m, "up_token", None) or (m.get("up_token") if isinstance(m, dict) else None)

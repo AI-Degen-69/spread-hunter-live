@@ -281,6 +281,22 @@ class TestLookupFetchMarket:
         assert res == complete_market
         assert fetched == []
 
+    def test_lookup_resolves_refreshed_markets_dynamically(self, monkeypatch):
+        from core_brain.shadow_run import _lookup_fetch_market
+
+        fetched = []
+        monkeypatch.setattr("core_brain.trader_loop._fetch_market", lambda cid: fetched.append(cid))
+
+        current_box = [[FakeMarket("0x1")]]
+        resolver = _lookup_fetch_market(lambda: current_box[0])
+
+        assert resolver("0x1").condition_id == "0x1"
+
+        # Dynamically refresh to cycle 2 markets
+        current_box[0] = [FakeMarket("0x2")]
+        assert resolver("0x2").condition_id == "0x2"
+        assert fetched == []
+
 
 class TestMain:
     """The command line: `python -m core_brain.shadow_run --minutes N`."""

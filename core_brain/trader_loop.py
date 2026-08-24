@@ -233,6 +233,39 @@ def run(
                 seam=seam, spec=spec, live=live, cycle=cycle,
                 emit_fn=emit_fn,
             ))
+
+        # Cancel resting orders for markets dropped from the active universe
+        if live and seam.registry is not None and seam.cancel_fn is not None:
+            try:
+                current_cids = {_cid(s) for s in (current_markets or [])}
+                active_orders = getattr(seam.registry, "get_active_orders", lambda: [])()
+                dropped_cids = {
+                    o.condition_id for o in active_orders
+                    if o.condition_id and o.condition_id not in current_cids
+                    and getattr(o, "status", "") in ("open", "partial")
+                }
+                for dropped_cid in sorted(dropped_cids):
+                    dropped_orders = [
+                        {
+                            "token_id": o.token_id,
+                            "price": o.price,
+                            "order_id": o.order_id or o.id,
+                            "id": o.id,
+                            "side": o.side,
+                            "status": o.status,
+                        }
+                        for o in active_orders
+                        if o.condition_id == dropped_cid and getattr(o, "status", "") in ("open", "partial")
+                    ]
+                    if dropped_orders:
+                        cancelled = seam.cancel_fn(seam.client, seam.registry, dropped_orders)
+                        cycle_results.append(LiveFleetResult(
+                            status="DECLINED", condition_id=dropped_cid,
+                            why="dropped_market_cancelled", cancelled=cancelled,
+                        ))
+            except Exception as e:
+                log.warning("cleanup of dropped markets failed: %s: %s", type(e).__name__, e)
+
         last_cycle = cycle_results
         if once:
             once_results.extend(cycle_results)

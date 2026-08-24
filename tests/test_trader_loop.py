@@ -285,3 +285,37 @@ class TestRunLoop:
         )
 
         assert visited == ["0x1", "0x2"]
+
+    def test_run_cancels_orders_for_dropped_markets(self):
+        from unittest.mock import MagicMock
+
+        registry = MagicMock()
+        o_dropped = MagicMock(condition_id="0xdropped", status="open", token_id="tok-up", price=0.55, order_id="v_drop", id="row_drop", side="BUY")
+        registry.get_active_orders.return_value = [o_dropped]
+
+        cancelled_calls = []
+        def fake_cancel(client, reg, orders):
+            cancelled_calls.append(orders)
+            return len(orders)
+
+        seam = VenueSeam(
+            client=object(),
+            registry=registry,
+            fetch_market=lambda cid: FakeMarket(cid),
+            fetch_books=lambda h, t: {"token_id": t, "bids": {}, "asks": {}},
+            decide=lambda *a: ([], "declined"),
+            submit_fn=lambda *a, **k: 0,
+            cancel_fn=fake_cancel,
+            reconcile_fn=lambda *a, **k: None,
+            sweep_fn=lambda: None,
+        )
+
+        results = run(
+            seam, interval=0.0, once=True, live=True,
+            markets=[FakeMarket("0xactive")],
+            sleep_fn=lambda s: None,
+        )
+
+        assert len(cancelled_calls) == 1
+        assert cancelled_calls[0][0]["order_id"] == "v_drop"
+        assert any(r.condition_id == "0xdropped" and r.why == "dropped_market_cancelled" for r in results)

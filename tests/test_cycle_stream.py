@@ -27,6 +27,24 @@ def _parse_lines(path: Path) -> list[dict]:
         return [json.loads(line) for line in fh if line.strip()]
 
 
+def _count_ring_reads(monkeypatch, ring: Path) -> list[str]:
+    """Record every read-open of `ring`, so a test can assert how few there are.
+
+    The rotation check is the only thing that opens the ring for reading, so
+    the length of the returned list is the number of whole-file rereads.
+    """
+    reads: list[str] = []
+    real_open = builtins.open
+
+    def counting_open(file, mode="r", *args, **kwargs):
+        if str(file) == str(ring) and "r" in str(mode):
+            reads.append(str(file))
+        return real_open(file, mode, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", counting_open)
+    return reads
+
+
 def _query_intent(db: Path, sql: str, params=()) -> list[tuple]:
     with sqlite3.connect(str(db)) as conn:
         return conn.execute(sql, params).fetchall()
@@ -108,25 +126,19 @@ class TestRingFile:
         # loop spent ten seconds inside open(). The line count is knowable
         # without re-reading, so the read must be rare, not per-append.
         ring = tmp_path / "cycle_events.jsonl"
-        reads: list[str] = []
-        real_open = builtins.open
-
-        def counting_open(file, mode="r", *args, **kwargs):
-            if str(file) == str(ring) and "r" in str(mode):
-                reads.append(str(file))
-            return real_open(file, mode, *args, **kwargs)
-
-        monkeypatch.setattr(builtins, "open", counting_open)
+        reads = _count_ring_reads(monkeypatch, ring)
         for i in range(1, 201):
             emit(i, "reconciling", "reconcile_ok", service="query",
                  ring_path=ring)
         assert len(reads) <= 2, f"{len(reads)} full reads for 200 appends"
 
-    def test_rotation_still_fires_after_an_external_writer_appends(self, tmp_path):
+    def test_rotation_still_fires_after_an_external_writer_appends(
+            self, tmp_path, monkeypatch):
         # The fleet and screener append to the ring without importing
         # core_brain, so the in-process line count can go stale. A size that
         # does not match our own bookkeeping must fall back to a real read.
         ring = tmp_path / "cycle_events.jsonl"
+        reads = _count_ring_reads(monkeypatch, ring)
         for i in range(1, 100):
             emit(i, "reconciling", "reconcile_ok", service="query",
                  ring_path=ring)
@@ -135,6 +147,11 @@ class TestRingFile:
                 fh.write(json.dumps({"cycle": 1000 + i}) + "\n")
         emit(999, "reconciling", "reconcile_ok", service="query",
              ring_path=ring)
+        # Exactly two reads: one to seed the count, one because the external
+        # 450 lines moved the size off our bookkeeping. Asserting the count
+        # rather than only the rotation is what makes this fail against the
+        # old implementation, which reread the ring on all 100 emits.
+        assert len(reads) == 2, f"{len(reads)} full reads"
         assert len(_parse_lines(ring)) == KEEP_LINES
 
     def test_concurrent_appends(self, tmp_path):

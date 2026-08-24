@@ -156,8 +156,17 @@ def assert_not_production_registry(db_path) -> None:
         if resolved is None:
             return
         raw = resolved
+    # A backslash separates directories on Windows and is a legal filename
+    # character on POSIX, so `data\orders.db` resolves to the production
+    # registry on one platform and to a single oddly-named file on the other.
+    # This guard only ever refuses, so it treats both spellings as the registry
+    # rather than letting a Windows-style path pasted into a Linux shell past.
+    candidates = {raw}
+    if "\\" in raw:
+        candidates.add(raw.replace("\\", "/"))
     try:
-        same = Path(raw).resolve() == DEFAULT_DB_PATH.resolve()
+        target = DEFAULT_DB_PATH.resolve()
+        same = any(Path(c).resolve() == target for c in candidates)
     except (OSError, ValueError):
         return
     if same:

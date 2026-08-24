@@ -246,7 +246,11 @@ def run(
                 emit_fn=emit_fn,
             ))
 
-        if live and seam.registry is not None and seam.cancel_fn is not None:
+        # An empty universe is not evidence that every market was dropped: it is
+        # the state before the first successful refresh, or after one that
+        # graduated nothing. "Dropped" is only meaningful against a real set.
+        if (live and current_markets and seam.registry is not None
+                and seam.cancel_fn is not None):
             cycle_results.extend(_cancel_dropped_markets(
                 seam=seam, current_markets=current_markets, cycle=cycle,
                 emit_fn=emit_fn,

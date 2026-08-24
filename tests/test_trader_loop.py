@@ -515,3 +515,32 @@ class TestRunLoop:
         assert len(err) == 1
         assert err[0].status == "ERROR"
         assert "db locked" in err[0].error
+
+    def test_cleanup_is_skipped_when_the_universe_was_never_populated(self):
+        """No market set yet is not "every market was dropped".
+
+        With no `markets` and a first refresh that graduates nothing, the active
+        universe is empty for a reason that says nothing about resting orders.
+        """
+        from unittest.mock import MagicMock
+
+        registry = MagicMock()
+        o_live = MagicMock(condition_id="0xlive", status="open", token_id="tok-up",
+                           price=0.55, order_id="v_live", id="row_live", side="BUY")
+        registry.get_active_orders.return_value = [o_live]
+
+        cancelled_calls = []
+        def fake_cancel(client, reg, orders):
+            cancelled_calls.append(orders)
+            return len(orders)
+
+        results = run(
+            self._cleanup_seam(registry, fake_cancel),
+            interval=0.0, once=True, live=True,
+            markets=None,
+            markets_fn=lambda: [],
+            sleep_fn=lambda s: None,
+        )
+
+        assert cancelled_calls == []
+        assert results == []

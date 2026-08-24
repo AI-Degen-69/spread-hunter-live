@@ -109,3 +109,23 @@ def test_no_intents_writes_nothing(registry):
     assert record_submit(object(), reg, FakeMarket(), [], _cfg(),
                          db_path=db, book_fn=_books) == 0
     assert reg.get_active_orders() == []
+
+
+def test_mid_loop_failure_cancels_all_created_rows(registry):
+    from core_brain.shadow_exec import ensure_shadow_tables, record_submit
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+
+    def failing_book_fn(clob_host, token_id):
+        # Succeed for UP leg, fail for DOWN leg
+        if token_id == "tok-dn":
+            raise RuntimeError("Simulated book fetch failure on DOWN leg")
+        return _books(clob_host, token_id)
+
+    with pytest.raises(RuntimeError, match="Simulated book fetch failure"):
+        record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                      db_path=db, book_fn=failing_book_fn)
+
+    # No rows should remain in active status (they should all be cancelled)
+    assert reg.get_active_orders() == []

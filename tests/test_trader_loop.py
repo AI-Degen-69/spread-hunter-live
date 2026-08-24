@@ -391,7 +391,11 @@ class TestRunLoop:
 
         class Alive:
             def get_open_orders(self):
-                return [{"id": "o-1"}, {"orderID": "o-2"}, {"order_id": "o-3"}, {}]
+                return [{"id": "o-1"}, {"orderID": "o-2"}, {"orderId": "o-2b"},
+                        {"order_id": "o-3"}, {"id": "o-4", "orderID": "venue-4"}, {}]
 
         assert _venue_resting_order_ids(Dead()) is None
-        assert _venue_resting_order_ids(Alive()) == {"o-1", "o-2", "o-3"}
+        # Every spelling on an order is collected, not just the first that hits:
+        # a missed id would wave a live order through as gone.
+        assert _venue_resting_order_ids(Alive()) == {
+            "o-1", "o-2", "o-2b", "o-3", "o-4", "venue-4"}

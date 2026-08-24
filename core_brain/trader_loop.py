@@ -625,12 +625,16 @@ def _venue_resting_order_ids(client) -> Optional[set[str]]:
     except Exception as e:
         log.warning("get_open_orders failed: %s: %s", type(e).__name__, e)
         return None
+    # Every id spelling the SDK has used goes into the set, not just the first
+    # that matches. The set answers one question -- "is this id still resting?"
+    # -- so an extra id can only ever produce a conservative abort, while a
+    # missed one would wave a live order through as gone.
     out: set[str] = set()
     for o in orders:
-        oid = (o.get("id") or o.get("orderID") or o.get("order_id")
-               if isinstance(o, dict) else getattr(o, "id", None))
-        if oid:
-            out.add(str(oid))
+        for key in ("id", "orderID", "orderId", "order_id"):
+            oid = o.get(key) if isinstance(o, dict) else getattr(o, key, None)
+            if oid:
+                out.add(str(oid))
     return out
 
 

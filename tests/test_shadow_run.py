@@ -30,6 +30,11 @@ def _books(clob_host, token):
             "bids": {0.47: 100}, "asks": {0.49: 100}}
 
 
+def _load_cfg():
+    from core_brain.config import load
+    return load()
+
+
 def _filled_by_token(registry, condition_id: str) -> dict:
     """Shares actually bought per token, straight off the fills ledger.
 
@@ -917,3 +922,44 @@ class TestSecondRotation:
         assert [c["shares"] for c in closes] == [pytest.approx(5.0)]
         inv = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
         assert inv.up_shares == pytest.approx(0.0)
+
+
+class TestPairsWindowWiring:
+    """The shim and the pass read the same window.
+
+    `auto_manage_pairs` discovers pairs by fill age against
+    `cfg.pairs_exit_window_sec`; `ShadowExecutionClient` reconstructs which
+    pair a completion belongs to by the same rule. If the session did not pass
+    its configured window down, the two could disagree and a completion would
+    land on a pair the pass never acted on.
+    """
+
+    def test_the_session_hands_its_configured_window_to_the_shim(
+            self, tmp_path, monkeypatch):
+        from dataclasses import replace as dc_replace
+
+        import core_brain.shadow_exec as shadow_exec
+        import core_brain.config as config_mod
+        from core_brain.shadow_run import run_shadow
+
+        seen: list[float] = []
+        real_client = shadow_exec.ShadowExecutionClient
+
+        class RecordingClient(real_client):
+            def __init__(self, *a, **kw):
+                seen.append(kw.get("window_sec"))
+                super().__init__(*a, **kw)
+
+        monkeypatch.setattr(shadow_exec, "ShadowExecutionClient",
+                            RecordingClient)
+        narrow_cfg = dc_replace(_load_cfg(), pairs_exit_window_sec=123.0)
+        monkeypatch.setattr(config_mod, "load", lambda *a, **k: narrow_cfg)
+
+        run_shadow(
+            minutes=0.0, db_path=tmp_path / "shadow.db",
+            markets_fn=lambda max_markets=None: [],
+            client_fn=lambda: object(),
+            fetch_books=lambda h, t: {"bids": {}, "asks": {}},
+        )
+
+        assert seen == [123.0]

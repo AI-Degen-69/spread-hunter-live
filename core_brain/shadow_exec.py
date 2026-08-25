@@ -477,3 +477,64 @@ def shadow_positions(registry: OrderRegistry, db_path: Path | str) -> dict[str, 
         if shares > 0:
             out[str(r["token_id"])] = shares
     return out
+
+
+def record_shadow_merges(
+    registry: OrderRegistry,
+    db_path: Path | str,
+    *,
+    now_fn: Callable[[], float] = time.time,
+) -> list[str]:
+    """Close every balanced pair at exactly $1.00 a share.
+
+    The merge itself is a signed on-chain transaction and does not happen here:
+    a shadow run has no key. What is recorded is its arithmetic, which is the
+    part a rehearsal can honestly reproduce -- a merged pair pays $1.00, so the
+    result is `shares * (1.00 - pair cost)`, and `method='shadow_merge'` says
+    where the row came from.
+    """
+    from core_brain.order_registry import CloseRecord
+
+    with closing(get_connection(Path(db_path))) as conn:
+        rows = conn.execute(
+            """
+            SELECT o.pair_id AS pair_id, o.condition_id AS condition_id,
+                   o.token_id AS token_id,
+                   COALESCE(SUM(f.size), 0) AS shares,
+                   COALESCE(SUM(f.size * f.price), 0) AS cost
+            FROM orders o JOIN fills f ON f.order_uuid = o.id
+            WHERE o.pair_id IS NOT NULL
+              AND o.pair_id NOT IN (
+                  SELECT COALESCE(tx_hash, '') FROM closes
+                   WHERE method = 'shadow_merge')
+            GROUP BY o.pair_id, o.token_id
+            """
+        ).fetchall()
+
+    by_pair: dict[str, list] = {}
+    for r in rows:
+        by_pair.setdefault(str(r["pair_id"]), []).append(r)
+
+    merged: list[str] = []
+    for pair_id, legs in by_pair.items():
+        if len(legs) != 2:
+            continue
+        shares = min(float(leg["shares"]) for leg in legs)
+        if shares <= 0:
+            continue
+        cost_basis = sum(
+            float(leg["cost"]) * (shares / float(leg["shares"])) for leg in legs
+        )
+        proceeds = shares * 1.0
+        registry.log_close(CloseRecord(
+            ts=now_fn(), condition_id=str(legs[0]["condition_id"]),
+            method="shadow_merge", shares=shares, cost_basis=cost_basis,
+            proceeds=proceeds, fee=0.0, gas=0.0,
+            realized_pnl=proceeds - cost_basis,
+            # The pair id rides in tx_hash: it is the natural idempotency key
+            # here, and a shadow close has no transaction to name.
+            tx_hash=pair_id,
+        ))
+        merged.append(pair_id)
+
+    return merged

@@ -516,3 +516,61 @@ def test_the_shim_refuses_a_method_it_does_not_implement(registry):
 
     with pytest.raises(AttributeError):
         client.post_orders([])
+
+
+def test_a_balanced_pair_is_merged_into_one_dollar_per_share(registry):
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_shadow_merges, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0},
+                                               "tok-dn": {0.51: 20.0}})
+
+    merged = record_shadow_merges(reg, db)
+
+    assert len(merged) == 1
+    close = reg.get_all_closes()[0]
+    assert close["method"] == "shadow_merge"
+    assert close["shares"] == 20.0
+    assert round(close["proceeds"], 2) == 20.00
+    assert round(close["cost_basis"], 2) == round(20 * (0.47 + 0.51), 2)
+    assert round(close["realized_pnl"], 2) == round(20 * (1.0 - 0.98), 2)
+
+
+def test_an_unbalanced_pair_is_left_alone(registry):
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_shadow_merges, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
+
+    assert record_shadow_merges(reg, db) == []
+    assert reg.get_all_closes() == []
+
+
+def test_a_merged_pair_is_not_merged_again(registry):
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_shadow_merges, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0},
+                                               "tok-dn": {0.51: 20.0}})
+
+    assert len(record_shadow_merges(reg, db)) == 1
+    assert record_shadow_merges(reg, db) == []
+    assert len(reg.get_all_closes()) == 1

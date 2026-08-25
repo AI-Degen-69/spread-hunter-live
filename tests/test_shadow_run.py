@@ -652,3 +652,96 @@ class TestMain:
 
         assert {t for _, t in calls} == {"tok-up", "tok-dn"}
         assert all(h.startswith("http") for h, _ in calls)
+
+
+class TestBoundaryGuard:
+    def test_no_live_module_imports_the_shadow_model(self):
+        """The live fill engine's invariant is that a fill comes only from the
+        venue. The shadow model infers one. The two must never meet, and the cheap
+        way to keep that true is to check that nobody imports across the line."""
+        from pathlib import Path
+
+        core = Path(__file__).resolve().parent.parent / "core_brain"
+        live_modules = [
+            p for p in core.glob("*.py")
+            if p.name not in {"shadow_run.py", "shadow_exec.py",
+                              "shadow_fills.py", "shadow_guard.py"}
+        ]
+        offenders = [
+            p.name for p in live_modules
+            if "shadow_fills" in p.read_text(encoding="utf-8")
+            or "shadow_exec" in p.read_text(encoding="utf-8")
+        ]
+
+        assert offenders == []
+
+
+class TestPositionInTheLog:
+    """The decide line and the inventory behind it.
+
+    `trader_loop.py` emits the `quoting/decide` event with only
+    `intent_count` and `condition_id` in `extra` (see the emit call in
+    `evaluate_market_quote`, `core_brain/trader_loop.py` around line 455) --
+    it never carries share counts, and `trader_loop.py` must not be edited to
+    add them. The seam already computes an `Inventory` for the market inside
+    `settling_inventory_fn` (`build_shadow_seam`), immediately before the
+    decision that uses it. The log line resolves the extra's `condition_id`
+    back to that same inventory through a cache `build_shadow_seam` keeps in
+    its own closure -- it is not handed shares directly.
+    """
+
+    def test_a_decision_is_logged_with_the_position_behind_it(
+            self, tmp_path, caplog):
+        import logging
+
+        from core_brain.quotes import QuoteIntent
+        from core_brain.shadow_run import build_shadow_seam
+
+        db = tmp_path / "shadow.db"
+        market = FakeMarket("0xabc")
+
+        seam = build_shadow_seam(
+            db_path=db,
+            client_fn=lambda: object(),
+            traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}},
+        )
+
+        intents = [QuoteIntent(side="UP", token_id="tok-up", price=0.47,
+                               size=20, mid=0.5, edge_vs_mid=0.0)]
+        seam.submit_fn(seam.client, seam.registry, market, intents,
+                      seam.base_cfg)
+
+        # Settle, exactly as a real visit does immediately before deciding --
+        # this is what populates the cache the log line reads from.
+        inv = seam.inventory_fn(market)
+        assert inv.up_shares == pytest.approx(20.0)  # sanity: the fixture fired
+        assert inv.down_shares == pytest.approx(0.0)
+
+        with caplog.at_level(logging.INFO, logger="shadow_run"):
+            seam.emit_fn(9, "quoting", "decide", market_slug="dota-2026",
+                        reason="pair cost 0.98",
+                        extra={"intent_count": 1, "condition_id": "0xabc"})
+
+        assert "up=20" in caplog.text
+        assert "down=0" in caplog.text
+
+    def test_an_unknown_condition_id_logs_without_inventory(
+            self, tmp_path, caplog):
+        """Total lookup: a condition_id the seam never settled logs the
+        decide line plain -- no KeyError, and no fabricated zeros for a
+        position nothing measured."""
+        import logging
+
+        from core_brain.shadow_run import build_shadow_seam
+
+        seam = build_shadow_seam(db_path=tmp_path / "shadow.db",
+                                 client_fn=lambda: object())
+
+        with caplog.at_level(logging.INFO, logger="shadow_run"):
+            seam.emit_fn(3, "quoting", "decide", market_slug="never-visited",
+                        reason="", extra={"intent_count": 0,
+                                          "condition_id": "0xnope"})
+
+        assert "cycle=3" in caplog.text
+        assert "up=" not in caplog.text
+        assert "down=" not in caplog.text

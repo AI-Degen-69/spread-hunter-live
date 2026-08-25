@@ -464,7 +464,11 @@ def run_shadow(
 
         exec_client = ShadowExecutionClient(
             seam.registry, db_path, book_fn=seam.fetch_books,
-            clob_host=seam.clob_host)
+            clob_host=seam.clob_host,
+            # The pass and the shim must agree on the window, or a completion
+            # the pass made for a fresh naked pair gets booked to a stale one
+            # the pass never touched (see `_naked_pair_for_token`).
+            window_sec=getattr(cfg, "pairs_exit_window_sec", 900.0))
         try:
             for pr in auto_manage_pairs(
                 exec_client, seam.registry, cfg,

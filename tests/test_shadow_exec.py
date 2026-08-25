@@ -448,18 +448,20 @@ def test_completion_refuses_when_pair_has_empty_condition_id(registry):
     assert len(new_shadow_orders) == 0
 
 
-def test_a_completion_lands_on_the_older_naked_pair_when_two_pairs_share_a_token(registry):
-    """Two pairs post rows on tok-dn, both currently naked; the completion
-    under test is for the OLDER one.
+def test_a_completion_lands_on_the_in_window_pair_not_the_stale_one(registry):
+    """Two pairs are naked on tok-dn: one half-filled two hours ago, one
+    half-filled now. The completion under test belongs to the FRESH one,
+    because that is the only one `auto_manage_pairs` acts on.
 
-    A version of this shim that resolves condition_id/pair_id by "the most
-    recent order row on this token" (an earlier version of
-    `ShadowExecutionClient.create_and_post_market_order` did exactly this)
-    would attach the completion to the NEWER pair instead -- record_submit
-    mints a fresh pair_id every call, so a market re-quoted across rotations
-    always has one. That leaves the older pair naked, and the pairs pass buys
-    it again next cycle: a repeat-buy loop that does not stop until the fill
-    ages out of pairs_exit_window_sec.
+    `MarketOrderArgsV2` carries no pair id, so the shim reconstructs which pair
+    a completion belongs to. Picking the OLDEST naked pair (an earlier version
+    did) is backwards: `auto_manage_pairs` SKIPS any pair whose last fill is
+    older than `pairs_exit_window_sec`, so the oldest naked pair is precisely
+    the one it never acts on. `data/shadow.db` is not deleted between runs, so
+    stale naked pairs accumulate -- and every completion the pass makes for a
+    fresh pair got booked to a stale one instead, leaving the fresh pair naked
+    to be bought again next cycle. With N stale pairs that is N+1 completion
+    buys.
     """
     from py_clob_client_v2.clob_types import MarketOrderArgsV2
 
@@ -470,40 +472,78 @@ def test_a_completion_lands_on_the_older_naked_pair_when_two_pairs_share_a_token
 
     reg, db = registry
     ensure_shadow_tables(db)
+    now = 1_700_000_000.0
+    two_hours_ago = now - 7200.0
 
-    # Older pair: tok-up filled 20, tok-dn naked (open, unfilled).
-    # Use explicit now_fn so posted_ts values differ deterministically.
+    # Stale pair: tok-up filled two hours ago, tok-dn still naked. Out of the
+    # 900s window, so the pairs pass will never route it.
     record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
                   db_path=db, book_fn=lambda h, t: {"bids": {}},
-                  now_fn=lambda: 1000.0)
+                  now_fn=lambda: two_hours_ago)
     settle_market(reg, FakeMarket(), db_path=db, seen=set(),
-                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
-    older_pair_id = next(
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}},
+                  now_fn=lambda: two_hours_ago)
+    stale_pair_id = next(
         r.pair_id for r in reg.get_active_orders() if r.token_id == "tok-dn")
 
-    # Newer pair on the SAME tokens, posted strictly after: also tok-up
-    # filled 20, tok-dn naked. A posted_ts-only lookup on tok-dn finds this
-    # one first.
+    # Fresh pair on the SAME tokens, half-filled now.
     record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
                   db_path=db, book_fn=lambda h, t: {"bids": {}},
-                  now_fn=lambda: 2000.0)
+                  now_fn=lambda: now)
     settle_market(reg, FakeMarket(), db_path=db, seen=set(),
-                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
-    newer_pair_id = next(
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}},
+                  now_fn=lambda: now)
+    fresh_pair_id = next(
         r.pair_id for r in reg.get_active_orders()
-        if r.token_id == "tok-dn" and r.pair_id != older_pair_id
-    )
-    assert newer_pair_id != older_pair_id
+        if r.token_id == "tok-dn" and r.pair_id != stale_pair_id)
+    assert fresh_pair_id != stale_pair_id
 
-    client = ShadowExecutionClient(reg, db, book_fn=lambda h, t: {})
+    client = ShadowExecutionClient(reg, db, book_fn=lambda h, t: {},
+                                   window_sec=900.0, now_fn=lambda: now)
     resp = client.create_and_post_market_order(
         MarketOrderArgsV2(token_id="tok-dn", amount=10.2, side="BUY",
                           price=0.51))
 
     completion_order = reg.get_order(resp["orderID"])
     assert completion_order is not None
-    assert completion_order.pair_id == older_pair_id
-    assert completion_order.pair_id != newer_pair_id
+    assert completion_order.pair_id == fresh_pair_id
+    assert completion_order.pair_id != stale_pair_id
+
+
+def test_a_completion_is_refused_when_every_naked_pair_is_out_of_window(registry):
+    """No in-window naked pair means the pass could not have asked for this
+    buy. Booking it to a stale pair anyway would credit shares to a position
+    nothing is managing; refusing says so out loud instead.
+    """
+    from py_clob_client_v2.clob_types import MarketOrderArgsV2
+
+    from core_brain.shadow_exec import (
+        ShadowExecutionClient, ShadowOrderRefused, ensure_shadow_tables,
+        record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    now = 1_700_000_000.0
+    long_ago = now - 7200.0
+
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}},
+                  now_fn=lambda: long_ago)
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}},
+                  now_fn=lambda: long_ago)
+
+    client = ShadowExecutionClient(reg, db, book_fn=lambda h, t: {},
+                                   window_sec=900.0, now_fn=lambda: now)
+
+    with pytest.raises(ShadowOrderRefused):
+        client.create_and_post_market_order(
+            MarketOrderArgsV2(token_id="tok-dn", amount=10.2, side="BUY",
+                              price=0.51))
+
+    assert [o for o in reg.get_all_orders()
+            if o["token_id"] == "tok-dn" and o["status"] == "filled"] == []
 
 
 def test_the_shim_refuses_a_method_it_does_not_implement(registry):

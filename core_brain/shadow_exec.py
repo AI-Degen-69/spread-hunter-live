@@ -33,6 +33,10 @@ _log = logging.getLogger(__name__)
 SHADOW_ORDER_PREFIX = "shadow-"
 SHADOW_TRADE_PREFIX = "shadow-"
 
+# Mirrors `MakerConfig.pairs_exit_window_sec`. A fallback only: the session
+# passes its own configured value in.
+DEFAULT_PAIRS_WINDOW_SEC = 900.0
+
 
 class ShadowOrderRefused(RuntimeError):
     """A simulated order broke a live cap and was not written."""
@@ -281,11 +285,20 @@ class ShadowExecutionClient:
 
     def __init__(self, registry: OrderRegistry, db_path: Path | str, *,
                  book_fn: Callable[[str, str], dict],
-                 clob_host: str = "https://clob.polymarket.com") -> None:
+                 clob_host: str = "https://clob.polymarket.com",
+                 window_sec: float = DEFAULT_PAIRS_WINDOW_SEC,
+                 now_fn: Callable[[], float] = time.time) -> None:
         self._registry = registry
         self._db_path = Path(db_path)
         self._book_fn = book_fn
         self._clob_host = clob_host
+        # The same window `auto_manage_pairs` discovers pairs by. It has to
+        # match, or this shim books a completion to a pair the pass is not
+        # acting on -- see `_naked_pair_for_token`. The caller passes the
+        # session's own `cfg.pairs_exit_window_sec`; the default here is the
+        # one `MakerConfig` carries.
+        self._window_sec = float(window_sec)
+        self._now_fn = now_fn
 
     def get_order_book(self, token_id: str) -> dict:
         """The book, adapted for `single_buy_saver._book_levels`.
@@ -340,35 +353,43 @@ class ShadowExecutionClient:
         return {"success": True, "orderID": target}
 
     def _naked_pair_for_token(self, token_id: str) -> tuple[str, str] | None:
-        """(condition_id, pair_id) of the oldest pair that is currently
-        naked on this token, or `None` if no pair on this token is naked.
+        """(condition_id, pair_id) of the pair on this token the pairs pass is
+        currently acting on, or `None` if there is no such pair.
 
         `MarketOrderArgsV2` carries no condition id or pair id -- only
         `token_id`, `amount`, `side`, `price` -- so a completion buy has no
         way to name its pair directly; this reconstructs it.
 
-        Scoping this to "the most recent order row on this token" (an
-        earlier version) is wrong whenever a token carries rows under more
-        than one `pair_id`, which is ordinary here: `record_submit` mints a
-        fresh `pair_id` every call, and a market re-quoted across rotations
-        accumulates several. If an older pair is still naked when a newer
-        one posts fresh orders on the same tokens, "most recent row" attaches
-        the completion to the newer pair, leaves the older one naked, and
-        the pairs pass buys it again next cycle -- a repeat-buy loop that
-        does not stop until `pairs_exit_window_sec` ages the fill out.
+        Scoping this to "the most recent order row on this token" (the first
+        version) is wrong whenever a token carries rows under more than one
+        `pair_id`, which is ordinary here: `record_submit` mints a fresh
+        `pair_id` every call, and a market re-quoted across rotations
+        accumulates several.
 
-        This instead reproduces the slice of `load_pair`'s heavy/light math
-        needed to tell WHICH pair(s) on this token are actually naked, and
-        picks the oldest by `posted_ts`: `auto_manage_pairs` discovers pairs
-        by fill age (oldest fills age out of the window first), so the
-        oldest naked pair is also the one it would have reached first.
+        Picking the OLDEST naked pair (the version after that) is wrong for
+        the opposite reason. It assumed `auto_manage_pairs` reaches the oldest
+        naked pair first; it does not -- it SKIPS any pair whose last fill is
+        older than `pairs_exit_window_sec`, so the oldest naked pair is
+        precisely the one it never acts on. `data/shadow.db` survives between
+        sessions, so stale naked pairs accumulate, and every completion made
+        for a fresh pair was booked to a stale one instead: the fresh pair
+        read naked again next cycle and was bought again. With N stale naked
+        pairs that is N+1 completion buys.
+
+        So this reproduces `auto_manage_pairs`' own discovery rule instead: of
+        the pairs actually naked on this token, keep those whose LAST FILL is
+        inside the window, and take the most recent of them (`posted_ts`
+        breaks a tie). An undated fill is left out, exactly as the pass leaves
+        it out. When nothing qualifies the caller refuses -- loudly -- rather
+        than crediting shares to a position nothing is managing.
         """
         with closing(get_connection(self._db_path)) as conn:
             rows = conn.execute(
                 """
                 SELECT o.pair_id AS pair_id, MIN(o.condition_id) AS condition_id,
                        o.token_id AS token_id, MIN(o.posted_ts) AS posted_ts,
-                       COALESCE(SUM(f.size), 0) AS matched
+                       COALESCE(SUM(f.size), 0) AS matched,
+                       COALESCE(MAX(f.venue_ts), 0) AS last_fill_ts
                 FROM orders o
                 LEFT JOIN fills f ON f.order_uuid = o.id
                 WHERE o.pair_id IN (
@@ -385,12 +406,16 @@ class ShadowExecutionClient:
             pid = r["pair_id"]
             slot = by_pair.setdefault(pid, {
                 "condition_id": r["condition_id"], "legs": {},
-                "posted_ts": r["posted_ts"],
+                "posted_ts": r["posted_ts"], "last_fill_ts": 0.0,
             })
             slot["legs"][r["token_id"]] = float(r["matched"])
             slot["posted_ts"] = min(slot["posted_ts"], r["posted_ts"])
+            slot["last_fill_ts"] = max(
+                slot["last_fill_ts"], float(r["last_fill_ts"] or 0.0))
 
         target = str(token_id)
+        window_ms = self._window_sec * 1000.0
+        now_ms = self._now_fn() * 1000.0
         naked_candidates = []
         for pid, info in by_pair.items():
             legs = info["legs"]
@@ -398,13 +423,18 @@ class ShadowExecutionClient:
             other_matched = max(
                 (v for k, v in legs.items() if k != target), default=0.0)
             naked = other_matched - this_matched
-            if naked > SIZE_EPS:
-                naked_candidates.append((info["posted_ts"], pid, info["condition_id"]))
+            if naked <= SIZE_EPS:
+                continue
+            last_fill_ms = info["last_fill_ts"]
+            if last_fill_ms <= 0 or (now_ms - last_fill_ms) > window_ms:
+                continue
+            naked_candidates.append(
+                (last_fill_ms, info["posted_ts"], pid, info["condition_id"]))
 
         if not naked_candidates:
             return None
-        naked_candidates.sort(key=lambda c: c[0])
-        _, pid, cid = naked_candidates[0]
+        naked_candidates.sort(key=lambda c: (c[0], c[1]), reverse=True)
+        _, _, pid, cid = naked_candidates[0]
 
         if not cid:
             raise ShadowOrderRefused(
@@ -461,8 +491,9 @@ class ShadowExecutionClient:
         if found is None:
             raise ShadowOrderRefused(
                 f"cannot record completion buy for {token_id[:12]}: no pair "
-                f"on this token reads as naked in the store, so there is "
-                f"nothing to attach the fill to")
+                f"on this token reads as naked in the store within the last "
+                f"{self._window_sec:.0f}s, so there is nothing the pairs pass "
+                f"could be completing and nothing to attach the fill to")
         condition_id, pair_id = found
 
         now_ms = int(time.time() * 1000)

@@ -579,6 +579,15 @@ def record_shadow_merges(
             method="shadow_merge", shares=mergeable, cost_basis=cost_basis,
             proceeds=proceeds, fee=0.0, gas=0.0,
             realized_pnl=proceeds - cost_basis,
+            # Cost has to leave the inventory with the shares, or the decision
+            # keeps paying for a position it no longer holds. Split evenly
+            # across the legs exactly as the live merge does
+            # (`core_brain/order_manager.py`, the `method="merge"` close): the
+            # closes table has no token column, so an even split is the only
+            # attribution either path can record, and a rehearsal must not
+            # invent a more precise one than live keeps.
+            up_cost_removed=cost_basis / 2.0 if cost_basis else 0.0,
+            dn_cost_removed=cost_basis / 2.0 if cost_basis else 0.0,
             # The pair id rides in tx_hash, versioned to satisfy the unique
             # constraint on (condition_id, tx_hash). Multiple closes reference
             # the same logical pair by sharing a common prefix in tx_hash.

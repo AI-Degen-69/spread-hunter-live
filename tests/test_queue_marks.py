@@ -186,3 +186,73 @@ class TestSettleMarketRecords:
                       traded_fn=lambda cid, seen: {}, seen=set(),
                       now_fn=lambda: 100.0, book_fn=exploding_book)
         assert _rows(db) == []
+
+
+class TestMarksAreScopedToTheirRun:
+    """A reused shadow store must not difference across runs.
+
+    `data/shadow.db` is reused between rehearsals by design. Without this, the
+    first cycle of a new run differences its level against the LAST cycle of an
+    older run -- hours or days earlier -- and writes a `cancel_decay` and a
+    `queue_minutes` computed across that gap. Both are fiction, and both land
+    in the first rows an operator reads.
+    """
+
+    def test_the_previous_mark_is_looked_up_within_one_run(self, tmp_path):
+        db = tmp_path / "s.db"
+        ensure_shadow_tables(db)
+        write_queue_mark(db, ts=100.0, condition_id="0xabc", market_slug="m",
+                         token_id="tok", price=0.47, level_size=9000.0,
+                         traded=0.0, cancel_decay=None, queue_minutes=None,
+                         run_id="shadow-old")
+        write_queue_mark(db, ts=200.0, condition_id="0xabc", market_slug="m",
+                         token_id="tok", price=0.47, level_size=1000.0,
+                         traded=0.0, cancel_decay=None, queue_minutes=None,
+                         run_id="shadow-new")
+
+        assert read_last_queue_mark(db, "tok", 0.47,
+                                    run_id="shadow-new")["level_size"] == 1000.0
+        assert read_last_queue_mark(db, "tok", 0.47,
+                                    run_id="shadow-old")["level_size"] == 9000.0
+
+    def test_a_new_run_has_no_previous_mark_of_its_own(self, tmp_path):
+        db = tmp_path / "s.db"
+        ensure_shadow_tables(db)
+        write_queue_mark(db, ts=100.0, condition_id="0xabc", market_slug="m",
+                         token_id="tok", price=0.47, level_size=9000.0,
+                         traded=0.0, cancel_decay=None, queue_minutes=None,
+                         run_id="shadow-old")
+        assert read_last_queue_mark(db, "tok", 0.47,
+                                    run_id="shadow-new") is None
+
+    def test_a_reused_store_does_not_invent_decay_across_runs(self, tmp_path):
+        """End to end: the older run's 9000-share level must not appear as
+        8000 shares of decay in the new run's first cycle."""
+        from core_brain.order_registry import OrderRecord, OrderRegistry
+
+        db = tmp_path / "s.db"
+        ensure_shadow_tables(db)
+        write_queue_mark(db, ts=1.0, condition_id="0xabc", market_slug="m",
+                         token_id="tok-up", price=0.47, level_size=9000.0,
+                         traded=0.0, cancel_decay=None, queue_minutes=None,
+                         run_id="shadow-old")
+
+        reg = OrderRegistry(db_path=db, run_id="shadow-new")
+        reg.create_order(OrderRecord(
+            id="local-1", order_id="oid-1", condition_id="0xabc",
+            token_id="tok-up", side="BUY", price=0.47, original_size=20.0,
+            status="open", posted_ts=1, last_polled_ts=1))
+
+        def book_fn(_host, token_id):
+            return {"token_id": token_id, "best_bid": 0.47, "best_ask": 0.49,
+                    "bids": {0.47: 1000.0}, "asks": {0.49: 100.0}}
+
+        settle_market(reg, FakeMarket(), db_path=db,
+                      traded_fn=lambda cid, seen: {}, seen=set(),
+                      now_fn=lambda: 500.0, book_fn=book_fn)
+
+        fresh = [r for r in _rows(db) if r["run_id"] == "shadow-new"]
+        assert len(fresh) == 1
+        assert fresh[0]["cancel_decay"] is None, (
+            "differenced against a previous run's mark")
+        assert fresh[0]["queue_minutes"] is None

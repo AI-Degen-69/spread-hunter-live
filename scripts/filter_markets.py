@@ -27,7 +27,8 @@ from scoring.allocate import (marginal, spread_capture_daily)   # noqa: E402
 from scoring.config import load as _load_cfg   # noqa: E402
 from scoring.markets import parse_book   # noqa: E402
 from scoring.rewards import score_per_share   # noqa: E402
-from scoring.selector import identity_allowed, pair_books_allowed  # noqa: E402
+from scoring.selector import (identity_allowed, maker_queue_allowed,  # noqa: E402
+                              pair_books_allowed)
 
 RUN = ROOT / "runtime"
 OFFSET = 0.020          # where we intend to quote, in price units
@@ -346,11 +347,47 @@ def order_score(v: float, s: float, size: float, min_size: float) -> float:
     return ((v - s) / v) ** 2 * size
 
 
+def queue_bar_reject(m: dict, *, source: str,
+                     max_queue_minutes, queue_minutes_fn):
+    """A rejection row when this market's queue at our price will not clear.
+
+    The three bars around it are FLOORS on depth, and from the maker's side
+    depth near mid IS the queue ahead of us: `select_min_top3_depth_usd` and
+    `book_health` protect our ability to EXIT, which is real and points the
+    other way. `select_min_volume_24h_usd` measures market-wide 24-hour tape
+    across every price, so a market can clear six figures a day while trading
+    nothing at `mid - 2.5c`, the only level our maker order ever sits at.
+
+    Returns None when the market passes, when no bar is set, or when nothing
+    can measure the queue -- and in the first of those cases it does not call
+    `queue_minutes_fn` at all. Measuring costs a tape read per market, and
+    paying for a number the caller has already decided not to act on is how a
+    ranking pass gets slow for nothing. That is also what "record-only" means
+    at this layer: `enforce_max_queue_minutes` is False by default, `main`
+    passes no bar, and this function stays inert.
+    """
+    if not max_queue_minutes or queue_minutes_fn is None:
+        return None
+    minutes = queue_minutes_fn(m)
+    ok, reason = maker_queue_allowed(minutes, max_queue_minutes)
+    if ok:
+        return None
+    return {
+        "source": source, "eligible": False, "reject_reason": reason,
+        "queue_minutes": minutes,
+        "cid": m.get("condition_id"),
+        "title": m.get("question", "")[:90],
+        "slug": m.get("market_slug", ""),
+    }
+
+
 def evaluate(session: requests.Session, rate: float, m: dict,
              volume_24h: Optional[float] = None,
              source: str = "rewards", *,
              min_depth_usd: Optional[float] = None,
-             min_volume_usd: Optional[float] = None) -> dict | None:
+             min_volume_usd: Optional[float] = None,
+             max_queue_minutes: Optional[float] = None,
+             queue_minutes_fn=None) -> dict | None:
     """Income and capital for one market, from its live book.
 
     `rate` is the market's pot in $/day, and `source` says what pays it. For a
@@ -432,6 +469,15 @@ def evaluate(session: requests.Session, rate: float, m: dict,
     # path) means the permanent bar; `main` passes the resolved trial bar.
     depth_bar = (MIN_TOP3_DEPTH_USD if min_depth_usd is None
                  else min_depth_usd)
+    # THE MAKER-QUEUE BAR, after the depth bar and before anything is scored:
+    # a market whose queue at our own price never clears cannot be quoted, so
+    # ranking it is wasted work. Inert unless a bar is passed in.
+    queue_row = queue_bar_reject(m, source=source,
+                                 max_queue_minutes=max_queue_minutes,
+                                 queue_minutes_fn=queue_minutes_fn)
+    if queue_row is not None:
+        return queue_row
+
     books_ok, books_reason = pair_books_allowed(
         books, depth_bar, MAX_BOOK_SPREAD)
     if not books_ok:

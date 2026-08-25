@@ -120,3 +120,70 @@ class TestConfigDefaults:
         assert cfg.enforce_max_queue_minutes is False, (
             "enforcing on day one refuses every measured market and takes the "
             "bot silent -- record first")
+
+
+class TestTheRankerCanActuallyRejectOnIt:
+    """A config knob that cannot reject anything is a trap, not a setting.
+
+    `select_max_queue_minutes` and `maker_queue_allowed` existed, but
+    `scripts/filter_markets.py:evaluate` never called either, so setting
+    `enforce_max_queue_minutes = True` would have changed nothing while
+    reading as an enforced bar. The knob has to be able to keep a market out
+    of `runtime/markets.json` or it should not exist.
+    """
+
+    def _market(self):
+        return {"condition_id": "0xabc", "question": "Will X win?",
+                "market_slug": "atp-test-2026-08-26"}
+
+    def test_an_unclearable_queue_is_refused_by_the_ranker(self):
+        from scripts.filter_markets import queue_bar_reject
+
+        row = queue_bar_reject(self._market(), source="spread",
+                               max_queue_minutes=15.0,
+                               queue_minutes_fn=lambda _m: 686.0)
+        assert row is not None
+        assert row["eligible"] is False
+        assert "maker queue" in row["reject_reason"]
+        assert row["queue_minutes"] == 686.0
+
+    def test_a_market_with_no_trade_at_our_price_is_refused(self):
+        import math
+
+        from scripts.filter_markets import queue_bar_reject
+
+        row = queue_bar_reject(self._market(), source="spread",
+                               max_queue_minutes=15.0,
+                               queue_minutes_fn=lambda _m: math.inf)
+        assert row is not None
+        assert "no trade observed" in row["reject_reason"]
+
+    def test_a_fast_queue_passes_through_untouched(self):
+        from scripts.filter_markets import queue_bar_reject
+
+        assert queue_bar_reject(self._market(), source="spread",
+                                max_queue_minutes=15.0,
+                                queue_minutes_fn=lambda _m: 3.0) is None
+
+    def test_the_bar_is_inert_while_it_is_not_enforced(self):
+        # How this ships: record-only. With no bar passed in, the ranker must
+        # not reject and must not pay for a tape read it will not use.
+        from scripts.filter_markets import queue_bar_reject
+
+        calls = []
+
+        def counting_fn(_m):
+            calls.append(1)
+            return 50397.0
+
+        assert queue_bar_reject(self._market(), source="spread",
+                                max_queue_minutes=None,
+                                queue_minutes_fn=counting_fn) is None
+        assert calls == [], "measured a queue it was never going to act on"
+
+    def test_no_measurement_source_means_no_opinion(self):
+        from scripts.filter_markets import queue_bar_reject
+
+        assert queue_bar_reject(self._market(), source="spread",
+                                max_queue_minutes=15.0,
+                                queue_minutes_fn=None) is None

@@ -328,7 +328,7 @@ def build_shadow_seam(
             # behaves exactly as before.
             settle_market(registry, market, db_path=db_path,
                           traded_fn=resolved_traded_fn, seen=seen,
-                          book_fn=shadow_fetch_books)
+                          book_fn=shadow_fetch_books, clob_host=clob_host)
         except (sqlite3.Error, OSError, ValueError) as e:
             # Degrade, do not stop: an unsettled visit decides against a stale
             # inventory, which the next visit corrects. Raising here would take

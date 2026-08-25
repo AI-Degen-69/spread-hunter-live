@@ -742,10 +742,38 @@ class MakerConfig:
     # pays exactly $1.00, so anything at/above 1.00 is a guaranteed loss.
     max_pair_cost: float = 0.995
 
+    # THE COMPLETABLE-COST GATE. `max_pair_cost` above is a BOTH-MAKER check:
+    # what the pair costs if both legs fill as resting bids. On a binary market
+    # UP + DOWN = 1.00, so the legs are anti-correlated -- measured -0.9989
+    # across 98 mid steps on shadow run run-2809a7161de1, 97 of them opposite
+    # sign -- and simultaneous maker fills are rare by construction. The pair
+    # that actually assembles is one maker fill plus a TAKER completion at the
+    # other leg's ask, and nothing checked that price: all 209 orders of that
+    # run carried max_pair_cost_at_post=0.995 while never testing bid + hedge
+    # ask. This is that test. The pair pays exactly $1.00, so `>=` the cap is a
+    # booked loss or a zero-profit fill slot -- a ceiling reached, not
+    # approached, like every other cap here.
+    max_completable_pair_cost: float = 1.00
+    # Switchable so the rule can be attributed a result on its own, the same
+    # escape hatch `enforce_price_band` and `enable_pairs_rule` have.
+    enforce_completable_pair_cost: bool = True
+
     # --- pacing -----------------------------------------------------------
     # He averages 19.1 fills/market (median 17), one every ~5s.
     max_fills_per_market: int = 25
     requote_interval_sec: float = 2.0
+    # THE RE-QUOTE DEAD BAND, in price units. Move a resting order only once
+    # the desired price has moved at least this far. On run-2809a7161de1, 205
+    # of 205 consecutive re-quotes changed price (median 3.0c) and every one
+    # sent the order to the back of the queue at a new level; median order
+    # lifetime was 11.7s against a median queue_ahead of 1058.7 shares. Not
+    # fidgeting -- the mid walked 0.815 -> 0.285 in 30 minutes and every
+    # re-quote answered a real book move. Answering it still cost the whole
+    # queue position. Measured suppression on that run's own price series:
+    # 1c 0/205, 2c 74/205, 3c 98/205, 4c 118/205, 5c 139/205. 3c roughly
+    # doubles median lifetime to ~23s. 2c leaves too much churn; 4c and up hold
+    # a price the book has left behind.
+    requote_dead_band: float = 0.03
     poll_interval_sec: float = 1.0
 
     # Only quote while the window is open enough to resolve sensibly.
@@ -861,6 +889,32 @@ class MakerConfig:
     market_daily_rate: float = 0.0
 
 
+def _bounded_float(name: str, raw: str, lo: float, hi: float) -> float:
+    """One env override, parsed and bounded, or a ValueError naming the variable.
+
+    `float()` accepts "nan" and "inf" without complaint, and NaN poisons every
+    comparison it touches: `cost >= float("nan")` is False for every cost, so a
+    cap set to NaN reads as enforced while permitting a pair over $1.00 -- the
+    one outcome this system exists to prevent. An out-of-range but finite value
+    does the same damage more honestly (a $1.05 cap buys a booked loss on
+    purpose), so both are refused here rather than found later in the fills
+    ledger.
+
+    Raising beats clamping. A silently clamped cap is a config the operator
+    believes is in force and is not; a refused load is a message on the console
+    before a share is bought.
+    """
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{name}={raw!r} is not a number") from None
+    if not math.isfinite(value):
+        raise ValueError(f"{name}={raw!r} is not finite")
+    if not lo <= value <= hi:
+        raise ValueError(f"{name}={raw!r} is outside {lo:g}..{hi:g}")
+    return value
+
+
 def load() -> MakerConfig:
     """Config, with the per-bot fields overridable from the environment.
 
@@ -897,6 +951,20 @@ def load() -> MakerConfig:
     pr = os.environ.get("HUNTER_PAIRS_RULE") or ""
     if pr.strip():
         kw["enable_pairs_rule"] = pr.strip().lower() not in ("0", "false", "off")
+    ccap = os.environ.get("HUNTER_COMPLETABLE_CAP") or ""
+    if ccap.strip():
+        # 0 disables the cap, the escape hatch every other limit here has.
+        # Above $1.00 is refused outright: the pair pays exactly $1.00, so a
+        # higher cap is not a looser risk setting, it is a losing one.
+        kw["max_completable_pair_cost"] = _bounded_float(
+            "HUNTER_COMPLETABLE_CAP", ccap, 0.0, 1.0)
+    rdb = os.environ.get("HUNTER_REQUOTE_DEAD_BAND") or ""
+    if rdb.strip():
+        # 0 turns the hysteresis off. The ceiling is the instrument's whole
+        # price range: a band of 1.00 already means "never re-quote", and
+        # anything past it is a typo, not a setting.
+        kw["requote_dead_band"] = _bounded_float(
+            "HUNTER_REQUOTE_DEAD_BAND", rdb, 0.0, 1.0)
     cno = os.environ.get("HUNTER_NET_ONEWAY_MS") or os.environ.get("HUNTER_CANCEL_NET_ONEWAY_MS")
     if cno and cno.strip():
         kw["net_oneway_ms"] = float(cno)

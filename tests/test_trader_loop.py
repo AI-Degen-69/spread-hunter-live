@@ -20,8 +20,15 @@ from __future__ import annotations
 
 import pytest
 
-from core_brain.trader_loop import LiveFleetResult, VenueSeam, plan_orders, run
-from core_brain.quotes import QuoteIntent
+from core_brain.trader_loop import (
+    LiveFleetResult,
+    VenueSeam,
+    _visit_one,
+    plan_orders,
+    run,
+)
+from core_brain.config import MakerConfig
+from core_brain.quotes import Inventory, QuoteIntent
 
 
 def _intent(side="UP", token="tok-up", price=0.60, size=5):
@@ -71,6 +78,76 @@ class TestPlanOrders:
         to_cancel, to_submit = plan_orders(open_orders, intents, price_eps=0.001)
         assert to_cancel == []
         assert to_submit == []
+
+    def test_dead_band_keeps_an_order_that_only_drifted_a_couple_of_cents(self):
+        # 205 of 205 consecutive re-quotes on run-2809a7161de1 changed price
+        # (median 3.0c) and every one reset queue position to zero.
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.58)]
+        to_cancel, to_submit = plan_orders(open_orders, intents, dead_band=0.03)
+        assert to_cancel == []
+        assert to_submit == []
+
+    def test_dead_band_still_re_quotes_once_the_price_moves_past_it(self):
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.55)]
+        to_cancel, to_submit = plan_orders(open_orders, intents, dead_band=0.03)
+        assert to_cancel == open_orders
+        assert [i.price for i in to_submit] == [0.55]
+
+    def test_dead_band_is_symmetric(self):
+        # Queue position is lost in both directions.
+        open_orders = [_open(price=0.58)]
+        intents = [_intent(price=0.60)]
+        to_cancel, to_submit = plan_orders(open_orders, intents, dead_band=0.03)
+        assert to_cancel == []
+        assert to_submit == []
+
+    def test_dead_band_defaults_off_so_existing_callers_are_unchanged(self):
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.58)]
+        to_cancel, to_submit = plan_orders(open_orders, intents)
+        assert to_cancel == open_orders
+
+    def test_the_larger_of_dead_band_and_price_eps_wins(self):
+        # Two independent reasons to keep an order; neither may silently
+        # disable the other.
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.58)]
+        to_cancel, _ = plan_orders(open_orders, intents,
+                                   price_eps=0.001, dead_band=0.03)
+        assert to_cancel == []
+
+    def test_a_kept_order_is_cancelled_when_its_own_price_fails_the_gate(self):
+        # The order rests at 0.60. The desired price is 0.58, within the band,
+        # so the band would keep it -- but completing at the DOWN ask of 0.42
+        # costs 1.02, which is exactly the hole the band would otherwise open.
+        cfg = MakerConfig(max_completable_pair_cost=1.00)
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.58)]
+        to_cancel, to_submit = plan_orders(
+            open_orders, intents, dead_band=0.03, cfg=cfg,
+            hedge_asks={"tok-up": 0.42})
+        assert to_cancel == open_orders
+        assert [i.price for i in to_submit] == [0.58]
+
+    def test_a_kept_order_that_still_completes_under_the_cap_is_left_alone(self):
+        cfg = MakerConfig(max_completable_pair_cost=1.00)
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.58)]
+        to_cancel, to_submit = plan_orders(
+            open_orders, intents, dead_band=0.03, cfg=cfg,
+            hedge_asks={"tok-up": 0.38})
+        assert to_cancel == []
+        assert to_submit == []
+
+    def test_a_missing_hedge_ask_leaves_the_kept_order_alone(self):
+        cfg = MakerConfig(max_completable_pair_cost=1.00)
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.58)]
+        to_cancel, _ = plan_orders(open_orders, intents, dead_band=0.03,
+                                   cfg=cfg, hedge_asks={})
+        assert to_cancel == []
 
 
 class FakeMarket:
@@ -724,3 +801,133 @@ class TestRunLoop:
         # a missed id would wave a live order through as gone.
         assert _venue_resting_order_ids(Alive()) == {
             "o-1", "o-2", "o-2b", "o-3", "o-4", "venue-4"}
+
+
+class TestVisitOnePassesTheDeadBand:
+    def test_a_two_cent_drift_does_not_churn_the_resting_order(self):
+        """The whole point, end to end: same market, price moved 2c, no cancel."""
+        seen = {}
+        real_plan = plan_orders
+
+        def spy(open_orders, intents, price_eps=1e-9, **kw):
+            seen.update(kw)
+            return real_plan(open_orders, intents, price_eps, **kw)
+
+        market = FakeMarket()
+        up = {"token_id": "tok-up", "best_bid": 0.50, "best_ask": 0.52,
+              "bids": {0.50: 5000.0}, "asks": {0.52: 5000.0}}
+        down = {"token_id": "tok-dn", "best_bid": 0.46, "best_ask": 0.48,
+                "bids": {0.46: 5000.0}, "asks": {0.48: 5000.0}}
+        books = {"tok-up": up, "tok-dn": down}
+        seam = VenueSeam(
+            base_cfg=MakerConfig(requote_dead_band=0.03,
+                                 max_completable_pair_cost=1.00),
+            fetch_market=lambda cid: market,
+            fetch_books=lambda host, tok: books[tok],
+            decide=lambda *a, **k: ([_intent(price=0.49)], ""),
+            open_orders_fn=lambda m: [_open(price=0.51)],
+        )
+        result = _visit_one(seam, {"cid": "0xabc"}, cycle=1, live=False,
+                            plan_fn=spy)
+
+        assert seen["dead_band"] == 0.03
+        assert seen["cfg"] is not None
+        # The hedge ask for the UP token is the DOWN book's ask, and vice
+        # versa. Getting this mapping backwards is the one way this wiring
+        # can be wrong while every other assertion still passes.
+        assert seen["hedge_asks"] == {"tok-up": 0.48, "tok-dn": 0.52}
+        assert result.status in ("DRY_RUN", "DECLINED")
+
+
+class TestReGateRespectsHeldInventory:
+    """CodeRabbit round 1: the re-gate must not fire on an inventory-backed hedge.
+
+    `_decide_quotes_from_mid` skips the completable gate when the opposite leg
+    is already held -- completion is not needed, so the hedge ASK is not the
+    price that finishes the pair. `plan_orders` has no inventory of its own, so
+    without being told, it re-gated every kept order and cancelled valid hedges
+    every cycle: the exact churn this change exists to stop, with a naked leg
+    left open longer while it happened.
+    """
+
+    def test_a_kept_order_is_not_re_gated_when_the_hedge_leg_is_held(self):
+        # UP kept at 0.54 against a DOWN leg already held. The DOWN ask of 0.50
+        # is irrelevant -- we do not have to buy DOWN again -- so 0.54 + 0.50 =
+        # 1.04 must NOT cancel this order.
+        cfg = MakerConfig(max_completable_pair_cost=1.00)
+        open_orders = [_open(price=0.54)]
+        intents = [_intent(price=0.54)]
+        to_cancel, to_submit = plan_orders(
+            open_orders, intents, dead_band=0.03, cfg=cfg,
+            hedge_asks={"tok-up": 0.50}, hedge_held={"tok-up"})
+        assert to_cancel == []
+        assert to_submit == []
+
+    def test_the_re_gate_still_fires_on_a_token_whose_hedge_is_not_held(self):
+        # The guard against over-correcting: only the held token stands down.
+        cfg = MakerConfig(max_completable_pair_cost=1.00)
+        open_orders = [_open("tok-up", 0.54, "o1"), _open("tok-dn", 0.40, "o2")]
+        intents = [_intent(side="UP", token="tok-up", price=0.54),
+                   _intent(side="DOWN", token="tok-dn", price=0.40)]
+        to_cancel, _ = plan_orders(
+            open_orders, intents, dead_band=0.03, cfg=cfg,
+            hedge_asks={"tok-up": 0.50, "tok-dn": 0.62},
+            hedge_held={"tok-up"})
+        assert [o["order_id"] for o in to_cancel] == ["o2"]
+
+    def test_visit_one_derives_held_hedges_from_the_inventory(self):
+        seen = {}
+        real_plan = plan_orders
+
+        def spy(open_orders, intents, price_eps=1e-9, **kw):
+            seen.update(kw)
+            return real_plan(open_orders, intents, price_eps, **kw)
+
+        market = FakeMarket()
+        up = {"token_id": "tok-up", "best_bid": 0.50, "best_ask": 0.52,
+              "bids": {0.50: 5000.0}, "asks": {0.52: 5000.0}}
+        down = {"token_id": "tok-dn", "best_bid": 0.46, "best_ask": 0.48,
+                "bids": {0.46: 5000.0}, "asks": {0.48: 5000.0}}
+        books = {"tok-up": up, "tok-dn": down}
+        # We hold DOWN. DOWN is the UP token's hedge, so the UP token -- and
+        # only the UP token -- stands down from the re-gate.
+        inv = Inventory(down_shares=100.0, down_cost=43.0)
+        seam = VenueSeam(
+            base_cfg=MakerConfig(requote_dead_band=0.03,
+                                 max_completable_pair_cost=1.00),
+            fetch_market=lambda cid: market,
+            fetch_books=lambda host, tok: books[tok],
+            decide=lambda *a, **k: ([_intent(price=0.49)], ""),
+            inventory_fn=lambda m: inv,
+            open_orders_fn=lambda m: [_open(price=0.51)],
+        )
+        _visit_one(seam, {"cid": "0xabc"}, cycle=1, live=False, plan_fn=spy)
+
+        assert seen["hedge_held"] == {"tok-up"}
+
+    def test_visit_one_holds_nothing_back_when_the_inventory_is_flat(self):
+        seen = {}
+        real_plan = plan_orders
+
+        def spy(open_orders, intents, price_eps=1e-9, **kw):
+            seen.update(kw)
+            return real_plan(open_orders, intents, price_eps, **kw)
+
+        market = FakeMarket()
+        up = {"token_id": "tok-up", "best_bid": 0.50, "best_ask": 0.52,
+              "bids": {0.50: 5000.0}, "asks": {0.52: 5000.0}}
+        down = {"token_id": "tok-dn", "best_bid": 0.46, "best_ask": 0.48,
+                "bids": {0.46: 5000.0}, "asks": {0.48: 5000.0}}
+        books = {"tok-up": up, "tok-dn": down}
+        seam = VenueSeam(
+            base_cfg=MakerConfig(requote_dead_band=0.03,
+                                 max_completable_pair_cost=1.00),
+            fetch_market=lambda cid: market,
+            fetch_books=lambda host, tok: books[tok],
+            decide=lambda *a, **k: ([_intent(price=0.49)], ""),
+            inventory_fn=lambda m: Inventory(),
+            open_orders_fn=lambda m: [_open(price=0.51)],
+        )
+        _visit_one(seam, {"cid": "0xabc"}, cycle=1, live=False, plan_fn=spy)
+
+        assert seen["hedge_held"] == set()

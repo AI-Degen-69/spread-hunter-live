@@ -301,6 +301,46 @@ def book_health(book: dict, cfg) -> BookHealth:
     return BookHealth(True, "")
 
 
+def completable_pair_block(cfg, price: float,
+                           hedge_ask: Optional[float]) -> Optional[str]:
+    """Why a bid at `price` must not rest given what the hedge leg costs to TAKE.
+
+    `max_pair_cost` asks what a pair costs if both legs fill as resting bids.
+    This asks the question the tape actually answers: one leg fills as maker,
+    and the other has to be bought at its ask. On a binary market the two are
+    not close. UP + DOWN = 1.00 is near a mechanical identity, so the legs are
+    anti-correlated -- -0.9989 across 98 mid steps on shadow run
+    run-2809a7161de1, 97 of them opposite sign -- and a double-maker fill is
+    rare by construction rather than by bad luck.
+
+    The cost of not asking it is on the record. Every one of that run's 209
+    orders carried `max_pair_cost_at_post = 0.995`, one distinct value, from a
+    both-maker check that never tested `price + hedge ask`. The bot was resting
+    pairs that were profitable only under the rarest outcome available to it.
+
+    `hedge_ask` of None or 0 is NO OPINION, not a refusal. `book_health` already
+    rejects a book it cannot read, in its own words; a second refusal for the
+    same condition would leave the operator two different reasons for one fact.
+
+    `>=` not `>`: the pair pays exactly $1.00, so a completable cost AT the cap
+    is a booked loss or a fill slot worth nothing. A ceiling reached, not
+    approached -- the same reading every other cap in this module takes.
+    """
+    if not getattr(cfg, "enforce_completable_pair_cost", True):
+        return None
+    cap = float(getattr(cfg, "max_completable_pair_cost", 0.0))
+    if cap <= 0:
+        return None
+    if hedge_ask is None or float(hedge_ask) <= 0:
+        return None
+    cost = round(float(price) + float(hedge_ask), 4)
+    if cost >= cap:
+        return (f"completable pair {price:.3f}+{float(hedge_ask):.3f}="
+                f"${cost:.4f} >= ${cap:.3f} cap -- the second leg cannot be "
+                f"bought at a profit")
+    return None
+
+
 def hard_block(cfg, inv, side: str, price: float,
                own_book: dict, hedge_book: dict) -> Optional[str]:
     """Why a NEW bid on `side` must not rest, or None if it may.

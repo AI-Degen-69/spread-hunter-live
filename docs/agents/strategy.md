@@ -70,3 +70,36 @@ a log string and feeds no sizing decision.
 A pair assembled **over $1.00** is a booked loss on an instrument that pays exactly $1.00.
 A **one-sided fill** is a directional bet nobody decided to take. Everything in `risk.py`,
 `unhedged_stop_loss.py` and `single_buy_saver.py` exists to prevent those two states.
+
+## The completable-cost gate and the re-quote dead band
+
+Two execution rules from shadow run `run-2809a7161de1` (209 orders, zero fills, 2026-08-25):
+
+**Completable-cost gate** (`max_completable_pair_cost`, default `1.00`). The existing
+`max_pair_cost = 0.995` checks a **both-maker** pair: `up_bid + down_bid`. On a binary
+market the legs are anti-correlated (`UP + DOWN ≈ 1.00`, measured correlation −0.9989),
+so a double-maker fill is rare by construction — almost every pair actually assembles as
+one maker fill plus a **taker completion at the other leg's ask**. The new gate refuses a
+resting bid when `price + best_ask(hedge) >= max_completable_pair_cost`. It fires only
+when we hold none of the hedge token (otherwise `max_pair_cost` governs), has no opinion
+when the hedge book has no ask (`book_health` already refuses unreadable books), and does
+not replace `max_pair_cost` — the two bound different questions and both must hold.
+Switch it off with `enforce_completable_pair_cost=false`; override the cap with env var
+`HUNTER_COMPLETABLE_CAP`.
+
+**Re-quote dead band** (`requote_dead_band`, default `0.03`). On that same run all 205
+consecutive re-quotes changed price and every one reset queue position to zero (median
+order lifetime 11.7 s against median 1058 shares ahead in queue). Measured suppression on
+the run's own price series: 1c → 0%, 2c → 36%, **3c → 48%**, 4c → 58%, 5c → 68%. An order
+resting within 3c of the desired price is kept, not cancelled and replaced; the band is
+symmetric and independent of `price_eps` (sub-tick venue jitter) — the effective keep
+tolerance is the larger of the two. Override with env var `HUNTER_REQUOTE_DEAD_BAND`.
+
+A kept order rests at its own price, up to one dead band away from what the gate approved,
+so it is **re-gated every cycle**: if its own resting price now fails the completable-cost
+check, it is cancelled and this cycle's intent for that token is submitted in its place.
+The re-gate is what makes the band safe; without it the band would be a hole punched
+through the cap.
+
+Fewer orders posted is the expected result of both rules, not a regression — wide markets
+are declined rather than quoted into an empty book.

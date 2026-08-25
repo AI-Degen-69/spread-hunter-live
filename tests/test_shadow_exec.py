@@ -986,6 +986,68 @@ def test_a_merge_charges_each_leg_its_remaining_average_cost(registry):
     assert sum(c["cost_basis"] for c in closes) == pytest.approx(19.82)
 
 
+def test_a_lost_cache_row_costs_one_merge_and_then_heals(registry):
+    """`shadow_merge_legs` is a cache, and a cache can go missing.
+
+    `registry.log_close` commits on its own connection, so the close row and
+    the per-leg rows behind it cannot be written in one transaction from here.
+    A store older than the table, or a crash between the two commits, leaves a
+    `shadow_merge` close with no leg rows -- and the fallback that then prices
+    the pair is the apportioned estimate this replaced. Paying that estimate
+    once is the cost of the gap. Paying it on every later merge, because
+    nothing ever wrote the missing rows, would be the bug.
+    """
+    import sqlite3
+
+    from core_brain.shadow_exec import ensure_shadow_tables, record_shadow_merges
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    pair = "pair-lost-cache"
+
+    _leg(reg, pair_id=pair, local_id="up-1", token="tok-up", price=0.90,
+         size=10, posted_ts=1000)
+    _leg(reg, pair_id=pair, local_id="dn-1", token="tok-dn", price=0.90,
+         size=10, posted_ts=1000)
+    assert record_shadow_merges(reg, db) == [pair]
+
+    # The close survives; its cache rows do not.
+    con = sqlite3.connect(db)
+    con.execute("DELETE FROM shadow_merge_legs")
+    con.commit()
+    con.close()
+
+    _leg(reg, pair_id=pair, local_id="dn-2", token="tok-dn", price=0.01,
+         size=10, posted_ts=2000)
+    _leg(reg, pair_id=pair, local_id="up-2", token="tok-up", price=0.90,
+         size=2, posted_ts=2000)
+    assert record_shadow_merges(reg, db) == [pair]
+
+    # The rows are back: what the first close took, plus what the second did.
+    con = sqlite3.connect(db)
+    rebuilt = {
+        token: (round(shares, 4), round(cost, 4))
+        for token, shares, cost in con.execute(
+            "SELECT token_id, SUM(shares), SUM(cost) FROM shadow_merge_legs "
+            "GROUP BY token_id")
+    }
+    con.close()
+    assert set(rebuilt) == {"tok-up", "tok-dn"}
+    assert rebuilt["tok-up"][0] == pytest.approx(12.0)
+    assert rebuilt["tok-dn"][0] == pytest.approx(12.0)
+
+    # A third merge now prices off those rows rather than re-deriving the
+    # estimate, so it charges the two cheap DOWN shares what they cost.
+    _leg(reg, pair_id=pair, local_id="up-3", token="tok-up", price=0.50,
+         size=8, posted_ts=3000)
+    assert record_shadow_merges(reg, db) == [pair]
+
+    third = reg.get_all_closes()[2]
+    assert third["shares"] == pytest.approx(8.0)
+    assert third["cost_basis"] > 0.0, (
+        "the third merge handed over shares as if they were free")
+
+
 def test_the_position_view_drops_shares_a_merge_already_closed(registry):
     """`shadow_positions` is the oversell pre-flight, so it must not over-report.
 

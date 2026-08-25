@@ -694,6 +694,13 @@ def record_shadow_merges(
     }
 
     merged: list[str] = []
+    # Every per-leg row this call produces, written in one transaction after
+    # the loop. `closes` is the authority on what merged; `shadow_merge_legs`
+    # is a cost cache derived from it, and `log_close` commits on its own
+    # connection, so the two cannot be made one transaction from here. What
+    # keeps that safe is the backfill below: a cache row lost between the two
+    # commits costs the pair one apportioned merge, not every merge after it.
+    leg_writes: list[tuple[str, str, str, float, float]] = []
     for pair_id, legs in by_pair.items():
         if len(legs) != 2:
             continue
@@ -722,13 +729,18 @@ def record_shadow_merges(
             leg_shares = float(leg["shares"])
             gone_shares, gone_cost = consumed.get((pair_id, token), (0.0, 0.0))
             if gone_shares <= 0.0 and already_shares > 0.0:
-                # A pair merged before this store had the per-leg table: the
-                # only surviving record of what left is the share count.
-                # Apportion this leg's cost by it, which is what the older
-                # arithmetic charged.
+                # This pair merged without leaving a cache row: a store older
+                # than the table, or a close whose row was lost before it was
+                # written. The only surviving record of what left is the share
+                # count, so apportion this leg's cost by it -- what the older
+                # arithmetic charged -- and write the result back, so the pair
+                # is priced exactly from here on instead of re-deriving the
+                # same estimate on every rotation for the rest of the run.
                 gone_shares = already_shares
                 gone_cost = (float(leg["cost"]) * (already_shares / leg_shares)
                              if leg_shares > 0 else 0.0)
+                leg_writes.append((f"{pair_id}:backfill", pair_id, token,
+                                   gone_shares, gone_cost))
             remaining_shares = leg_shares - gone_shares
             remaining_cost = float(leg["cost"]) - gone_cost
             avg = (remaining_cost / remaining_shares
@@ -762,14 +774,19 @@ def record_shadow_merges(
         # What each leg gave up, kept per token so the next merge on this pair
         # can price the shares still in it. `closes` cannot hold this: its
         # UP/DOWN split is even by design, matching what a live merge records.
+        leg_writes.extend(
+            (tx_hash, pair_id, token, mergeable, leg_cost)
+            for token, leg_cost in leg_costs
+        )
+        merged.append(pair_id)
+
+    if leg_writes:
         with closing(get_connection(Path(db_path))) as conn:
             conn.executemany(
                 "INSERT OR REPLACE INTO shadow_merge_legs "
                 "(tx_hash, pair_id, token_id, shares, cost) VALUES (?, ?, ?, ?, ?)",
-                [(tx_hash, pair_id, token, mergeable, leg_cost)
-                 for token, leg_cost in leg_costs],
+                leg_writes,
             )
             conn.commit()
-        merged.append(pair_id)
 
     return merged

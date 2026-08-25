@@ -14,6 +14,8 @@ import os
 import re
 from unittest import mock
 
+import pytest
+
 from core_brain.shadow_run import shadow_run_id
 
 
@@ -145,18 +147,33 @@ class TestRunIdIsSessionScoped:
         # The live id must survive the rehearsal untouched.
         assert order_registry.get_run_id() == "run-liveone"
 
-    def test_two_registries_on_one_process_keep_their_own_ids(self, tmp_path):
+    def test_two_registries_interleaved_keep_their_own_ids(self, tmp_path):
+        """Write a, then b, then a AGAIN.
+
+        The earlier version of this test wrote a before b and stopped, which
+        proves nothing an implementation of "whichever registry was built last
+        wins" would not also pass. The second write through `a` is the whole
+        assertion: a session's id has to survive another session starting.
+        """
         from core_brain.order_registry import OrderRegistry, OrderRecord
+
+        def order(oid, tok):
+            return OrderRecord(
+                id=f"local-{oid}", order_id=f"oid-{oid}", condition_id="0xabc",
+                token_id=tok, side="BUY", price=0.47, original_size=20,
+                status="open", posted_ts=1, last_polled_ts=1)
 
         a = OrderRegistry(db_path=tmp_path / "a.db", run_id="shadow-aaaaaaaaaaaa")
         b = OrderRegistry(db_path=tmp_path / "b.db", run_id="shadow-bbbbbbbbbbbb")
-        for reg, tok in ((a, "tok-a"), (b, "tok-b")):
-            reg.create_order(OrderRecord(
-                id=f"local-{tok}", order_id=f"oid-{tok}", condition_id="0xabc",
-                token_id=tok, side="BUY", price=0.47, original_size=20,
-                status="open", posted_ts=1, last_polled_ts=1))
+
+        a.create_order(order("a1", "tok-a"))
+        b.create_order(order("b1", "tok-b"))
+        a.create_order(order("a2", "tok-a"))   # after b exists and has written
+        b.create_order(order("b2", "tok-b"))
+
         assert {o["run_id"] for o in a.get_all_orders()} == {"shadow-aaaaaaaaaaaa"}
         assert {o["run_id"] for o in b.get_all_orders()} == {"shadow-bbbbbbbbbbbb"}
+        assert len(a.get_all_orders()) == 2 and len(b.get_all_orders()) == 2
 
     def test_a_registry_without_an_id_still_uses_the_process_one(
             self, tmp_path, monkeypatch):
@@ -178,3 +195,110 @@ class TestOverrideReachesTheRows:
         ids = _one_session(tmp_path, monkeypatch, "ovr.db",
                            run_id_env="shadow-operatorpin")
         assert ids == {"shadow-operatorpin"}
+
+
+class TestEveryChangedWritePathIsScoped:
+    """One test per write path the run-id change touched.
+
+    Twelve call sites moved from the process-wide `get_run_id()` to the
+    registry's own `_run_id()`. Covering only `create_order` left eleven paths
+    asserting nothing: a shadow session records fills, quotes, market events,
+    markouts, closes and telemetry too, and any one of them still reading the
+    global would stamp live ids onto rehearsal rows.
+
+    Every case sets the process id to a LIVE id first, so a regression shows up
+    as `run-liveone` appearing in a shadow store rather than as a silent pass.
+    """
+
+    LIVE = "run-liveone"
+    MINE = "shadow-scopedaaaaa"
+
+    @pytest.fixture()
+    def reg(self, tmp_path, monkeypatch):
+        from core_brain import order_registry
+        from core_brain.order_registry import OrderRegistry
+
+        monkeypatch.setattr(order_registry, "_CURRENT_RUN_ID", self.LIVE)
+        return OrderRegistry(db_path=tmp_path / "scoped.db", run_id=self.MINE)
+
+    def _one(self, reg, table):
+        import sqlite3
+
+        conn = sqlite3.connect(reg.db_path)
+        try:
+            conn.row_factory = sqlite3.Row
+            return [r["run_id"] for r in conn.execute(f"SELECT run_id FROM {table}")]
+        finally:
+            conn.close()
+
+    def test_orders(self, reg):
+        from core_brain.order_registry import OrderRecord
+
+        reg.create_order(OrderRecord(
+            id="local-1", order_id="oid-1", condition_id="0xabc",
+            token_id="tok", side="BUY", price=0.47, original_size=20,
+            status="open", posted_ts=1, last_polled_ts=1))
+        assert self._one(reg, "orders") == [self.MINE]
+
+    def test_fills(self, reg):
+        from core_brain.order_registry import FillRecord, OrderRecord
+
+        reg.create_order(OrderRecord(
+            id="local-1", order_id="oid-1", condition_id="0xabc",
+            token_id="tok", side="BUY", price=0.47, original_size=20,
+            status="open", posted_ts=1, last_polled_ts=1))
+        reg.record_fill(FillRecord(trade_id="t1", order_uuid="local-1",
+                                   size=5.0, price=0.47))
+        assert self._one(reg, "fills") == [self.MINE]
+
+    def test_quotes(self, reg):
+        from core_brain.order_registry import QuoteRecord
+
+        reg.log_quote(QuoteRecord(ts=1.0, condition_id="0xabc", token_id="tok",
+                                  side="BUY", price=0.47, size=20))
+        assert self._one(reg, "quotes") == [self.MINE]
+
+    def test_market_events(self, reg):
+        from core_brain.order_registry import MarketEventRecord
+
+        reg.log_market_event(MarketEventRecord(
+            ts=1.0, condition_id="0xabc", kind="skip", reason="test"))
+        assert self._one(reg, "market_events") == [self.MINE]
+
+    def test_markouts(self, reg):
+        from core_brain.order_registry import MarkoutRecord
+
+        reg.log_markout(MarkoutRecord(ts=1.0, condition_id="0xabc", side="BUY",
+                                      fill_price=0.47, size=5.0))
+        assert self._one(reg, "markouts") == [self.MINE]
+
+    def test_closes(self, reg):
+        from core_brain.order_registry import CloseRecord
+
+        reg.log_close(CloseRecord(ts=1.0, condition_id="0xabc",
+                                  method="shadow_merge"))
+        assert self._one(reg, "closes") == [self.MINE]
+
+    def test_venue_errors(self, reg):
+        from core_brain.order_registry import VenueErrorRecord
+
+        reg.log_venue_error(VenueErrorRecord(
+            ts=1.0, condition_id="0xabc", side="BUY", price=0.47, size=20,
+            error_code="X", raw_error_msg="boom"))
+        assert self._one(reg, "venue_errors") == [self.MINE]
+
+    def test_float_and_account_marks(self, reg):
+        reg.log_float_mark(unrealized_usd=1.0, committed_open_usd=10.0,
+                           naked_usd=0.0, ts=1.0)
+        reg.log_account_mark({"account_value_usd": 100.0}, ts=1.0)
+        assert self._one(reg, "float_marks") == [self.MINE]
+        assert self._one(reg, "account_marks") == [self.MINE]
+
+    def test_an_explicit_record_id_still_wins(self, reg):
+        """The `record.run_id or ...` half of the contract is unchanged."""
+        from core_brain.order_registry import QuoteRecord
+
+        reg.log_quote(QuoteRecord(ts=1.0, condition_id="0xabc", token_id="tok",
+                                  side="BUY", price=0.47, size=20,
+                                  run_id="shadow-explicit"))
+        assert self._one(reg, "quotes") == ["shadow-explicit"]

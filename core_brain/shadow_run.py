@@ -371,7 +371,9 @@ def run_shadow(
         session (or test) that injects `fetch_books` drives this pass too,
         rather than always hitting the live default underneath it.
         """
-        from core_brain.shadow_exec import ShadowExecutionClient, shadow_positions
+        from core_brain.shadow_exec import (
+            ShadowExecutionClient, record_shadow_merges, shadow_positions,
+        )
         from core_brain.single_buy_saver import auto_manage_pairs
 
         exec_client = ShadowExecutionClient(
@@ -394,6 +396,9 @@ def run_shadow(
                     log.info("pairs %s %s", pair_id, action)
         except (sqlite3.Error, OSError, ValueError) as e:
             log.warning("shadow pairs pass failed: %s", e)
+
+        for pair_id in record_shadow_merges(seam.registry, db_path):
+            log.info("merged %s at $1.00 a share", pair_id)
 
     seam.sweep_fn = shadow_sweep
 

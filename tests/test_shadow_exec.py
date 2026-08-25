@@ -910,3 +910,74 @@ def test_the_exit_branch_reaches_a_decision_instead_of_refusing_on_the_side(
     assert result["action"] == "exited"
     assert result["side"] == "UP"
     assert result["size"] == pytest.approx(20.0)
+
+
+def _leg(reg, *, pair_id, local_id, token, price, size, posted_ts):
+    """One filled leg row plus its fill, written straight to the store.
+
+    Hand-built rather than driven through `record_submit`/`settle_market`
+    because the state under test needs several rows on ONE leg at different
+    prices -- which is what a completion buy landing on a pair produces, and
+    what the tape-driven path (fills credit at the resting order's own price)
+    cannot express in one order.
+    """
+    from core_brain.order_registry import FillRecord, OrderRecord
+
+    reg.create_order(OrderRecord(
+        id=local_id, order_id=f"shadow-{local_id}", condition_id="0xabc",
+        token_id=token, side="BUY", price=price, original_size=size,
+        status="filled", posted_ts=posted_ts, last_polled_ts=posted_ts,
+        pair_id=pair_id))
+    reg.record_fill(FillRecord(
+        trade_id=f"shadow-{local_id}", order_uuid=local_id, size=size,
+        price=price, venue_ts=posted_ts, recorded_ts=posted_ts))
+
+
+def test_no_merge_cycle_books_a_profit_it_did_not_make(registry):
+    """Three merge cycles on one pair whose average cost MOVES between them.
+
+    `cost_basis = target_cost - already_cost` is a difference of two running
+    totals, and the apportionment behind `target_cost` scales a leg's cost by
+    `min_fills / that leg's shares`. Rows arriving on one leg at a very
+    different price (a completion buy is exactly that) can therefore pull the
+    apportioned total BELOW what earlier closes already charged, and an
+    unfloored difference then books a negative cost -- a fabricated profit on
+    shares that cost money. This is the 3-cycle case deferred from the task-6
+    review.
+
+    The floor is the fix, and it is the conservative direction: it can under-
+    report a gain, never invent one.
+    """
+    from core_brain.shadow_exec import ensure_shadow_tables, record_shadow_merges
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    pair = "pair-drifting-cost"
+
+    # Cycle 1: a balanced 10/10 pair bought expensively on both legs.
+    _leg(reg, pair_id=pair, local_id="up-1", token="tok-up", price=0.90,
+         size=10, posted_ts=1000)
+    _leg(reg, pair_id=pair, local_id="dn-1", token="tok-dn", price=0.90,
+         size=10, posted_ts=1000)
+    assert record_shadow_merges(reg, db) == [pair]
+
+    # Cycle 2: more shares land on the pair at prices nothing like the first
+    # round -- 10 cheap DOWN shares and 2 more expensive UP shares. The
+    # apportioned total now sits BELOW the cost the first close already took.
+    _leg(reg, pair_id=pair, local_id="dn-2", token="tok-dn", price=0.01,
+         size=10, posted_ts=2000)
+    _leg(reg, pair_id=pair, local_id="up-2", token="tok-up", price=0.90,
+         size=2, posted_ts=2000)
+    assert record_shadow_merges(reg, db) == [pair]
+
+    # Cycle 3: nothing new to merge.
+    record_shadow_merges(reg, db)
+
+    closes = reg.get_all_closes()
+    assert len(closes) == 2
+    for c in closes:
+        assert c["cost_basis"] >= 0.0, "a merge booked a negative cost basis"
+        assert c["realized_pnl"] <= c["proceeds"] + 1e-9, (
+            "a merge booked more profit than the merge paid")
+        assert c["up_cost_removed"] + c["dn_cost_removed"] == pytest.approx(
+            c["cost_basis"])

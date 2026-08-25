@@ -618,7 +618,14 @@ def record_shadow_merges(
             float(leg["cost"]) * (min_fills / float(leg["shares"])) for leg in legs
         )
         already_cb = already_cost.get(pair_id, 0.0)
-        cost_basis = target_cost - already_cb
+        # Floored at zero. The apportionment above scales each leg's cost by
+        # `min_fills / that leg's shares`, so rows arriving on one leg at a
+        # very different price can pull `target_cost` BELOW what earlier
+        # closes already charged -- and an unfloored difference then books a
+        # NEGATIVE cost basis, which is a profit on shares that cost money.
+        # Under-reporting a gain is the safe direction for a rehearsal;
+        # inventing one is not.
+        cost_basis = max(0.0, target_cost - already_cb)
         proceeds = mergeable * 1.0
         # Version the tx_hash to ensure uniqueness within (condition_id, tx_hash)
         # constraint: first merge uses pair_id as-is, second uses "pair_id:2", etc.

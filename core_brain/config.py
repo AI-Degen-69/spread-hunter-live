@@ -398,7 +398,14 @@ class MakerConfig:
     # $25k research gate: a market must have enough real flow to make a resting
     # quote reachable and enough immediate exit liquidity to make a naked fill
     # survivable. The selector requires this depth independently on YES and NO.
-    select_min_volume_24h_usd: float = 250_000.0
+    #
+    # LOOSENED 2026-08-25 (operator directive), permanent, not a trial:
+    # $250,000 -> $125,000. The 2026-08-10 funnel audit below read the
+    # volume-reject population as 1-3 orders of magnitude under the old bar, so
+    # on that data this admits little beyond what a $200k bar would. It is a
+    # deliberate widening of the candidate pool; the markouts of whatever it
+    # admits are the evidence that says whether to keep it.
+    select_min_volume_24h_usd: float = 125_000.0
     # DEPTH AND SPREAD, ALIGNED TO THE LIVE GATE (2026-08-06). The entry
     # pre-filter was stricter than the continuous protection that actually
     # governs every quote decision: `risk.book_health` (below) requires only
@@ -414,7 +421,23 @@ class MakerConfig:
     # this mainly widens the CANDIDATE POOL rather than admitting marginal
     # books. Set to the same bar the live system already enforces rather than
     # a stricter, redundant one: $1,000 (8x the $120 worst case) and 0.06.
-    select_min_top3_depth_usd: float = 1_000.0
+    #
+    # LOOSENED 2026-08-25 (operator directive), permanent, not a trial:
+    # $1,000 -> $500. The "$120 worst case" in the paragraph above is the
+    # `max_naked_usd` of `scoring/config.py`, not of this file: the field is
+    # $6 here, so $500 is roughly 80x the cap the Trader actually enforces,
+    # not 4x it. The two modules disagree on that number and this comment does
+    # not reconcile them; it only stops the ratio being read off the wrong
+    # one. The continuous `risk.book_health` gate (200 shares, 0.06 spread,
+    # checked on EVERY quote) is unchanged, and that gate, not this pick-time
+    # one, is what refuses a bad book while a position is open.
+    #
+    # The two gates also disagree at the boundary on purpose, and
+    # `tests/test_market_selection_bars.py` pins it: a book at exactly $500 of
+    # top-3 bid depth is REFUSED (`book_allowed` compares `depth <= bar`),
+    # while 24h volume at exactly $125,000 is ADMITTED (`tradable` compares
+    # `volume < bar`).
+    select_min_top3_depth_usd: float = 500.0
     # DEPTH-GATE TRIAL (U32). When set, the RANKER gates on this bar instead of
     # `select_min_top3_depth_usd` -- a controlled loosening licensed by the
     # near-miss tracker (READY_TO_TRIAL: 29 unique markets, 19 with measured
@@ -430,7 +453,11 @@ class MakerConfig:
     # VOLUME-GATE TRIAL (U36). Same staging contract as the depth trial above:
     # when set, the RANKER gates 24h volume on this bar instead of
     # `select_min_volume_24h_usd`; adopted markets are tagged `trial_volume_usd`
-    # and their markouts are the decision evidence. Measured 2026-08-10 funnel
+    # and their markouts are the decision evidence. The figures below were
+    # measured against the THEN-permanent $250,000 volume and $1,000 depth
+    # bars, both since lowered above (2026-08-25); read them as the history
+    # that argued for loosening, not as a description of today's bars.
+    # Measured 2026-08-10 funnel
     # audit: of 54 markets that cleared depth but failed volume, only 2 would
     # fund even with the gate fully lifted, and the top of that population
     # sits at $235-242k -- so the honest trial bar is $200k (a 20% staged

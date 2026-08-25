@@ -84,10 +84,18 @@ def ensure_shadow_tables(db_path: Path | str) -> None:
                 traded REAL NOT NULL DEFAULT 0,
                 cancel_decay REAL,
                 queue_minutes REAL,
-                run_id TEXT
+                run_id TEXT,
+                best_bid REAL
             )
             """
         )
+        # `best_bid` was added after the first runs recorded thousands of
+        # marks, and that history is the asset -- migrate the table rather
+        # than asking for a store to be thrown away. Old rows keep NULL: they
+        # were never observed, which is not the same as "no bid".
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(queue_marks)")}
+        if "best_bid" not in cols:
+            conn.execute("ALTER TABLE queue_marks ADD COLUMN best_bid REAL")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_queue_marks_level "
             "ON queue_marks (token_id, price, ts)"
@@ -232,19 +240,29 @@ def record_submit(
 def write_queue_mark(db_path: Path | str, *, ts: float, condition_id, market_slug,
                      token_id: str, price: float, level_size: float,
                      traded: float, cancel_decay, queue_minutes,
-                     run_id=None) -> None:
-    """One observation of the queue at one price on one token."""
+                     run_id=None, best_bid=None) -> None:
+    """One observation of the queue at one price on one token.
+
+    `best_bid` is the book's touch at the moment of the mark, and it is what
+    makes "we were passed" observable: size joining at our own price sits
+    BEHIND us under price-time priority and already shows as a negative
+    `cancel_decay`, while a better bid appearing means every share of tape now
+    clears against someone else first. From our level's size alone the two are
+    identical. None means the book had no bid -- a real state, and not the
+    same as being outbid by everything.
+    """
     with closing(get_connection(Path(db_path))) as conn:
         conn.execute(
             """
             INSERT INTO queue_marks (
                 ts, condition_id, market_slug, token_id, price, level_size,
-                traded, cancel_decay, queue_minutes, run_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                traded, cancel_decay, queue_minutes, run_id, best_bid
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (float(ts), condition_id, market_slug, str(token_id),
              round(float(price), 4), float(level_size), float(traded),
-             cancel_decay, queue_minutes, run_id),
+             cancel_decay, queue_minutes, run_id,
+             None if best_bid is None else round(float(best_bid), 4)),
         )
         conn.commit()
 
@@ -324,7 +342,7 @@ def _record_queue_marks(db_path, market, orders, traded, book_fn, now,
             market_slug=getattr(market, "market_slug", None),
             token_id=token_id, price=price, level_size=level_size,
             traded=at_level, cancel_decay=decay, queue_minutes=qmin,
-            run_id=run_id)
+            run_id=run_id, best_bid=(book or {}).get("best_bid"))
 
 
 def _filled_size(db_path: Path | str, local_id: str) -> float:

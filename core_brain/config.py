@@ -979,6 +979,19 @@ def load() -> MakerConfig:
         # `quotes.quote_resting_price`; this cannot quote nearer than that.
         kw["reward_offset"] = _bounded_float(
             "HUNTER_REWARD_OFFSET", rwo, 0.0, 1.0)
+    prw = os.environ.get("HUNTER_PRICE_RISK_WIDEN") or ""
+    if prw.strip():
+        # A RISK CONTROL, overridable only because it is also the term that
+        # decides whether a maker can reach the touch at all: it widens by
+        # `price_risk_widen * (w + price)`, about 15 ticks near 0.50, against a
+        # book spread measured at 10 ticks on every two-sided token in the
+        # slate. `reward_offset` alone therefore cannot rest at the best bid,
+        # and whether tape at the touch becomes fills is only answerable by
+        # resting there. Scoped to a shadow rehearsal, which cannot sign.
+        # Zeroing this leaves the coin-flip SIZE cut untouched -- that is
+        # `coinflip_size_cut`, a separate term with its own knob.
+        kw["price_risk_widen"] = _bounded_float(
+            "HUNTER_PRICE_RISK_WIDEN", prw, 0.0, 1.0)
     cno = os.environ.get("HUNTER_NET_ONEWAY_MS") or os.environ.get("HUNTER_CANCEL_NET_ONEWAY_MS")
     if cno and cno.strip():
         kw["net_oneway_ms"] = float(cno)

@@ -423,13 +423,14 @@ class MakerConfig:
     # a stricter, redundant one: $1,000 (8x the $120 worst case) and 0.06.
     #
     # LOOSENED 2026-08-25 (operator directive), permanent, not a trial:
-    # $1,000 -> $500. The naked position this bar exists to keep exitable is
-    # bounded by `max_naked_usd`, which is $6 in this file today -- the "$120"
-    # in the paragraph above is stale, and $500 is roughly 80x the cap rather
-    # than 4x it. The continuous `risk.book_health` gate (200 shares, 0.06
-    # spread, checked on EVERY quote) is unchanged either way, and that gate,
-    # not this pick-time one, is what refuses a bad book while a position is
-    # open.
+    # $1,000 -> $500. The "$120 worst case" in the paragraph above is the
+    # `max_naked_usd` of `scoring/config.py`, not of this file: the field is
+    # $6 here, so $500 is roughly 80x the cap the Trader actually enforces,
+    # not 4x it. The two modules disagree on that number and this comment does
+    # not reconcile them; it only stops the ratio being read off the wrong
+    # one. The continuous `risk.book_health` gate (200 shares, 0.06 spread,
+    # checked on EVERY quote) is unchanged, and that gate, not this pick-time
+    # one, is what refuses a bad book while a position is open.
     #
     # The two gates also disagree at the boundary on purpose, and
     # `tests/test_market_selection_bars.py` pins it: a book at exactly $500 of

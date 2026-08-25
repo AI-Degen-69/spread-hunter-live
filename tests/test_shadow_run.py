@@ -885,16 +885,35 @@ class TestSecondRotation:
 
     def test_inventory_reflects_what_settled_before_the_requote(
             self, tmp_path, monkeypatch):
-        """The tape credits 5 shares against the first resting order. Those
-        shares are bought and stay bought when the order is replaced.
+        """The tape credits 5 shares against the order resting at 0.47 on the
+        second cycle, and the rest of the loop acts on exactly those shares.
+
+        Full chain across the rotation: the fill is credited to the order that
+        was resting when it happened (not to the replacement), the position it
+        leaves is a naked one-sided leg, and the pairs pass rescues it in the
+        same rotation -- so the inventory the next decision reads is flat, and
+        the close accounts for the same 5 shares that settled. Reading only
+        `up_shares` here would pass on a store where nothing was credited at
+        all, which is why the fill is asserted from the ledger too.
         """
-        from core_brain.order_registry import inventory_from_registry
+        from core_brain.order_registry import OrderRegistry, inventory_from_registry
 
         self._run_cycles(
             tmp_path, monkeypatch, cycles=3, prices=[0.47, 0.48, 0.49],
             tape=lambda n: {"tok-up": {0.47: 5.0}} if n == 2 else {})
 
-        inv = inventory_from_registry("0xabc", "tok-up", "tok-dn",
-                                      db_path=tmp_path / "shadow.db")
-        assert inv.up_shares == pytest.approx(5.0)
-        assert inv.up_cost == pytest.approx(5.0 * 0.47)
+        db = tmp_path / "shadow.db"
+        reg = OrderRegistry(db_path=db)
+        fills = reg.get_all_fills()
+        assert [(f["token_id"], f["size"], f["price"]) for f in fills] == [
+            ("tok-up", 5.0, 0.47)]
+        # Credited to the order that was resting when the tape printed, which
+        # is the one the next cycle superseded -- not the replacement.
+        filled_row = next(o for o in reg.get_all_orders()
+                          if o["id"] == fills[0]["order_uuid"])
+        assert round(float(filled_row["price"]), 2) == 0.47
+
+        closes = reg.get_all_closes()
+        assert [c["shares"] for c in closes] == [pytest.approx(5.0)]
+        inv = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
+        assert inv.up_shares == pytest.approx(0.0)

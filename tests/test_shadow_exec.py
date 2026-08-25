@@ -800,3 +800,73 @@ def test_a_live_shaped_store_is_untouched_by_shadow_merge_recognition(tmp_path):
     assert inv.down_shares == pytest.approx(15.0)
     assert inv.up_cost == pytest.approx(20 * 0.47 - 2.45)
     assert inv.down_cost == pytest.approx(20 * 0.51 - 2.45)
+
+
+def test_each_rested_leg_is_logged_in_the_quotes_ledger(registry):
+    """`trader_loop._submit_intents` logs a `QuoteRecord` per leg, and the
+    quotes ledger is the registry's only record of which token is the UP leg
+    and which the DOWN. Without it a shadow store can rest orders and take
+    fills, but nothing downstream can name a side.
+    """
+    from core_brain.shadow_exec import ensure_shadow_tables, record_submit
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=_books)
+
+    quotes = reg.get_all_quotes()
+    assert {q["token_id"]: q["side"] for q in quotes} == {
+        "tok-up": "UP", "tok-dn": "DOWN"}
+    assert all(q["condition_id"] == "0xabc" for q in quotes)
+    assert all(q["market_slug"] == "fake-market" for q in quotes)
+    # The quote row names the order it belongs to, both ways round, exactly as
+    # the live one does -- otherwise it cannot be tied back to a fill.
+    order_by_token = {o.token_id: o for o in reg.get_active_orders()}
+    for q in quotes:
+        row = order_by_token[q["token_id"]]
+        assert q["local_id"] == row.id
+        assert q["order_id"] == row.order_id
+        assert str(q["order_id"]).startswith("shadow-")
+
+
+def test_the_exit_branch_reaches_a_decision_instead_of_refusing_on_the_side(
+        registry):
+    """The half of the pairs pass that owns the pair-over-$1.00 case.
+
+    `exit_single_buy` resolves UP/DOWN through `_token_side`, which reads the
+    quotes ledger, and refuses outright when it comes back None -- before
+    `should_exit` is ever consulted. A shadow store that rested orders without
+    logging quotes could therefore never take an exit: every pair came back
+    `action: 'error'`, "the quotes ledger has no side for it".
+    """
+    from core_brain.shadow_exec import (
+        ShadowExecutionClient, ensure_shadow_tables, record_submit,
+        settle_market, shadow_positions,
+    )
+    from core_brain.single_buy_saver import exit_single_buy
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
+    pair_id = next(o.pair_id for o in reg.get_active_orders())
+
+    def book_fn(_host, token_id):
+        # The light leg's ask has run away: 0.47 + 0.60 is well over the cap,
+        # so the pass routes to the exit rather than the completion.
+        if token_id == "tok-dn":
+            return {"bids": {0.55: 500.0}, "asks": {0.60: 500.0}}
+        return {"bids": {0.46: 500.0}, "asks": {0.49: 500.0}}
+
+    client = ShadowExecutionClient(reg, db, book_fn=book_fn)
+    result = exit_single_buy(
+        client, reg, pair_id, 0.995, live=True,
+        venue_positions=shadow_positions(reg, db))
+
+    assert result["action"] == "exited"
+    assert result["side"] == "UP"
+    assert result["size"] == pytest.approx(20.0)

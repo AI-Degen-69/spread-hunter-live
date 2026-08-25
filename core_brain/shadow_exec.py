@@ -21,7 +21,8 @@ from pathlib import Path
 from typing import Callable
 
 from core_brain.order_registry import (
-    SIZE_EPS, CloseRecord, FillRecord, OrderRecord, OrderRegistry, get_connection,
+    SIZE_EPS, CloseRecord, FillRecord, OrderRecord, OrderRegistry, QuoteRecord,
+    get_connection,
 )
 from core_brain.shadow_fills import (
     ShadowFill, ShadowRestingOrder, credit_fills, queue_ahead_at,
@@ -91,8 +92,19 @@ def record_submit(
 
     Mirrors `core_brain/trader_loop.py:_submit_intents` in everything that is
     not the venue call: the same per-leg `MAX_ORDER_USD` check, the same shared
-    `pair_id`, the same `max_pair_cost_at_post` stamp. A rehearsal under looser
-    caps rehearses something we do not ship.
+    `pair_id`, the same `max_pair_cost_at_post` stamp, and a `QuoteRecord` per
+    leg. A rehearsal under looser caps rehearses something we do not ship.
+
+    The quote row is not bookkeeping. The quotes ledger is the registry's only
+    record of which token is the UP leg and which the DOWN -- the closes table
+    has no token column -- so `single_buy_saver._token_side` reads it, and
+    `exit_single_buy` refuses the whole exit when it comes back None. Without
+    these rows the half of the pairs pass that owns the pair-over-$1.00 case
+    is structurally unreachable in a rehearsal: every pair returns
+    `action: 'error'`, "the quotes ledger has no side for it".
+
+    Fields the venue supplies live and a rehearsal does not (`latency_ms`) are
+    left unset rather than filled with a plausible number.
     """
     from core_brain.venue import MAX_ORDER_USD, MAX_TOTAL_USD
 
@@ -121,9 +133,10 @@ def record_submit(
     try:
         for i in intents:
             local_id = str(uuid.uuid4())
+            order_id = f"{SHADOW_ORDER_PREFIX}{uuid.uuid4().hex[:12]}"
             registry.create_order(OrderRecord(
                 id=local_id,
-                order_id=f"{SHADOW_ORDER_PREFIX}{uuid.uuid4().hex[:12]}",
+                order_id=order_id,
                 condition_id=market.condition_id, token_id=str(i.token_id),
                 side="BUY", price=i.price, original_size=i.size, status="open",
                 posted_ts=now_ms, last_polled_ts=now_ms, pair_id=pair_id,
@@ -137,7 +150,22 @@ def record_submit(
                 # and a queue of zero is the optimistic direction, so assume a level
                 # as deep as this order instead: that never over-credits.
                 book = {"bids": {round(float(i.price), 4): float(i.size)}}
-            write_queue_ahead(db_path, local_id, queue_ahead_at(book, i.price))
+            queue_ahead = queue_ahead_at(book, i.price)
+            write_queue_ahead(db_path, local_id, queue_ahead)
+            registry.log_quote(QuoteRecord(
+                ts=now_fn(),
+                market_slug=getattr(market, "market_slug", None),
+                condition_id=market.condition_id,
+                token_id=str(i.token_id),
+                side=i.side,
+                price=i.price,
+                size=i.size,
+                queue_ahead=queue_ahead,
+                mid=getattr(i, "mid", None),
+                edge_vs_mid=getattr(i, "edge_vs_mid", None),
+                order_id=order_id,
+                local_id=local_id,
+            ))
             placed += 1
     except Exception:
         # Any exception mid-loop: cancel all created orders and re-raise.

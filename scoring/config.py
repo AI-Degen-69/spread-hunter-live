@@ -368,11 +368,19 @@ class MakerConfig:
     # a stricter, redundant one: $1,000 (8x the $120 worst case) and 0.06.
     #
     # LOOSENED 2026-08-25 (operator directive), permanent, not a trial:
-    # $1,000 -> $500. Still 4x the $120 `max_naked_usd` worst case this bar
-    # exists to keep exitable, and the continuous `risk.book_health` gate (200
-    # shares, 0.06 spread, checked on EVERY quote) is unchanged -- that gate,
+    # $1,000 -> $500. The naked position this bar exists to keep exitable is
+    # bounded by `max_naked_usd`, which is $6 in this file today -- the "$120"
+    # in the paragraph above is stale, and $500 is roughly 80x the cap rather
+    # than 4x it. The continuous `risk.book_health` gate (200 shares, 0.06
+    # spread, checked on EVERY quote) is unchanged either way, and that gate,
     # not this pick-time one, is what refuses a bad book while a position is
     # open.
+    #
+    # The two gates also disagree at the boundary on purpose, and
+    # `tests/test_market_selection_bars.py` pins it: a book at exactly $500 of
+    # top-3 bid depth is REFUSED (`book_allowed` compares `depth <= bar`),
+    # while 24h volume at exactly $125,000 is ADMITTED (`tradable` compares
+    # `volume < bar`).
     select_min_top3_depth_usd: float = 500.0
     # DEPTH-GATE TRIAL (U32). When set, the RANKER gates on this bar instead of
     # `select_min_top3_depth_usd` -- a controlled loosening licensed by the

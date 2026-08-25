@@ -30,11 +30,31 @@ once because it divided a combined-level rate into a single level's queue. Both
 errors shortened clear times, which for a report whose only job is to say
 whether a queue is joinable is the one direction that must not be wrong.
 
+TWO MORE WAYS THIS READER MANUFACTURED PROGRESS, both fixed here and both
+found by cross-checking a real 42-minute run against hand arithmetic:
+
+  * SUMMED POSITIVES, NOT NET. Aggregating `max(0, cancel_decay)` keeps every
+    downswing and discards every upswing, so a level flapping around a flat
+    mean reads as pure decay. On the two tennis markets in that run the median
+    cycle-to-cycle change in `level_size` was 41-59%, and the summed positives
+    came to 3.4-4.0x the level's entire net drift. The collector is still right
+    to record `cancel_decay` unclamped -- a negative value is real information
+    about size joining the level, and clamping it there would flatter the fill
+    model exactly where it is already too generous. It is the READER's
+    aggregation that must be net: neither direction of clamp belongs here.
+  * FAILED BOOK READS COUNTED AS EMPTIED LEVELS. `queue_ahead_at` returns 0.0
+    when the price is simply absent from the book it was handed, which is
+    indistinguishable from a level that genuinely emptied. That run held one
+    delta of 154,132 shares to 0 with nothing on the tape explaining it. Any
+    delta touching a zero-size read is dropped, and the count is REPORTED per
+    market: how often a market's book fails to read is itself a data-quality
+    signal, and a market whose marks are mostly drops has no verdict at all.
+
 ## How to verify
 
     python -m pytest -q tests/test_queue_report.py
 
-Expected: 27 passed.
+Expected: 39 passed.
 
     python scripts/queue_report.py --minutes 45
 
@@ -71,6 +91,19 @@ class Delta:
 
 
 @dataclass(frozen=True)
+class Marks:
+    """What one read of the store yielded, and what it had to throw away.
+
+    The drop count travels with the deltas rather than being recomputed,
+    because the two are answers to the same question: a market with 40 usable
+    deltas and 400 dropped ones has not been measured, and a caller holding
+    only the deltas cannot tell that apart from a clean read.
+    """
+    deltas: list[Delta]
+    dropped: dict[str, int]
+
+
+@dataclass(frozen=True)
 class LevelStat:
     market_slug: str
     token_id: str
@@ -95,7 +128,7 @@ class MarketStat:
     clear_all: float
 
 
-def load_deltas(db_path: Path | str, minutes: float | None) -> list[Delta]:
+def load_marks(db_path: Path | str, minutes: float | None) -> Marks:
     """Every recorded movement, paired within one level AND one run.
 
     A delta is the interval between two consecutive marks on the same
@@ -107,6 +140,15 @@ def load_deltas(db_path: Path | str, minutes: float | None) -> list[Delta]:
     `dt_min` is carried on the delta rather than reconstructed later, so a
     caller can only ever divide movement by the time it actually took.
 
+    A delta whose level reads 0.0 on EITHER side is dropped and counted, not
+    kept. A zero can mean the level emptied or it can mean the book fetch did
+    not return that price at all, and the two are indistinguishable from here;
+    differencing against one invents a cancel the size of the whole level, and
+    differencing out of one invents an equal join. Dropping does not bridge the
+    gap either -- the surviving marks on both sides are NOT paired across the
+    bad one, because a delta stretched over the outage would report a tidy zero
+    while hiding that the window was unusable.
+
     `minutes` filters by the delta's END timestamp and keeps whole deltas: a
     partially-included interval would put movement over the wrong divisor,
     which is the bug this whole module was rewritten to remove. `None` means
@@ -117,7 +159,7 @@ def load_deltas(db_path: Path | str, minutes: float | None) -> list[Delta]:
         if minutes < 0:
             raise ValueError(f"--minutes must not be negative, got {minutes}")
         if minutes == 0:
-            return []
+            return Marks(deltas=[], dropped={})
 
     conn = sqlite3.connect(f"file:{Path(db_path)}?mode=ro", uri=True)
     try:
@@ -127,7 +169,7 @@ def load_deltas(db_path: Path | str, minutes: float | None) -> list[Delta]:
         if not conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
                 "AND name='queue_marks'").fetchone():
-            return []
+            return Marks(deltas=[], dropped={})
         rows = [dict(r) for r in conn.execute(
             "SELECT * FROM queue_marks ORDER BY run_id, token_id, price, ts, id")]
         newest = conn.execute("SELECT MAX(ts) FROM queue_marks").fetchone()[0]
@@ -139,23 +181,31 @@ def load_deltas(db_path: Path | str, minutes: float | None) -> list[Delta]:
         cutoff = float(newest) - minutes * 60.0
 
     out: list[Delta] = []
+    dropped: dict[str, int] = {}
     prev_key = None
     prev_ts = None
+    prev_size = None
     for r in rows:
         key = (r["run_id"], r["token_id"], round(float(r["price"]), 4))
+        size = float(r["level_size"])
         if key == prev_key and prev_ts is not None and r["cancel_decay"] is not None:
             dt_min = (float(r["ts"]) - prev_ts) / 60.0
             if dt_min > 0 and (cutoff is None or float(r["ts"]) >= cutoff):
-                out.append(Delta(
-                    ts=float(r["ts"]), run_id=r["run_id"] or "",
-                    market_slug=r["market_slug"] or "?",
-                    token_id=r["token_id"], price=round(float(r["price"]), 4),
-                    level_size=float(r["level_size"]),
-                    traded=float(r["traded"] or 0.0),
-                    cancel_decay=float(r["cancel_decay"]),
-                    dt_min=dt_min))
-        prev_key, prev_ts = key, float(r["ts"])
-    return out
+                slug = r["market_slug"] or "?"
+                if size <= 0.0 or (prev_size is not None and prev_size <= 0.0):
+                    dropped[slug] = dropped.get(slug, 0) + 1
+                else:
+                    out.append(Delta(
+                        ts=float(r["ts"]), run_id=r["run_id"] or "",
+                        market_slug=slug,
+                        token_id=r["token_id"],
+                        price=round(float(r["price"]), 4),
+                        level_size=size,
+                        traded=float(r["traded"] or 0.0),
+                        cancel_decay=float(r["cancel_decay"]),
+                        dt_min=dt_min))
+        prev_key, prev_ts, prev_size = key, float(r["ts"]), size
+    return Marks(deltas=out, dropped=dropped)
 
 
 def _clear(size: float, rate: float) -> float:
@@ -166,11 +216,18 @@ def _clear(size: float, rate: float) -> float:
 def level_stats(deltas: list[Delta]) -> list[LevelStat]:
     """One row per (market, token, price): its own rates over its own time.
 
-    Negative `cancel_decay` -- size joining the level behind us -- is recorded
-    honestly by the collector but contributes zero here. It is real information
-    about the book filling in, and it is not progress toward the front; letting
-    it net against cancels elsewhere would shorten a clear time on the strength
-    of orders arriving.
+    `cancel_decay` aggregates NET across the level's window, negatives
+    included. An earlier version summed only the positives on the reasoning
+    that size joining the level behind us is not progress toward the front --
+    true of a single delta, and wrong as an aggregation. Keeping every
+    downswing while discarding every upswing turns a level oscillating around a
+    flat mean into steady one-way decay, which is how three tennis markets read
+    as clearing in 0-2 minutes while their level sizes ended the run where they
+    started. Over a window, the only movement that carries a maker forward is
+    the movement that did not come back.
+
+    A net that is negative or zero means the level held or grew, and `_clear`
+    turns that into `inf` rather than a negative clear time.
     """
     grouped: dict[tuple, list[Delta]] = {}
     for d in deltas:
@@ -182,7 +239,7 @@ def level_stats(deltas: list[Delta]) -> list[LevelStat]:
         if span <= 0:
             continue
         traded = sum(d.traded for d in ds)
-        cancelled = sum(max(0.0, d.cancel_decay) for d in ds)
+        cancelled = sum(d.cancel_decay for d in ds)
         median_size = st.median([d.level_size for d in ds])
         t_rate, c_rate = traded / span, cancelled / span
         out.append(LevelStat(
@@ -230,13 +287,33 @@ def _fmt(minutes: float, width: int) -> str:
     return f"{minutes:{width}.0f}" if minutes != math.inf else "inf".rjust(width)
 
 
+def _print_dropped(dropped: dict[str, int], kept: dict[str, int]) -> None:
+    """How often each market's book failed to read, beside what survived.
+
+    Printed even when it is empty of consequence, because the rate itself is
+    the signal: over a long run a market whose book reads fail a third of the
+    time has not been measured the same way as one whose reads all land, and
+    the verdicts must not be compared as if it had.
+    """
+    if not dropped:
+        return
+    print("\nfailed book reads (level read 0 -- dropped, not counted as decay):")
+    for slug in sorted(dropped, key=lambda s: -dropped[s]):
+        n, good = dropped[slug], kept.get(slug, 0)
+        total = n + good
+        print(f"  {slug:<34} {n:>5} delta{'' if n == 1 else 's'} dropped of "
+              f"{total:>5} ({100.0 * n / total:.0f}%)")
+
+
 def report(db_path: Path, minutes: float | None) -> int:
-    deltas = load_deltas(db_path, minutes)
+    marks = load_marks(db_path, minutes)
+    deltas = marks.deltas
     if not deltas:
-        print(f"No queue movement recorded in {db_path}.")
+        print(f"No usable queue movement recorded in {db_path}.")
         print("Either this store predates the telemetry, or the run has not")
         print("yet seen two cycles on one level -- nothing can be differenced")
         print("until it has. If a run is in flight, wait one cycle.")
+        _print_dropped(marks.dropped, {})
         return 1
 
     levels = level_stats(deltas)
@@ -261,12 +338,17 @@ def report(db_path: Path, minutes: float | None) -> int:
               f"{m.cancel_rate:>11.1f} {_fmt(m.clear_trade, 13)} "
               f"{_fmt(m.clear_all, 11)}  {verdict(m.clear_all)}")
 
+    kept: dict[str, int] = {}
+    for d in deltas:
+        kept[d.market_slug] = kept.get(d.market_slug, 0) + 1
+    _print_dropped(marks.dropped, kept)
+
     traded = sum(d.traded for d in deltas)
-    cancelled = sum(max(0.0, d.cancel_decay) for d in deltas)
-    moved = traded + cancelled
-    share = 100.0 * cancelled / moved if moved else 0.0
+    cancelled = sum(d.cancel_decay for d in deltas)
+    moved = traded + max(0.0, cancelled)
+    share = 100.0 * max(0.0, cancelled) / moved if moved else 0.0
     print(f"\ncancel share of all queue movement: {share:.0f}% "
-          f"({cancelled:.0f} cancelled vs {traded:.0f} traded)")
+          f"({cancelled:.0f} net cancelled vs {traded:.0f} traded)")
     print("A high share means the fill model -- which counts only the traded")
     print("half -- understates real queue progress by roughly that much.")
 

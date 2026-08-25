@@ -198,10 +198,12 @@ def build_shadow_seam(
     - `client` comes from `shadow_guard.shadow_client` (no signer, denying
       proxy) unless `client_fn` injects one -- and an injected client is
       wrapped in the same proxy, so the seam never holds a raw client.
-    - `submit_fn`/`cancel_fn` are recorders: submit appends each decided intent
-      (stamped with its condition id) to `intents_sink` and returns the count;
-      cancel records nothing and returns 0. Milestone 2 gives them their full
-      shape.
+    - `submit_fn`/`cancel_fn` are recorders against the shadow store rather
+      than the venue. Submit stamps each decided intent with its condition id
+      into `intents_sink` AND rests it as an order row (with a quote row and a
+      modelled queue position) through `shadow_exec.record_submit`; cancel
+      marks the named rows `cancelled` and returns how many it handled, which
+      in a rehearsal is always all of them.
 
     `reconcile_fn` is a no-op on purpose -- it reconciles against venue
     positions a shadow run does not have. Callers must report it as
@@ -261,6 +263,12 @@ def build_shadow_seam(
             return dict(empty_book)
         return fetch_books(clob_host, token_id)
 
+    # One resolved host for every read this seam makes. Read once here rather
+    # than at each call site: `record_submit` reads the book to model queue
+    # position, and a hard-coded default there would have that one read talk to
+    # a different venue than everything else when CLOB_HOST is set.
+    clob_host = os.environ.get("CLOB_HOST", "https://clob.polymarket.com")
+
     resolved_traded_fn = traded_fn or _default_traded_fn()
     seen_by_market: dict[str, set] = {}
     base_inventory_fn = _make_inventory_fn(registry, Path(db_path))
@@ -295,10 +303,56 @@ def build_shadow_seam(
         for qi in intents:
             intents_sink.append(ShadowIntent.from_quote(qi, market.condition_id))
         return record_submit(client, reg, market, intents, cfg_in,
-                             db_path=db_path, book_fn=shadow_fetch_books)
+                             db_path=db_path, book_fn=shadow_fetch_books,
+                             clob_host=clob_host)
 
-    def record_cancel(_client, _registry, orders) -> int:
-        return 0
+    def record_cancel(_client, reg, orders) -> int:
+        """Mark each named row cancelled and report how many were handled.
+
+        Mirrors `core_brain/trader_loop.py:_cancel_orders` minus the venue
+        call: in a rehearsal there is no venue to reject a cancel, so a cancel
+        always succeeds and the count returned always equals the number of
+        orders handed over.
+
+        Returning 0 instead -- which this did -- is not a harmless stub. The
+        caller (`trader_loop._visit_one`) reads a short count as a possibly
+        failed cancel and asks `_still_resting`; the shadow seam wires no
+        `resting_order_ids_fn`, so that check takes its "unverifiable means
+        unsafe" branch, reports every order as still resting, and raises. The
+        market goes ERROR before `submit_fn` is ever reached, on every
+        re-quote, and the order it wanted to replace stays `open` -- still
+        collecting simulated fills at a price the live loop would have
+        cancelled. Both cancel ports (`_visit_one` and
+        `_cancel_dropped_markets`) call this same seam function with the same
+        dict shape, so both are served here.
+
+        An order whose row cannot be found still counts: a row that is no
+        longer active was already filled or cancelled, so nothing rests, which
+        is the outcome the caller is asking about. A row that IS found and
+        cannot be written does not count -- the store still says it rests, and
+        the caller must be allowed to refuse the replacement.
+        """
+        now_ms = int(time.time() * 1000)
+        cancelled = 0
+        for o in orders:
+            v_id = o.get("order_id") or o.get("id")
+            row_id = o.get("id")
+            match = None
+            for row in reg.get_active_orders():
+                if row.order_id == v_id or (row_id and row.id == row_id):
+                    match = row
+                    break
+            if match is None:
+                cancelled += 1
+                continue
+            try:
+                reg.update_order_status(match.id, status="cancelled",
+                                        last_polled_ts=now_ms)
+            except (KeyError, sqlite3.Error) as e:
+                log.warning("shadow cancel of %s failed: %s", match.id, e)
+                continue
+            cancelled += 1
+        return cancelled
 
     def noop_reconcile(*_a) -> None:
         return None
@@ -310,7 +364,7 @@ def build_shadow_seam(
         client=client,
         registry=registry,
         base_cfg=cfg,
-        clob_host=os.environ.get("CLOB_HOST", "https://clob.polymarket.com"),
+        clob_host=clob_host,
         fetch_market=fetch_market or _default_fetch_market(),
         fetch_books=shadow_fetch_books,
         decide=decide,

@@ -174,3 +174,11 @@ class TestOverrideValidation:
     def test_a_zero_dead_band_is_accepted(self):
         with mock.patch.dict(os.environ, {"HUNTER_REQUOTE_DEAD_BAND": "0"}):
             assert load().requote_dead_band == 0.0
+
+    def test_the_dead_band_ceiling_is_accepted(self):
+        # Both ends of the bound, so a future tightening cannot move the
+        # ceiling without a test saying so. 1.00 is the instrument's whole
+        # price range and already means "never re-quote"; it is the last
+        # value that is a setting rather than a typo.
+        with mock.patch.dict(os.environ, {"HUNTER_REQUOTE_DEAD_BAND": "1.0"}):
+            assert load().requote_dead_band == 1.0

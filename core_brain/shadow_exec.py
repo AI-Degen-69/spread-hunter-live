@@ -51,12 +51,16 @@ class ShadowOrderRefused(RuntimeError):
 
 
 def ensure_shadow_tables(db_path: Path | str) -> None:
-    """Create the queue-position table beside the registry's own schema.
+    """Create the shadow-only tables beside the registry's own schema.
 
     Queue position is a property of the model, not of the venue, so it does not
-    belong in `orders`. Keeping it in its own table also means a shadow store
-    opened by live code reads as a registry with some odd ids, never as a
-    registry with columns that do not exist.
+    belong in `orders`. `shadow_merge_legs` is here for the same reason: the
+    `closes` table records a merge's cost as one number plus an even UP/DOWN
+    split, which is all a live merge can attribute, and the remaining-average
+    cost of each leg needs the per-token figure the split throws away. Keeping
+    both in their own tables also means a shadow store opened by live code
+    reads as a registry with some odd ids, never as a registry with columns
+    that do not exist.
     """
     with closing(get_connection(Path(db_path))) as conn:
         conn.execute(
@@ -64,6 +68,18 @@ def ensure_shadow_tables(db_path: Path | str) -> None:
             CREATE TABLE IF NOT EXISTS shadow_queue (
                 local_id TEXT PRIMARY KEY,
                 queue_ahead REAL NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shadow_merge_legs (
+                tx_hash TEXT NOT NULL,
+                pair_id TEXT NOT NULL,
+                token_id TEXT NOT NULL,
+                shares REAL NOT NULL,
+                cost REAL NOT NULL,
+                PRIMARY KEY (tx_hash, token_id)
             )
             """
         )
@@ -530,20 +546,71 @@ def shadow_positions(registry: OrderRegistry, db_path: Path | str) -> dict[str, 
     on every cycle would keep the pairs pass from ever running in a rehearsal
     that has no funder to read a live position from.
     """
-    out: dict[str, float] = {}
     with closing(get_connection(Path(db_path))) as conn:
+        # A SELL never reaches this store today -- `record_submit` writes BUY
+        # rows and a shadow exit writes no order at all -- but reading the side
+        # rather than assuming it keeps the sum honest if that ever changes.
         rows = conn.execute(
             """
-            SELECT o.token_id AS token_id, COALESCE(SUM(f.size), 0) AS shares
+            SELECT o.condition_id AS condition_id, o.token_id AS token_id,
+                   COALESCE(SUM(CASE WHEN o.side = 'SELL'
+                                     THEN -f.size ELSE f.size END), 0) AS shares
             FROM orders o LEFT JOIN fills f ON f.order_uuid = o.id
-            GROUP BY o.token_id
+            GROUP BY o.condition_id, o.token_id
             """
         ).fetchall()
-    for r in rows:
-        shares = float(r["shares"])
-        if shares > 0:
-            out[str(r["token_id"])] = shares
-    return out
+        close_rows = conn.execute(
+            """
+            SELECT condition_id, method, shares, up_price
+            FROM closes WHERE condition_id IS NOT NULL
+            """
+        ).fetchall()
+
+    held: dict[tuple[str, str], float] = {
+        (str(r["condition_id"]), str(r["token_id"])): float(r["shares"])
+        for r in rows
+    }
+
+    # UP/DOWN per token, from the quotes ledger -- the same mapping
+    # `single_buy_saver._token_side` reads, because the closes table has no
+    # token column and an exit records its leg by which price field is set.
+    side_of: dict[tuple[str, str], str] = {}
+    seen_ts: dict[tuple[str, str], float] = {}
+    for q in registry.get_all_quotes():
+        cid, token = q.get("condition_id"), q.get("token_id")
+        side = str(q.get("side") or "").upper()
+        if not cid or not token or side not in ("UP", "DOWN"):
+            continue
+        key = (str(cid), str(token))
+        ts = float(q.get("ts") or 0.0)
+        if ts >= seen_ts.get(key, -1.0):
+            seen_ts[key] = ts
+            side_of[key] = side
+
+    for cr in close_rows:
+        shares = float(cr["shares"] or 0.0)
+        if shares <= 0:
+            continue
+        cid = str(cr["condition_id"])
+        legs = [k for k in held if k[0] == cid]
+        if cr["method"] in ("merge", "shadow_merge"):
+            # Both legs leave together at a dollar a share.
+            pass
+        elif cr["method"] in ("single_buy_exit", "naked_exit"):
+            want = "UP" if cr["up_price"] is not None else "DOWN"
+            sold = [k for k in legs if side_of.get(k) == want]
+            # An unlabelled leg cannot happen -- the exit path refuses to sell
+            # a token the quotes ledger has no side for -- but if one ever
+            # appears, taking the shares off BOTH legs under-reports the
+            # position, and an under-reported position is what makes the
+            # oversell pre-flight refuse rather than sell twice.
+            legs = sold or legs
+        else:
+            continue
+        for key in legs:
+            held[key] = max(0.0, held[key] - shares)
+
+    return {token: shares for (_cid, token), shares in held.items() if shares > 0}
 
 
 def record_shadow_merges(
@@ -579,14 +646,29 @@ def record_shadow_merges(
             """
         ).fetchall()
 
-        # Already-merged shares and cost per pair: tx_hash is prefixed pair_id
+        # Already-merged shares per pair: tx_hash is prefixed pair_id. One row
+        # per close, so counting the rows of a pair also gives the version
+        # number the next tx_hash needs -- read once here rather than with a
+        # per-pair query inside the loop below.
         merged_rows = conn.execute(
             """
-            SELECT tx_hash AS pair_tx, COALESCE(SUM(shares), 0) AS merged_shares,
-                   COALESCE(SUM(cost_basis), 0) AS merged_cost
+            SELECT tx_hash AS pair_tx, COALESCE(SUM(shares), 0) AS merged_shares
             FROM closes
             WHERE method = 'shadow_merge' AND tx_hash IS NOT NULL
             GROUP BY tx_hash
+            """
+        ).fetchall()
+
+        # What each leg has already given up, per token. Written by this
+        # function; see `ensure_shadow_tables` for why it cannot live in
+        # `closes`.
+        consumed_rows = conn.execute(
+            """
+            SELECT pair_id, token_id,
+                   COALESCE(SUM(shares), 0) AS shares,
+                   COALESCE(SUM(cost), 0) AS cost
+            FROM shadow_merge_legs
+            GROUP BY pair_id, token_id
             """
         ).fetchall()
 
@@ -597,15 +679,19 @@ def record_shadow_merges(
     # Build maps from pair_id to already-merged shares and cost. tx_hash is formatted
     # as "pair-xxx" for the first merge, "pair-xxx:2" for the second, etc.
     already_merged: dict[str, float] = {}
-    already_cost: dict[str, float] = {}
+    merge_counts: dict[str, int] = {}
     for r in merged_rows:
         tx = str(r["pair_tx"])
         # Extract pair_id from tx_hash (everything before the optional ":N" suffix)
-        pair_id = tx.split(":")[0] if ":" in tx else tx
-        already_shares = float(r["merged_shares"])
-        already_cb = float(r["merged_cost"])
-        already_merged[pair_id] = already_merged.get(pair_id, 0.0) + already_shares
-        already_cost[pair_id] = already_cost.get(pair_id, 0.0) + already_cb
+        pair_id = tx.split(":")[0]
+        already_merged[pair_id] = (already_merged.get(pair_id, 0.0)
+                                   + float(r["merged_shares"]))
+        merge_counts[pair_id] = merge_counts.get(pair_id, 0) + 1
+
+    consumed: dict[tuple[str, str], tuple[float, float]] = {
+        (str(r["pair_id"]), str(r["token_id"])): (float(r["shares"]), float(r["cost"]))
+        for r in consumed_rows
+    }
 
     merged: list[str] = []
     for pair_id, legs in by_pair.items():
@@ -618,35 +704,41 @@ def record_shadow_merges(
         mergeable = min_fills - already_shares
         if mergeable <= SIZE_EPS:
             continue
-        # Cost basis for newly merged shares: compute target cost (apportioned cost
-        # of all min_fills shares using current prices), subtract what was already
-        # recorded in previous closes. This ensures the newly merged shares are
-        # charged their actual incremental cost.
-        target_cost = sum(
-            float(leg["cost"]) * (min_fills / float(leg["shares"])) for leg in legs
-        )
-        already_cb = already_cost.get(pair_id, 0.0)
-        # Floored at zero. The apportionment above scales each leg's cost by
-        # `min_fills / that leg's shares`, so rows arriving on one leg at a
-        # very different price can pull `target_cost` BELOW what earlier
-        # closes already charged -- and an unfloored difference then books a
-        # NEGATIVE cost basis, which is a profit on shares that cost money.
-        # Under-reporting a gain is the safe direction for a rehearsal;
-        # inventing one is not.
-        cost_basis = max(0.0, target_cost - already_cb)
+        # Cost basis for the newly merged shares: each leg gives up `mergeable`
+        # shares at the average price of the shares it still holds.
+        #
+        # What this replaced derived the figure by subtracting the cost earlier
+        # closes charged from a recomputed cumulative target, where that target
+        # scaled each leg's cost by `min_fills / that leg's shares`. A later
+        # round of cheap fills on one leg could pull the target BELOW the
+        # amount already charged, and the floor that stopped the difference
+        # going negative then booked the whole $1.00 payout as profit -- on
+        # shares bought with money. A remaining average cannot go negative, and
+        # cannot reach zero while the leg still holds something that cost
+        # something, so the floor is gone with the arithmetic that needed it.
+        leg_costs: list[tuple[str, float]] = []
+        for leg in legs:
+            token = str(leg["token_id"])
+            leg_shares = float(leg["shares"])
+            gone_shares, gone_cost = consumed.get((pair_id, token), (0.0, 0.0))
+            if gone_shares <= 0.0 and already_shares > 0.0:
+                # A pair merged before this store had the per-leg table: the
+                # only surviving record of what left is the share count.
+                # Apportion this leg's cost by it, which is what the older
+                # arithmetic charged.
+                gone_shares = already_shares
+                gone_cost = (float(leg["cost"]) * (already_shares / leg_shares)
+                             if leg_shares > 0 else 0.0)
+            remaining_shares = leg_shares - gone_shares
+            remaining_cost = float(leg["cost"]) - gone_cost
+            avg = (remaining_cost / remaining_shares
+                   if remaining_shares > SIZE_EPS else 0.0)
+            leg_costs.append((token, max(0.0, mergeable * avg)))
+        cost_basis = sum(c for _token, c in leg_costs)
         proceeds = mergeable * 1.0
         # Version the tx_hash to ensure uniqueness within (condition_id, tx_hash)
         # constraint: first merge uses pair_id as-is, second uses "pair_id:2", etc.
-        # Count existing closes for this pair with tx_hash starting with pair_id
-        with closing(get_connection(Path(db_path))) as conn:
-            merge_count_row = conn.execute(
-                """
-                SELECT COUNT(*) as cnt FROM closes
-                WHERE method = 'shadow_merge' AND tx_hash LIKE ?
-                """,
-                (f"{pair_id}%",),
-            ).fetchone()
-        merge_count = int(merge_count_row["cnt"]) if merge_count_row else 0
+        merge_count = merge_counts.get(pair_id, 0)
         tx_hash = pair_id if merge_count == 0 else f"{pair_id}:{merge_count + 1}"
         registry.log_close(CloseRecord(
             ts=now_fn(), condition_id=str(legs[0]["condition_id"]),
@@ -667,6 +759,17 @@ def record_shadow_merges(
             # the same logical pair by sharing a common prefix in tx_hash.
             tx_hash=tx_hash,
         ))
+        # What each leg gave up, kept per token so the next merge on this pair
+        # can price the shares still in it. `closes` cannot hold this: its
+        # UP/DOWN split is even by design, matching what a live merge records.
+        with closing(get_connection(Path(db_path))) as conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO shadow_merge_legs "
+                "(tx_hash, pair_id, token_id, shares, cost) VALUES (?, ?, ?, ?, ?)",
+                [(tx_hash, pair_id, token, mergeable, leg_cost)
+                 for token, leg_cost in leg_costs],
+            )
+            conn.commit()
         merged.append(pair_id)
 
     return merged

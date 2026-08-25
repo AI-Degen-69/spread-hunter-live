@@ -933,20 +933,129 @@ def _leg(reg, *, pair_id, local_id, token, price, size, posted_ts):
         price=price, venue_ts=posted_ts, recorded_ts=posted_ts))
 
 
+def test_a_merge_charges_each_leg_its_remaining_average_cost(registry):
+    """Every merged share is charged, and charged what it actually cost.
+
+    The apportioned model this replaced derived a close's cost by subtracting
+    what earlier closes charged from a recomputed cumulative target. Because
+    the target scaled each leg's cost by `min_fills / that leg's shares`, a
+    later round of cheap fills on one leg could pull it BELOW the amount
+    already charged -- and the floor that stopped a negative cost then booked
+    the whole $1.00 payout as profit, on shares that were bought with money.
+
+    A leg's shares leave at the average price of the shares still in it, so
+    the sum of every close's cost equals the cost of the shares merged. That
+    is the property asserted here; the fabricated profit is the thing it makes
+    impossible.
+    """
+    from core_brain.shadow_exec import ensure_shadow_tables, record_shadow_merges
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    pair = "pair-drifting-cost"
+
+    # Cycle 1: a balanced 10/10 pair, both legs bought at 0.90.
+    _leg(reg, pair_id=pair, local_id="up-1", token="tok-up", price=0.90,
+         size=10, posted_ts=1000)
+    _leg(reg, pair_id=pair, local_id="dn-1", token="tok-dn", price=0.90,
+         size=10, posted_ts=1000)
+    assert record_shadow_merges(reg, db) == [pair]
+
+    # Cycle 2: 10 cheap DOWN shares and 2 more expensive UP shares. Two more
+    # pairs are mergeable, and they cost 0.90 + 0.01 each -- not nothing.
+    _leg(reg, pair_id=pair, local_id="dn-2", token="tok-dn", price=0.01,
+         size=10, posted_ts=2000)
+    _leg(reg, pair_id=pair, local_id="up-2", token="tok-up", price=0.90,
+         size=2, posted_ts=2000)
+    assert record_shadow_merges(reg, db) == [pair]
+
+    closes = reg.get_all_closes()
+    assert len(closes) == 2
+
+    second = closes[1]
+    assert second["shares"] == pytest.approx(2.0)
+    # Remaining UP average is 0.90 (2 shares, $1.80 left after the first close
+    # took 10 shares and $9.00); remaining DOWN average is 0.01.
+    assert second["cost_basis"] == pytest.approx(2 * (0.90 + 0.01))
+    assert second["cost_basis"] > 0.0, "a merge booked shares as free"
+    assert second["realized_pnl"] == pytest.approx(
+        second["proceeds"] - second["cost_basis"])
+
+    # Reconciliation: 12 UP shares ($10.80, all of them) and 12 DOWN shares
+    # ($9.00 for the first ten, $0.02 for the next two) were merged.
+    assert sum(c["cost_basis"] for c in closes) == pytest.approx(19.82)
+
+
+def test_the_position_view_drops_shares_a_merge_already_closed(registry):
+    """`shadow_positions` is the oversell pre-flight, so it must not over-report.
+
+    `auto_manage_pairs` compares the size it wants to sell against what this
+    view says is held. Summing every fill and never subtracting a close leaves
+    merged shares in the answer, and the check then passes for shares the same
+    store shows as gone.
+    """
+    from core_brain.shadow_exec import (ensure_shadow_tables,
+                                        record_shadow_merges, shadow_positions)
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    pair = "pair-merged-away"
+
+    _leg(reg, pair_id=pair, local_id="up-1", token="tok-up", price=0.47,
+         size=10, posted_ts=1000)
+    _leg(reg, pair_id=pair, local_id="dn-1", token="tok-dn", price=0.51,
+         size=10, posted_ts=1000)
+
+    assert shadow_positions(reg, db) == {"tok-up": 10.0, "tok-dn": 10.0}
+
+    assert record_shadow_merges(reg, db) == [pair]
+
+    assert shadow_positions(reg, db) == {}, (
+        "the merge took both legs out of the store, so the position view "
+        "must not still report them as held")
+
+
+def test_the_position_view_drops_the_leg_a_single_buy_exit_sold(registry):
+    """An exit sells ONE leg. The other one is still held, and still reported."""
+    from core_brain.order_registry import CloseRecord, QuoteRecord
+    from core_brain.shadow_exec import ensure_shadow_tables, shadow_positions
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+
+    _leg(reg, pair_id="pair-naked", local_id="up-1", token="tok-up",
+         price=0.60, size=10, posted_ts=1000)
+    _leg(reg, pair_id="pair-naked", local_id="dn-1", token="tok-dn",
+         price=0.30, size=4, posted_ts=1000)
+    # The quotes ledger is where UP/DOWN lives; the closes table has no token
+    # column, so this is the same mapping `single_buy_saver._token_side` reads.
+    for token, side in (("tok-up", "UP"), ("tok-dn", "DOWN")):
+        reg.log_quote(QuoteRecord(
+            ts=1000.0, market_slug="m", condition_id="0xabc", token_id=token,
+            side=side, price=0.5, size=1.0))
+
+    # Six UP shares sold. `up_price` set and `dn_price` unset is how the exit
+    # path records which leg went.
+    reg.log_close(CloseRecord(
+        ts=2000.0, condition_id="0xabc", method="single_buy_exit", shares=6.0,
+        cost_basis=3.6, proceeds=3.9, fee=0.0, gas=0.0, realized_pnl=0.3,
+        up_price=0.65, up_cost_removed=3.6))
+
+    assert shadow_positions(reg, db) == {"tok-up": 4.0, "tok-dn": 4.0}
+
+
 def test_no_merge_cycle_books_a_profit_it_did_not_make(registry):
     """Three merge cycles on one pair whose average cost MOVES between them.
 
-    `cost_basis = target_cost - already_cost` is a difference of two running
-    totals, and the apportionment behind `target_cost` scales a leg's cost by
-    `min_fills / that leg's shares`. Rows arriving on one leg at a very
-    different price (a completion buy is exactly that) can therefore pull the
-    apportioned total BELOW what earlier closes already charged, and an
-    unfloored difference then books a negative cost -- a fabricated profit on
-    shares that cost money. This is the 3-cycle case deferred from the task-6
-    review.
+    Rows arriving on one leg at a very different price -- a completion buy is
+    exactly that -- are what broke the apportioned cost model this replaced.
+    The guarantee now is stronger than "never negative": every close charges
+    the shares it took at what they cost, so no cycle can book a payout it did
+    not earn, and none can hand over shares for free either. The third cycle
+    has nothing left to merge and must stay silent.
 
-    The floor is the fix, and it is the conservative direction: it can under-
-    report a gain, never invent one.
+    `test_a_merge_charges_each_leg_its_remaining_average_cost` pins the exact
+    figures; this one pins the properties that must hold for every cycle.
     """
     from core_brain.shadow_exec import ensure_shadow_tables, record_shadow_merges
 
@@ -976,8 +1085,11 @@ def test_no_merge_cycle_books_a_profit_it_did_not_make(registry):
     closes = reg.get_all_closes()
     assert len(closes) == 2
     for c in closes:
-        assert c["cost_basis"] >= 0.0, "a merge booked a negative cost basis"
+        assert c["cost_basis"] > 0.0, (
+            "a merge handed over shares that cost money as if they were free")
         assert c["realized_pnl"] <= c["proceeds"] + 1e-9, (
             "a merge booked more profit than the merge paid")
+        assert c["realized_pnl"] < c["proceeds"], (
+            "a merge booked the whole payout as profit")
         assert c["up_cost_removed"] + c["dn_cost_removed"] == pytest.approx(
             c["cost_basis"])

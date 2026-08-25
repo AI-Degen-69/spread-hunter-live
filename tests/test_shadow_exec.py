@@ -1048,6 +1048,70 @@ def test_a_lost_cache_row_costs_one_merge_and_then_heals(registry):
         "the third merge handed over shares as if they were free")
 
 
+def test_one_lost_cache_row_out_of_several_is_recovered_too(registry):
+    """A shortfall in the cache, not only an empty one, has to heal.
+
+    A pair that has merged more than once holds a cache row per merge. Losing
+    one of them leaves a total that is positive but short, so a test for
+    "no rows at all" never fires: the pair keeps pricing off an understated
+    consumed total, and nothing puts the missing shares back.
+    """
+    import sqlite3
+
+    from core_brain.shadow_exec import ensure_shadow_tables, record_shadow_merges
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    pair = "pair-partial-cache"
+
+    _leg(reg, pair_id=pair, local_id="up-1", token="tok-up", price=0.60,
+         size=10, posted_ts=1000)
+    _leg(reg, pair_id=pair, local_id="dn-1", token="tok-dn", price=0.30,
+         size=10, posted_ts=1000)
+    assert record_shadow_merges(reg, db) == [pair]
+
+    _leg(reg, pair_id=pair, local_id="up-2", token="tok-up", price=0.55,
+         size=10, posted_ts=2000)
+    _leg(reg, pair_id=pair, local_id="dn-2", token="tok-dn", price=0.35,
+         size=10, posted_ts=2000)
+    assert record_shadow_merges(reg, db) == [pair]
+
+    # Twenty shares of each leg have been merged across two closes, and the
+    # cache holds a row per close. Lose exactly one of the UP rows.
+    con = sqlite3.connect(db)
+    con.execute(
+        "DELETE FROM shadow_merge_legs WHERE token_id = 'tok-up' "
+        "AND rowid = (SELECT MIN(rowid) FROM shadow_merge_legs "
+        "             WHERE token_id = 'tok-up')")
+    short = con.execute(
+        "SELECT SUM(shares) FROM shadow_merge_legs "
+        "WHERE token_id = 'tok-up'").fetchone()[0]
+    con.commit()
+    con.close()
+    assert 0 < short < 20, (
+        "the fixture needs a cache that is short, not one that is empty")
+
+    _leg(reg, pair_id=pair, local_id="up-3", token="tok-up", price=0.50,
+         size=5, posted_ts=3000)
+    _leg(reg, pair_id=pair, local_id="dn-3", token="tok-dn", price=0.40,
+         size=5, posted_ts=3000)
+    assert record_shadow_merges(reg, db) == [pair]
+
+    closes = reg.get_all_closes()
+    merged_shares = sum(float(c["shares"]) for c in closes)
+
+    con = sqlite3.connect(db)
+    cached = dict(con.execute(
+        "SELECT token_id, SUM(shares) FROM shadow_merge_legs GROUP BY token_id"))
+    con.close()
+
+    # Both legs give up the same shares in a merge, so each token's cached
+    # total is the cumulative share count in `closes`.
+    assert cached["tok-up"] == pytest.approx(merged_shares)
+    assert cached["tok-dn"] == pytest.approx(merged_shares)
+    assert closes[2]["cost_basis"] > 0.0
+
+
 def test_the_position_view_drops_shares_a_merge_already_closed(registry):
     """`shadow_positions` is the oversell pre-flight, so it must not over-report.
 

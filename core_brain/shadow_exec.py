@@ -728,19 +728,32 @@ def record_shadow_merges(
             token = str(leg["token_id"])
             leg_shares = float(leg["shares"])
             gone_shares, gone_cost = consumed.get((pair_id, token), (0.0, 0.0))
-            if gone_shares <= 0.0 and already_shares > 0.0:
-                # This pair merged without leaving a cache row: a store older
-                # than the table, or a close whose row was lost before it was
-                # written. The only surviving record of what left is the share
-                # count, so apportion this leg's cost by it -- what the older
-                # arithmetic charged -- and write the result back, so the pair
-                # is priced exactly from here on instead of re-deriving the
-                # same estimate on every rotation for the rest of the run.
-                gone_shares = already_shares
-                gone_cost = (float(leg["cost"]) * (already_shares / leg_shares)
-                             if leg_shares > 0 else 0.0)
-                leg_writes.append((f"{pair_id}:backfill", pair_id, token,
-                                   gone_shares, gone_cost))
+            # `closes` says how many shares this pair has given up; the cache
+            # says what they cost. Any shortfall between them is a cache row
+            # that never landed -- a store older than the table, or a close
+            # whose rows were lost after it committed. It can be the whole
+            # history of the pair or one merge out of several, so the test is
+            # the shortfall, not the absence.
+            #
+            # The missing shares are priced from what the leg has left, which
+            # is the apportionment the older arithmetic used, and the result is
+            # written back. That way the estimate is paid once instead of being
+            # re-derived on every rotation for the rest of the run, and the
+            # cached total returns to the authoritative one.
+            missing = already_shares - gone_shares
+            if missing > SIZE_EPS:
+                unpriced_shares = leg_shares - gone_shares
+                unpriced_cost = float(leg["cost"]) - gone_cost
+                missing_cost = (unpriced_cost * (missing / unpriced_shares)
+                                if unpriced_shares > SIZE_EPS else 0.0)
+                gone_shares += missing
+                gone_cost += missing_cost
+                # Keyed by how many closes this pair already has, so a second
+                # shortfall on a later rotation adds a row rather than
+                # replacing the one that repaired the first.
+                leg_writes.append(
+                    (f"{pair_id}:backfill:{merge_counts.get(pair_id, 0)}",
+                     pair_id, token, missing, missing_cost))
             remaining_shares = leg_shares - gone_shares
             remaining_cost = float(leg["cost"]) - gone_cost
             avg = (remaining_cost / remaining_shares

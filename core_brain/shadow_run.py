@@ -122,7 +122,10 @@ class ShadowResult:
     skipped_stages: tuple = ()
 
 
-def _make_logging_emit(db_path) -> Callable[..., None]:
+def _make_logging_emit(
+    db_path,
+    inventory_lookup: Optional[Callable[[str], Any]] = None,
+) -> Callable[..., None]:
     """`emit`, plus one INFO line per market visit.
 
     A shadow run exists to be watched, and before this the only thing it wrote
@@ -134,6 +137,18 @@ def _make_logging_emit(db_path) -> Callable[..., None]:
     that carries both the intent count and the rationale. Logging every phase
     would bury the decisions in rotation bookkeeping. Telemetry is unchanged --
     the wrapper calls `emit` first and adds to it, never in place of it.
+
+    `inventory_lookup` resolves the decide event's `condition_id` to the
+    `Inventory` the seam computed for that market. It has to be a lookup
+    rather than shares carried on the event itself: `trader_loop.py` emits
+    `quoting/decide` with only `intent_count` and `condition_id` in `extra`
+    (see `evaluate_market_quote`), and that module does not change for a
+    rehearsal feature. `build_shadow_seam` is the caller that has a position
+    to offer -- it passes a lookup backed by the same cache
+    `settling_inventory_fn` fills immediately before each decision. The
+    lookup must stay total: a `condition_id` it has never seen (no lookup
+    wired, or a market this seam never settled) logs the line without a
+    position rather than raising or printing zeros nothing measured.
     """
     from core_brain.cycle_stream import emit as _emit_cycle_event
 
@@ -146,11 +161,18 @@ def _make_logging_emit(db_path) -> Callable[..., None]:
         extra = kw.get("extra") or {}
         count = int(extra.get("intent_count", 0) or 0)
         reason = (kw.get("reason") or "").strip()
+
+        shares = ""
+        inv = inventory_lookup(extra.get("condition_id")) if inventory_lookup else None
+        if inv is not None:
+            shares = f" up={inv.up_shares:g} down={inv.down_shares:g}"
+
         log.info(
-            "cycle=%s %s intents=%d%s",
+            "cycle=%s %s intents=%d%s%s",
             cycle,
             kw.get("market_slug") or extra.get("condition_id") or "?",
             count,
+            shares,
             f" -- {reason}" if reason else "",
         )
 
@@ -243,6 +265,13 @@ def build_shadow_seam(
     seen_by_market: dict[str, set] = {}
     base_inventory_fn = _make_inventory_fn(registry, Path(db_path))
 
+    # What the log line reads its `up=`/`down=` counts from. Keyed by
+    # condition_id, refreshed every time a market is settled below -- the
+    # decide event that follows always carries the condition_id, never the
+    # shares themselves (`trader_loop.py` is off limits), so the log line
+    # closes over this same dict rather than being handed a position.
+    last_inventory_by_market: dict[str, Any] = {}
+
     def settling_inventory_fn(market):
         """Settle this market, then report what it now holds.
 
@@ -258,7 +287,9 @@ def build_shadow_seam(
             # inventory, which the next visit corrects. Raising here would take
             # the market out of the rotation entirely.
             log.warning("settle failed for %s: %s", market.condition_id[:12], e)
-        return base_inventory_fn(market)
+        inv = base_inventory_fn(market)
+        last_inventory_by_market[market.condition_id] = inv
+        return inv
 
     def shadow_submit(client, reg, market, intents, cfg_in) -> int:
         for qi in intents:
@@ -289,7 +320,8 @@ def build_shadow_seam(
         sweep_fn=noop_sweep,
         inventory_fn=settling_inventory_fn,
         open_orders_fn=_make_open_orders_fn(registry),
-        emit_fn=_make_logging_emit(db_path),
+        emit_fn=_make_logging_emit(
+            db_path, inventory_lookup=last_inventory_by_market.get),
     )
 
 

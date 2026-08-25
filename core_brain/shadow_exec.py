@@ -512,10 +512,11 @@ def record_shadow_merges(
             """
         ).fetchall()
 
-        # Already-merged shares per pair: tx_hash is prefixed pair_id
+        # Already-merged shares and cost per pair: tx_hash is prefixed pair_id
         merged_rows = conn.execute(
             """
-            SELECT tx_hash AS pair_tx, COALESCE(SUM(shares), 0) AS merged_shares
+            SELECT tx_hash AS pair_tx, COALESCE(SUM(shares), 0) AS merged_shares,
+                   COALESCE(SUM(cost_basis), 0) AS merged_cost
             FROM closes
             WHERE method = 'shadow_merge' AND tx_hash IS NOT NULL
             GROUP BY tx_hash
@@ -526,15 +527,18 @@ def record_shadow_merges(
     for r in rows:
         by_pair.setdefault(str(r["pair_id"]), []).append(r)
 
-    # Build a map from pair_id to already-merged shares. tx_hash is formatted
+    # Build maps from pair_id to already-merged shares and cost. tx_hash is formatted
     # as "pair-xxx" for the first merge, "pair-xxx:2" for the second, etc.
     already_merged: dict[str, float] = {}
+    already_cost: dict[str, float] = {}
     for r in merged_rows:
         tx = str(r["pair_tx"])
         # Extract pair_id from tx_hash (everything before the optional ":N" suffix)
         pair_id = tx.split(":")[0] if ":" in tx else tx
-        already = float(r["merged_shares"])
-        already_merged[pair_id] = already_merged.get(pair_id, 0.0) + already
+        already_shares = float(r["merged_shares"])
+        already_cb = float(r["merged_cost"])
+        already_merged[pair_id] = already_merged.get(pair_id, 0.0) + already_shares
+        already_cost[pair_id] = already_cost.get(pair_id, 0.0) + already_cb
 
     merged: list[str] = []
     for pair_id, legs in by_pair.items():
@@ -543,15 +547,19 @@ def record_shadow_merges(
         min_fills = min(float(leg["shares"]) for leg in legs)
         if min_fills <= 0:
             continue
-        already = already_merged.get(pair_id, 0.0)
-        mergeable = min_fills - already
+        already_shares = already_merged.get(pair_id, 0.0)
+        mergeable = min_fills - already_shares
         if mergeable <= SIZE_EPS:
             continue
-        # Cost basis for the newly merged shares only: scale existing costs by
-        # the ratio of newly merged to originally filled
-        cost_basis = sum(
-            float(leg["cost"]) * (mergeable / float(leg["shares"])) for leg in legs
+        # Cost basis for newly merged shares: compute target cost (apportioned cost
+        # of all min_fills shares using current prices), subtract what was already
+        # recorded in previous closes. This ensures the newly merged shares are
+        # charged their actual incremental cost.
+        target_cost = sum(
+            float(leg["cost"]) * (min_fills / float(leg["shares"])) for leg in legs
         )
+        already_cb = already_cost.get(pair_id, 0.0)
+        cost_basis = target_cost - already_cb
         proceeds = mergeable * 1.0
         # Version the tx_hash to ensure uniqueness within (condition_id, tx_hash)
         # constraint: first merge uses pair_id as-is, second uses "pair_id:2", etc.

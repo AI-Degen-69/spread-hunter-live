@@ -366,7 +366,7 @@ def queue_bar_reject(m: dict, *, source: str,
     at this layer: `enforce_max_queue_minutes` is False by default, `main`
     passes no bar, and this function stays inert.
     """
-    if not max_queue_minutes or queue_minutes_fn is None:
+    if not max_queue_minutes or max_queue_minutes <= 0 or queue_minutes_fn is None:
         return None
     minutes = queue_minutes_fn(m)
     ok, reason = maker_queue_allowed(minutes, max_queue_minutes)
@@ -1089,7 +1089,12 @@ def resolve_queue_bar(cfg) -> Optional[float]:
     if not getattr(cfg, "enforce_max_queue_minutes", False):
         return None
     bar = float(getattr(cfg, "select_max_queue_minutes", 0.0) or 0.0)
-    return bar or None
+    # `> 0`, not truthiness. A negative bar is truthy, so it would travel down
+    # the stack and make `queue_bar_reject` pay for a tape read per market
+    # before `maker_queue_allowed` declined to use it -- a disabled rule
+    # costing venue work. 0 disables, as everywhere else here; negative is a
+    # typo and disables too rather than half-running.
+    return bar if bar > 0 else None
 
 
 def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],

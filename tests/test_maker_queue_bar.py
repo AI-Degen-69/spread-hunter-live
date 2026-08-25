@@ -241,6 +241,29 @@ class TestTheBarClimbsTheWholeStack:
         Cfg.enforce_max_queue_minutes = True
         assert resolve_queue_bar(Cfg()) == 15.0
 
+    @pytest.mark.parametrize("bar", [0.0, -1.0, -15.0])
+    def test_a_non_positive_limit_is_disabled_even_when_enforced(self, bar):
+        """`0 disables` is the escape hatch every limit in this repo has, and a
+        negative one is a typo. Both must resolve to None rather than travel:
+        a negative bar is truthy, so `queue_bar_reject` would pay for a tape
+        read per market before `maker_queue_allowed` declined to use it."""
+        from scripts.filter_markets import resolve_queue_bar
+
+        class Cfg:
+            select_max_queue_minutes = bar
+            enforce_max_queue_minutes = True
+
+        assert resolve_queue_bar(Cfg()) is None
+
+    def test_a_disabled_limit_never_measures_a_queue(self):
+        from scripts.filter_markets import queue_bar_reject
+
+        calls = []
+        assert queue_bar_reject({"condition_id": "0x1"}, source="spread",
+                                max_queue_minutes=-5.0,
+                                queue_minutes_fn=lambda _m: calls.append(1)) is None
+        assert calls == []
+
     def test_main_passes_the_resolved_bar_into_score_pool(self, monkeypatch):
         """The last frame: the operator's ranking command itself.
 

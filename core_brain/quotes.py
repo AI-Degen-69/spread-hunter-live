@@ -179,6 +179,15 @@ def _decide_quotes_from_mid(
     returns, and the telemetry reads as absent rules would -- fills averaged
     0.8152 against a nominal 0.30-0.70 band, and wta-kalinsk-kessler bought 14
     pairs at $1.0200 against a $0.995 cap.
+
+    The COMPLETABLE-COST gate runs here rather than in `hard_block` for a
+    mechanical reason: `hard_block` is handed `provisional`, and the price this
+    function rests at is `provisional` plus skew, plus the band offset, clamped
+    and tick-rounded. Skew pulls the light side toward mid, so the two differ in
+    the direction that matters. The gate asks what the pair costs to FINISH by
+    taking the other leg -- the question the old `max_pair_cost` never asked,
+    which is how all 209 orders of shadow run run-2809a7161de1 rested with one
+    distinct `max_pair_cost_at_post` of 0.995 and zero fills.
     """
     if t_remaining < cfg.min_t_remaining_sec:
         return [], f"t_remaining {t_remaining:.0f}s < {cfg.min_t_remaining_sec:.0f}s"
@@ -303,6 +312,28 @@ def _decide_quotes_from_mid(
         if price <= 0.0 or price >= 1.0:
             blocked.append(f"{side}: price {price:.3f} off-scale")
             continue
+
+        # THE COMPLETABLE-COST GATE, on the FINAL price rather than the
+        # `provisional` one `hard_block` reads twenty lines above. They are not
+        # the same number: `provisional` is mid - reward_offset, and `price`
+        # then adds the inventory skew and the band's extra offset, clamps to
+        # the reward window and rounds to the tick. `skew_offset` pulls the
+        # LIGHT side TOWARD mid, so the price we actually rest at can sit above
+        # the provisional -- and a gate read off the provisional would have
+        # cleared a cheaper pair than the one we post.
+        #
+        # Only while we hold NONE of the hedge token. A fill here then opens a
+        # leg that has to be finished by CROSSING, and the price that finishes
+        # it is the hedge ASK. Holding the other leg already makes completion
+        # unnecessary, and `risk.hard_block`'s max_pair_cost arm is the one that
+        # governs there; the two conditions never overlap.
+        hedge_book = down_book if side == "UP" else up_book
+        if inv.avg("DOWN" if side == "UP" else "UP") <= 0:
+            completable = risk.completable_pair_block(
+                cfg, price, hedge_book.get("best_ask"))
+            if completable:
+                blocked.append(f"{side}: {completable}")
+                continue
 
         s = mid - price
         if s > cfg.max_spread_from_mid + 1e-9:

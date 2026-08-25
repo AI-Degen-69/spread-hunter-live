@@ -1,0 +1,92 @@
+"""The shadow fill model: tape-confirmed volume, queue position, nothing else.
+
+Pure by design -- values in, values out, no clock, no socket, no SQLite. That is
+what makes it testable against recorded books and tape, which is the only way to
+tell an over-crediting model from an honest one.
+
+This module belongs to the rehearsal and to nothing else.
+`core_brain/live_fill_engine.py` carries the opposite rule and keeps it: live, a
+fill exists only when the venue says so. Inferring one there would be the worst
+failure available to this system.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ShadowRestingOrder:
+    """One simulated resting BUY, as the shadow store knows it."""
+    local_id: str
+    token_id: str
+    price: float
+    size: float
+    filled: float = 0.0
+    queue_ahead: float = 0.0
+
+    @property
+    def remaining(self) -> float:
+        return max(0.0, self.size - self.filled)
+
+
+@dataclass(frozen=True)
+class ShadowFill:
+    """Volume credited to one resting order, at that order's own price."""
+    local_id: str
+    token_id: str
+    price: float
+    size: float
+
+
+def queue_ahead_at(book: dict, price: float) -> float:
+    """Size already resting at exactly `price` on the bids side.
+
+    Better-priced bids sit ahead of the book, not ahead of this order at its own
+    level: they trade against different volume, so counting them would delay
+    every fill by depth that was never in this order's way.
+    """
+    bids = (book or {}).get("bids") or {}
+    return float(bids.get(round(float(price), 4), 0.0))
+
+
+def credit_fills(
+    orders: list[ShadowRestingOrder],
+    traded: dict[str, dict[float, float]],
+) -> tuple[list[ShadowFill], dict[str, float]]:
+    """Credit tape volume to resting orders, oldest first.
+
+    `orders` arrives in post order, which is queue order at a price level.
+    `traded` is `markets.recent_trades` output: token -> price -> volume since
+    the last look. Volume consumes each order's remaining `queue_ahead` before
+    any of it reaches the order itself.
+
+    Returns the credited fills and every order's updated `queue_ahead`, so the
+    caller can persist a queue that shrank without producing a fill -- forgetting
+    that is how the same volume gets counted twice.
+    """
+    remaining_volume: dict[tuple[str, float], float] = {}
+    for token_id, by_price in (traded or {}).items():
+        for price, volume in (by_price or {}).items():
+            key = (str(token_id), round(float(price), 4))
+            remaining_volume[key] = remaining_volume.get(key, 0.0) + float(volume)
+
+    fills: list[ShadowFill] = []
+    queues: dict[str, float] = {}
+    for o in orders:
+        key = (str(o.token_id), round(float(o.price), 4))
+        volume = remaining_volume.get(key, 0.0)
+        queue = float(o.queue_ahead)
+
+        consumed = min(volume, queue)
+        queue -= consumed
+        volume -= consumed
+
+        credited = min(volume, o.remaining)
+        if credited > 0:
+            fills.append(ShadowFill(o.local_id, o.token_id, o.price, credited))
+            volume -= credited
+
+        remaining_volume[key] = volume
+        queues[o.local_id] = queue
+
+    return fills, queues

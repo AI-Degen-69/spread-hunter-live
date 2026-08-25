@@ -40,8 +40,9 @@ loaded with which a write could be signed. It writes only to `data/shadow.db`;
 
 Two cautions:
 
-- **Shadow numbers are rehearsal, not results.** Fills are recorded intents, not
-  executions; never quote them as performance.
+- **Shadow numbers are rehearsal, not results.** Fills, positions and merges are modelled
+  or arithmetic, never a venue execution; never quote them as performance. See below for
+  what that means for each.
 - The guarantee holds only for this entrypoint. If a change makes `core_brain.shadow_run`
   able to construct a signing client, it comes off the pre-approved list until reviewed.
 
@@ -56,12 +57,41 @@ The page badges itself **SHADOW** with the store it is reading, and **START is r
 while it does: the stack it launches always writes `data/orders.db`, so its orders would
 be invisible on a page reading anything else.
 
-What a shadow view shows is the decision path -- scan state, decisions logged, skip and
-pass reasons, the cycle stream. Everything it holds is simulated rehearsal data: recorded
-intents, never venue executions. The order, fill, position and PnL panels read zero today
-because the shadow submit records intents in the session rather than writing registry
-rows. Read a zero there as "no execution happened", which is the truth, and never as a
-result.
+What a shadow run does now is more than decide: it rests simulated orders, credits fills
+from the trade tape, runs the production single-buy rescue pass, and records a merge close
+per balanced pair -- all inside `data/shadow.db`, next to the decision path (scan state,
+decisions logged, skip and pass reasons, the cycle stream). So the order, fill, position
+and PnL panels no longer read zero during a run -- and a zero there is no longer proof that
+nothing happened. Read it as what it is: the shadow store's honest state at that moment,
+nothing more.
+
+**What tells a simulated row from a real one is the store file it is in.** `data/shadow.db`
+versus `data/orders.db`, and a shadow run is refused the production registry before it
+constructs anything. Row-level labels are a second line on top of that, and they do not
+cover every row:
+
+- `orders.order_id` and `fills.trade_id` start `shadow-`.
+- A **merge** close carries `method='shadow_merge'`.
+- An **exit** close does not carry a shadow method. The pairs pass a shadow run rehearses is
+  the production one, and its close is written by `core_brain/single_buy_saver.py` -- live
+  money-path code -- so an exit taken during a rehearsal is labelled `single_buy_exit`,
+  exactly as a live exit is. That is deliberate: relabelling it would mean editing the money
+  path to serve a rehearsal. Read the store path, not the method string, when you need to
+  know whether a close was real.
+
+Three things about those numbers an operator has to hold onto:
+
+- **The merge is arithmetic, not an on-chain transaction.** A shadow run has no key --
+  `record_shadow_merges` closes a balanced pair by writing `shares * (1.00 - pair cost)` to
+  the store, the same result the real merge would realize, without a wallet ever touching
+  the chain.
+- **Fills are modelled, not observed.** They come from tape-confirmed trade volume and
+  queue position (`core_brain/shadow_fills.py`), which is the best a process with no
+  resting order on the real book can do -- but it is an estimate. A fill rate out of a
+  rehearsal is a model output, never a measurement of what the venue would have given.
+- **A completion fills at the book's best ask.** `single_buy_saver`'s rescue pass, run
+  against the shadow store, buys the missing leg at the best ask on the book at that
+  moment -- the optimistic end of what a taker actually gets, not a guaranteed price.
 
 One caveat the badge cannot fix: the cycle-stream ring (`runtime/cycle_events.jsonl`) is
 one file for every process, so a shadow run's events land beside whatever a live run left

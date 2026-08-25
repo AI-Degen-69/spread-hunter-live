@@ -697,18 +697,31 @@ class TestMain:
 class TestBoundaryGuard:
     def test_no_live_module_imports_the_shadow_model(self):
         """The live fill engine's invariant is that a fill comes only from the
-        venue. The shadow model infers one. The two must never meet, and the cheap
-        way to keep that true is to check that nobody imports across the line."""
+        venue. The shadow model infers one. The two must never meet, and the
+        cheap way to keep that true is to check that nobody imports across the
+        line.
+
+        Scanned across every directory that runs beside the live path, not
+        just `core_brain/`: the dashboard reads and writes the production
+        registry, `scoring/` feeds the market selection the live loop trades,
+        and `scripts/` is what an operator actually launches. A shadow import
+        reaching live through any of those is the same failure.
+        """
         from pathlib import Path
 
-        core = Path(__file__).resolve().parent.parent / "core_brain"
+        repo = Path(__file__).resolve().parent.parent
+        shadow_own = {"shadow_run.py", "shadow_exec.py", "shadow_fills.py",
+                      "shadow_guard.py"}
         live_modules = [
-            p for p in core.glob("*.py")
-            if p.name not in {"shadow_run.py", "shadow_exec.py",
-                              "shadow_fills.py", "shadow_guard.py"}
+            p
+            for d in ("core_brain", "dashboard", "scoring", "scripts")
+            for p in (repo / d).rglob("*.py")
+            if p.name not in shadow_own
         ]
+        assert live_modules, "the guard scanned nothing"
+
         offenders = [
-            p.name for p in live_modules
+            str(p.relative_to(repo)) for p in live_modules
             if "shadow_fills" in p.read_text(encoding="utf-8")
             or "shadow_exec" in p.read_text(encoding="utf-8")
         ]

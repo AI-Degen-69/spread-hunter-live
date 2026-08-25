@@ -577,8 +577,8 @@ def test_a_merged_pair_is_not_merged_again(registry):
 
 
 def test_a_pair_that_fills_incrementally_records_merges_incrementally(registry):
-    """A pair filled 10/10, merged, then fills another 10/10 should produce a
-    SECOND close for the newly merged 10 shares, not be excluded outright."""
+    """A pair filled 10/10 at same prices, merged, then fills another 10/10 should
+    produce a SECOND close for the newly merged 10 shares, not be excluded outright."""
     from core_brain.shadow_exec import (
         ensure_shadow_tables, record_shadow_merges, record_submit, settle_market,
     )
@@ -588,7 +588,7 @@ def test_a_pair_that_fills_incrementally_records_merges_incrementally(registry):
     record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
                   db_path=db, book_fn=lambda h, t: {"bids": {}})
 
-    # Cycle 1: settle 10/20 on each leg
+    # Cycle 1: settle 10/20 on each leg at original prices
     settle_market(reg, FakeMarket(), db_path=db, seen=set(),
                   traded_fn=lambda cid, seen: {"tok-up": {0.47: 10.0},
                                                "tok-dn": {0.51: 10.0}})
@@ -620,3 +620,74 @@ def test_a_pair_that_fills_incrementally_records_merges_incrementally(registry):
     # Sum of merged shares never exceeds min(leg fills) = 20
     total_merged = sum(c["shares"] for c in closes_after_second)
     assert total_merged == 20.0
+
+
+def test_incremental_merges_charge_actual_incremental_cost(registry):
+    """Incremental merges charge only the incremental cost, not an average.
+    Verifies the reconciliation property: sum of cost_basis across closes
+    equals the apportioned target cost. Directly constructs fills to avoid
+    credit_fills' price-matching constraints."""
+    from core_brain.order_registry import FillRecord
+
+    reg, db = registry
+    from core_brain.shadow_exec import ensure_shadow_tables, record_shadow_merges, record_submit
+
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+
+    # Manually construct fills to simulate two cycles with different prices
+    # Cycle 1: 10 shares at 0.47 (UP) and 0.51 (DN), cost = 9.8
+    orders = reg.get_active_orders()
+    by_token = {o.token_id: o for o in orders}
+    up_id = by_token["tok-up"].id
+    dn_id = by_token["tok-dn"].id
+
+    reg.record_fill(FillRecord(
+        trade_id="shadow-fill-1", order_uuid=up_id, size=10.0, price=0.47,
+    ))
+    reg.record_fill(FillRecord(
+        trade_id="shadow-fill-2", order_uuid=dn_id, size=10.0, price=0.51,
+    ))
+    reg.update_order_status(up_id, status="partial", last_polled_ts=int(__import__("time").time() * 1000))
+    reg.update_order_status(dn_id, status="partial", last_polled_ts=int(__import__("time").time() * 1000))
+
+    # First merge: 10 shares at avg cost 9.8
+    merged_1 = record_shadow_merges(reg, db)
+    assert len(merged_1) == 1
+    closes_c1 = reg.get_all_closes()
+    assert len(closes_c1) == 1
+    close_c1 = closes_c1[0]
+    assert close_c1["shares"] == 10.0
+    assert round(close_c1["cost_basis"], 2) == 9.80
+
+    # Cycle 2: add 10 more shares at 0.40 (UP) and 0.45 (DN), incremental cost = 8.5
+    # Cumulative: (10@0.47 + 10@0.40) + (10@0.51 + 10@0.45) = 18.3
+    reg.record_fill(FillRecord(
+        trade_id="shadow-fill-3", order_uuid=up_id, size=10.0, price=0.40,
+    ))
+    reg.record_fill(FillRecord(
+        trade_id="shadow-fill-4", order_uuid=dn_id, size=10.0, price=0.45,
+    ))
+    reg.update_order_status(up_id, status="filled", last_polled_ts=int(__import__("time").time() * 1000))
+    reg.update_order_status(dn_id, status="filled", last_polled_ts=int(__import__("time").time() * 1000))
+
+    # Second merge: 10 more shares, cost_basis must be 8.5 (incremental cost)
+    merged_2 = record_shadow_merges(reg, db)
+    assert len(merged_2) == 1, f"Expected 1 pair merged in cycle 2, got {merged_2}"
+    closes_c2 = reg.get_all_closes()
+    assert len(closes_c2) == 2
+    close_c2 = closes_c2[1]
+    assert close_c2["shares"] == 10.0
+    # Cost basis must be incremental cost (8.5), not average (9.15)
+    assert round(close_c2["cost_basis"], 2) == 8.50, (
+        f"Expected cost_basis 8.50 (incremental), got {close_c2['cost_basis']}. "
+        "Calculation is averaging instead of tracking incremental cost."
+    )
+    # Reconciliation property: sum of cost_basis == target cost
+    # Target = (4.7 + 5.1) + (4.0 + 4.5) = 18.3
+    total_cost = round(sum(c["cost_basis"] for c in closes_c2), 2)
+    assert total_cost == 18.30, (
+        f"Sum of cost_basis should be 18.30 (target cost), got {total_cost}. "
+        "Reconciliation property violated."
+    )

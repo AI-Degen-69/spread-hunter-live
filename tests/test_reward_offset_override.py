@@ -56,25 +56,58 @@ class TestRewardOffsetOverride:
 
     def test_the_floor_still_wins_over_a_smaller_override(self):
         # `quote_resting_price` clamps to `min_reward_offset`, and that floor
-        # is NOT overridable here. An override of 0.001 must still rest at the
-        # touch, not one tick off mid.
+        # is NOT overridable here. Band risk is zeroed so the clamp is the only
+        # thing under test.
+        from dataclasses import replace
+
         from core_brain.quotes import Inventory, quote_resting_price
 
         book = {"best_bid": 0.495, "best_ask": 0.505}
         with mock.patch.dict(os.environ, {"HUNTER_REWARD_OFFSET": "0.001"}):
-            cfg = load()
+            cfg = replace(load(), price_risk_widen=0.0, coinflip_halfwidth=0.0)
         assert cfg.reward_offset == 0.001
         price, _, _, _ = quote_resting_price(cfg, Inventory(), "UP", book)
         assert price == pytest.approx(0.495), (
             "the floor, not the override, must set the nearest legal price")
 
-    def test_the_touch_override_rests_at_the_best_bid(self):
-        # The whole point of the run this override exists for: mid 0.500,
-        # 10-tick spread, 0.005 offset -> rest at 0.495, the best bid.
+    def test_the_override_alone_does_NOT_reach_the_touch(self):
+        """The trap this test exists to mark.
+
+        `quote_resting_price` does not rest at `mid - reward_offset`. It rests
+        at `mid - (reward_offset + skew + band_risk.extra_offset)`, and
+        `risk.band_risk_factor` adds `price_risk_widen * (w + price)` -- about
+        15 ticks anywhere near 0.50. Setting the offset to the touch and
+        expecting to quote at the best bid is therefore wrong, and it is wrong
+        silently: the run completes and measures a price nobody chose.
+
+        Reaching the touch needs `price_risk_widen` as well, which is a risk
+        control rather than a tuning knob. Pinning the arithmetic here so the
+        next person to try this reads it before spending a rehearsal on it.
+        """
+        from core_brain.quotes import Inventory, quote_resting_price
+
+        book = {"best_bid": 0.495, "best_ask": 0.505}   # mid 0.500
+        with mock.patch.dict(os.environ, {"HUNTER_REWARD_OFFSET": "0.005"}):
+            cfg = load()
+        price, provisional, band, _ = quote_resting_price(
+            cfg, Inventory(), "UP", book)
+
+        assert provisional == pytest.approx(0.495), "provisional IS mid-offset"
+        assert band.extra_offset > 0.010, "band risk dominates a 5-tick offset"
+        assert price == pytest.approx(0.480)
+        assert price < book["best_bid"], (
+            "still well behind the touch despite a touch-sized offset")
+
+    def test_zeroing_band_risk_is_what_reaches_the_touch(self):
+        # The scenario a touch-resting rehearsal actually needs. Kept beside
+        # the test above so the pair reads as one statement: the offset is
+        # necessary and not sufficient.
+        from dataclasses import replace
+
         from core_brain.quotes import Inventory, quote_resting_price
 
         book = {"best_bid": 0.495, "best_ask": 0.505}
         with mock.patch.dict(os.environ, {"HUNTER_REWARD_OFFSET": "0.005"}):
-            cfg = load()
+            cfg = replace(load(), price_risk_widen=0.0)
         price, _, _, _ = quote_resting_price(cfg, Inventory(), "UP", book)
-        assert price == pytest.approx(0.495)
+        assert price == pytest.approx(book["best_bid"])

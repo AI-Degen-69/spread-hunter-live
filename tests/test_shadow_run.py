@@ -30,6 +30,25 @@ def _books(clob_host, token):
             "bids": {0.47: 100}, "asks": {0.49: 100}}
 
 
+def _filled_by_token(registry, condition_id: str) -> dict:
+    """Shares actually bought per token, straight off the fills ledger.
+
+    Inventory is the wrong instrument for "did this pair get completed":
+    inventory is fills MINUS closes, and a shadow rotation merges the pair it
+    completes, so a completed-and-merged pair reads flat there. The fills
+    ledger only ever records what was bought.
+    """
+    out: dict[str, float] = {}
+    by_local = {o["id"]: o for o in registry.get_all_orders()}
+    for f in registry.get_all_fills():
+        row = by_local.get(f.get("order_uuid"))
+        if row is None or row["condition_id"] != condition_id:
+            continue
+        tok = row["token_id"]
+        out[tok] = out.get(tok, 0.0) + float(f.get("size") or 0.0)
+    return out
+
+
 def _seam(**overrides):
     base = dict(
         client=object(),
@@ -303,8 +322,17 @@ class TestPairsSweep:
         pass `shadow_sweep` runs each rotation -- not by the quoting loop,
         which this run starves of intents (empty market list, so nothing is
         visited) to isolate the sweep as the only thing that could act.
+
+        The completion is read off the fills ledger, not off the inventory.
+        `shadow_sweep` merges every balanced pair in the same rotation that
+        completes it, and a merge takes the shares back out of inventory --
+        which is the point of a merge. This test previously asserted
+        `up_shares == down_shares == 20` AFTER that merge, which passed only
+        because the merge was invisible to `inventory_from_registry`; it
+        pinned the defect. What a completion actually means is that both legs
+        bought 20 shares, and that is what is asserted now.
         """
-        from core_brain.order_registry import inventory_from_registry
+        from core_brain.order_registry import OrderRegistry, inventory_from_registry
         from core_brain.shadow_run import run_shadow
 
         db = tmp_path / "shadow.db"
@@ -317,9 +345,13 @@ class TestPairsSweep:
             fetch_books=self._canonical_book,
         )
 
+        assert _filled_by_token(OrderRegistry(db_path=db), "0xabc") == {
+            "tok-up": pytest.approx(20.0), "tok-dn": pytest.approx(20.0)}
+
+        # And the pair it completed was merged, so the position is flat again.
         inv = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
-        assert inv.up_shares == pytest.approx(20.0)
-        assert inv.down_shares == pytest.approx(20.0)
+        assert inv.up_shares == pytest.approx(0.0)
+        assert inv.down_shares == pytest.approx(0.0)
 
     def test_the_sweep_logs_the_completion(self, tmp_path, caplog):
         """`shadow_sweep` logs every non-hold/balanced outcome, mirroring the
@@ -385,10 +417,13 @@ class TestPairsSweep:
 
         # ShadowExecutionClient.get_order_book adapted the same canonical
         # dict into levels single_buy_saver._book_levels can read: the
-        # pre-seeded naked pair on condition 0xabc was completed.
+        # pre-seeded naked pair on condition 0xabc was completed. Read from
+        # the fills ledger -- the same rotation merges the pair it completes,
+        # which is exactly what takes the shares back out of inventory.
+        assert _filled_by_token(reg, "0xabc") == {
+            "tok-up": pytest.approx(20.0), "tok-dn": pytest.approx(20.0)}
         inv = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
-        assert inv.up_shares == pytest.approx(20.0)
-        assert inv.down_shares == pytest.approx(20.0)
+        assert inv.up_shares == pytest.approx(0.0)
 
 
 class TestSettleWiring:

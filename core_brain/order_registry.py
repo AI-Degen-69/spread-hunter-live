@@ -1786,7 +1786,18 @@ def inventory_from_registry(
                     if dn_c is not None:
                         inv.down_cost = max(0.0, inv.down_cost - float(dn_c))
                 continue
-            if method == "merge":
+            # `shadow_merge` is the same arithmetic, recorded by a rehearsal:
+            # both legs leave at $1.00 a share. It is recognised here because a
+            # shadow run reads its own inventory through this same function --
+            # without it the rehearsal's inventory only ever grows, and the
+            # per-market cost and fill gates trip sooner than they would live.
+            # The addition cannot change live behaviour by construction: the
+            # string is written by one shadow-only module, which is refused the
+            # production registry before it can open a store, so no live store
+            # can contain it. Relabelling a rehearsal close as `merge` instead
+            # would make it indistinguishable from a venue one, which is the
+            # row-level labelling invariant this repo keeps.
+            if method in ("merge", "shadow_merge"):
                 inv.up_shares = max(0.0, inv.up_shares - sh)
                 inv.down_shares = max(0.0, inv.down_shares - sh)
                 if up_c is not None:

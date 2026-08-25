@@ -691,3 +691,112 @@ def test_incremental_merges_charge_actual_incremental_cost(registry):
         f"Sum of cost_basis should be 18.30 (target cost), got {total_cost}. "
         "Reconciliation property violated."
     )
+
+
+def test_a_shadow_merge_takes_its_shares_and_its_cost_out_of_inventory(registry):
+    """The decision reads `inventory_from_registry`. A merge that the decision
+    cannot see is a rehearsal whose inventory only ever grows, so
+    `max_cost_per_market` and `max_fills_per_market` trip sooner than they
+    would live.
+
+    `inventory_from_registry` matches close methods by exact string, so
+    `'shadow_merge'` has to be recognised there beside `'merge'`, and the
+    close has to carry `up_cost_removed`/`dn_cost_removed` the way the live
+    merge path does -- otherwise the shares leave and the money does not.
+    """
+    from core_brain.order_registry import inventory_from_registry
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_shadow_merges, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    # Both legs at the same price so the live path's even cost split is exact
+    # and the assertion below is about recognition, not about rounding.
+    intents = [
+        QuoteIntent(side="UP", token_id="tok-up", price=0.48, size=20,
+                    mid=0.5, edge_vs_mid=0.0),
+        QuoteIntent(side="DOWN", token_id="tok-dn", price=0.48, size=20,
+                    mid=0.5, edge_vs_mid=0.0),
+    ]
+    record_submit(object(), reg, FakeMarket(), intents, _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.48: 20.0},
+                                               "tok-dn": {0.48: 20.0}})
+
+    before = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
+    assert before.up_shares == pytest.approx(20.0)
+
+    assert len(record_shadow_merges(reg, db)) == 1
+
+    after = inventory_from_registry("0xabc", "tok-up", "tok-dn", db_path=db)
+    assert after.up_shares == pytest.approx(0.0)
+    assert after.down_shares == pytest.approx(0.0)
+    assert after.up_cost == pytest.approx(0.0)
+    assert after.down_cost == pytest.approx(0.0)
+
+
+def test_a_shadow_merge_removes_exactly_the_cost_it_closed(registry):
+    """Whatever the split between the legs, the two removals sum to the close's
+    own cost basis -- the same accounting the live merge writes."""
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_shadow_merges, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0},
+                                               "tok-dn": {0.51: 20.0}})
+
+    record_shadow_merges(reg, db)
+
+    close = reg.get_all_closes()[0]
+    assert (close["up_cost_removed"] + close["dn_cost_removed"]
+            == pytest.approx(close["cost_basis"]))
+
+
+def test_a_live_shaped_store_is_untouched_by_shadow_merge_recognition(tmp_path):
+    """The one live-module edit on this branch is additive by construction: no
+    live store can hold a `shadow_merge` row, because only
+    `core_brain/shadow_exec.py` writes that string and it only ever writes to a
+    shadow store. This pins that a store carrying live method strings only
+    reads exactly as it did before.
+    """
+    from core_brain.order_registry import (
+        CloseRecord, FillRecord, OrderRecord, OrderRegistry, init_db,
+        inventory_from_registry,
+    )
+
+    db = tmp_path / "live_shaped.db"
+    init_db(db)
+    reg = OrderRegistry(db_path=db)
+
+    now_ms = int(__import__("time").time() * 1000)
+    for local_id, token, price in (("live-up", "tok-up", 0.47),
+                                   ("live-dn", "tok-dn", 0.51)):
+        reg.create_order(OrderRecord(
+            id=local_id, order_id=f"venue-{local_id}", condition_id="0xlive",
+            token_id=token, side="BUY", price=price, original_size=20,
+            status="filled", posted_ts=now_ms, last_polled_ts=now_ms,
+            pair_id="pair-live"))
+        reg.record_fill(FillRecord(
+            trade_id=f"trade-{local_id}", order_uuid=local_id, size=20,
+            price=price, venue_ts=now_ms, recorded_ts=now_ms))
+
+    # A live merge of 5 shares, recorded exactly as core_brain/order_manager
+    # records one.
+    reg.log_close(CloseRecord(
+        ts=1.0, condition_id="0xlive", method="merge", shares=5.0,
+        cost_basis=4.9, proceeds=5.0, fee=0.0, gas=0.0, realized_pnl=0.1,
+        up_cost_removed=2.45, dn_cost_removed=2.45, tx_hash="0xdeadbeef"))
+
+    inv = inventory_from_registry("0xlive", "tok-up", "tok-dn", db_path=db)
+
+    assert inv.up_shares == pytest.approx(15.0)
+    assert inv.down_shares == pytest.approx(15.0)
+    assert inv.up_cost == pytest.approx(20 * 0.47 - 2.45)
+    assert inv.down_cost == pytest.approx(20 * 0.51 - 2.45)

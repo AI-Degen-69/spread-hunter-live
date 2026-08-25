@@ -382,6 +382,31 @@ class MakerConfig:
     # while 24h volume at exactly $125,000 is ADMITTED (`tradable` compares
     # `volume < bar`).
     select_min_top3_depth_usd: float = 500.0
+
+    # THE MAKER-QUEUE BAR. The three bars around it are FLOORS on depth, and
+    # from the maker's side depth near mid IS the queue ahead of us --
+    # `select_min_top3_depth_usd` and `book_health` both protect our ability to
+    # EXIT, which is real, and both point the wrong way for queueing.
+    # `select_min_volume_24h_usd` measures market-wide 24h tape across every
+    # price, so a market can clear six figures a day while trading nothing at
+    # `mid - 2.5c`, the only level our order ever sits at. None of the three
+    # measures the resting size at OUR price against the volume at OUR price.
+    #
+    # Session B of run-2809a7161de1: 344 orders, 10 markets, 30 minutes, zero
+    # fills, and not one order's queue drained. Minutes of that market's own
+    # observed volume needed to clear its median queue -- bonzi-halys 686,
+    # bellucc-darderi 837, kouame-basavar 924, bolt-ruiz 12,332, rocha-mmoh
+    # 50,397, and four markets with no observed trade at our price at all.
+    #
+    # 15 minutes is anchored to `pairs_exit_window_sec = 900`: a queue that
+    # cannot clear inside the window where a naked leg is still called fresh is
+    # a queue we should never join. 0 disables, as everywhere else here.
+    select_max_queue_minutes: float = 15.0
+    # RECORD-ONLY FIRST. At 15 minutes the measured universe scores 686 at
+    # best, so enforcing on day one refuses every market and takes the bot
+    # silent. That is correct for the run we measured and still the wrong way
+    # to ship it: record the number for a day, then decide with real data.
+    enforce_max_queue_minutes: bool = False
     # DEPTH-GATE TRIAL (U32). When set, the RANKER gates on this bar instead of
     # `select_min_top3_depth_usd` -- a controlled loosening licensed by the
     # near-miss tracker (READY_TO_TRIAL: 29 unique markets, 19 with measured

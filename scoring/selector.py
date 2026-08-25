@@ -7,6 +7,8 @@ drifting apart when a stale ``runtime/markets.json`` is still on disk.
 """
 from __future__ import annotations
 
+import math
+
 import re
 from typing import Iterable, Mapping
 
@@ -192,3 +194,95 @@ def pair_books_allowed(books: Iterable[tuple[str, Mapping[float, float],
         if not ok:
             return False, f"{label}: {reason}"
     return True, ""
+
+
+def queue_minutes_at(level_size: float, traded_at_level: float,
+                     window_minutes: float) -> float:
+    """Minutes of observed volume needed to clear the resting size at OUR price.
+
+    Both terms are measured at the level we would actually quote at --
+    `mid - reward_offset` on each token -- not market-wide and not near mid.
+    That is the whole point: this is the one bar where our own price is the
+    thing being measured.
+
+    Measured on session B of shadow run `run-2809a7161de1`: 344 orders, 10
+    markets, 30 minutes, zero fills, and not one order's queue drained. The
+    best market in that universe (atp-bonzi-halys) had 22,081 shares resting
+    against 966 shares of tape at our levels -- 686 minutes, 11.4 hours, to
+    clear the queue in front of ONE order. `pairs_exit_window_sec` already
+    calls a 15-minute-old naked leg stale. The mismatch is three orders of
+    magnitude.
+
+    No observed volume returns infinity, not zero. Four of those ten markets
+    were in that state, and "we never saw a trade at our price" is the
+    strongest form of the finding this exists to catch -- reading it as
+    missing data would invert the rule exactly where it matters most.
+
+    UPPER BOUND, NOT AN ESTIMATE. The shadow model drains queue only on
+    trades; a real book also advances an order when those ahead of it cancel,
+    and at these depths that is likely the dominant mechanism. The true wait is
+    lower, possibly by a lot. The RANKING between markets is more trustworthy
+    than the absolute number, because every market is measured the same wrong
+    way. See `cancel_decay`.
+    """
+    if window_minutes <= 0:
+        return math.inf
+    rate = float(traded_at_level) / float(window_minutes)
+    if rate <= 0:
+        return math.inf
+    return float(level_size) / rate
+
+
+def maker_queue_allowed(queue_minutes: float, max_queue_minutes: float,
+                        enforce: bool = True) -> tuple[bool, str]:
+    """Whether a market's queue at our level clears fast enough to join.
+
+    `>=` not `>`, matching `select_min_top3_depth_usd` and every other cap
+    here: a ceiling reached, not approached.
+
+    `max_queue_minutes <= 0` disables the rule, the escape hatch every other
+    limit in this repo has.
+
+    `enforce=False` is RECORD-ONLY and is how this ships first. At the proposed
+    15-minute bar the measured universe scores 686 minutes at best, so
+    enforcing on day one refuses every market and takes the bot silent. That is
+    the right answer for the run we measured -- 344 orders and no fills is
+    worse than quoting nothing -- but shipping it enforcing and then hunting
+    for why the dashboard is empty would be a self-inflicted incident. Record
+    first, and let a day of real numbers say whether anything ever clears.
+    """
+    if max_queue_minutes <= 0:
+        return True, ""
+    if queue_minutes == math.inf:
+        refusal = "maker queue: no trade observed at our price -- queue never clears"
+    elif queue_minutes >= max_queue_minutes:
+        refusal = (f"maker queue: {queue_minutes:.0f} min to clear at our price "
+                   f">= {max_queue_minutes:.0f} min bar")
+    else:
+        return True, ""
+    if not enforce:
+        return True, f"record-only, would refuse -- {refusal}"
+    return False, refusal
+
+
+def cancel_decay(size_before: float, size_after: float,
+                 traded: float) -> float:
+    """Shares that left our level WITHOUT trading, net of shares that joined.
+
+    The shadow fill model credits queue progress only from the tape, so it
+    cannot see the mechanism that most likely moves a maker up a 13,000-share
+    queue: the orders ahead of it being cancelled. Three zero-fill rehearsals
+    have therefore produced no information about queue behaviour at all.
+
+    This is the cheap way to find out without spending money. The level shrank
+    by `size_before - size_after`; the tape explains `traded` of it; the
+    residual is cancels. Both inputs are already fetched every cycle -- the
+    book for queue position, the tape for fills -- so observing this costs one
+    subtraction.
+
+    NOT clamped at zero. A negative result means more size joined the level
+    than left it, which is real information about a level filling in behind us;
+    clamping would make a daily total read as pure decay and flatter the model
+    exactly where it is already too generous.
+    """
+    return (float(size_before) - float(size_after)) - float(traded)

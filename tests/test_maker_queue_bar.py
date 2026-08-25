@@ -1,0 +1,122 @@
+"""The maker-queue bar: how long the queue at OUR price takes to clear.
+
+Session B of shadow run `run-2809a7161de1` rested 344 orders across 10 markets
+for 30 minutes and filled nothing. Not one order's queue drained. The existing
+selection bars cannot see why:
+
+  * `select_min_volume_24h_usd` measures market-wide 24h tape in dollars,
+    across every price. A market can clear six figures a day and trade nothing
+    at `mid - 2.5c`, which is the only level our maker order ever sits at.
+  * `select_min_top3_depth_usd` and `book_health` measure resting size near
+    mid -- which, from the maker's side, IS the queue ahead of us. They are
+    floors on exactly the quantity that needs a ceiling.
+
+Depth is good for exiting and bad for queueing, and the selector only knew the
+first half. This is the other half.
+"""
+import math
+
+import pytest
+
+from scoring.selector import cancel_decay, maker_queue_allowed, queue_minutes_at
+
+
+class TestQueueMinutes:
+    def test_a_queue_takes_its_size_divided_by_the_observed_rate(self):
+        # 600 resting, 20 shares/min observed at that level -> 30 minutes.
+        assert queue_minutes_at(600.0, 300.0, window_minutes=15.0) == 30.0
+
+    def test_the_measured_market_matches_the_recorded_run(self):
+        # atp-bonzi-halys, session B: 22,081 resting, 966 shares of tape at our
+        # levels over 30 minutes. The best market in that universe.
+        got = queue_minutes_at(22081.0, 966.0, window_minutes=30.0)
+        assert round(got) == 686
+
+    def test_no_observed_volume_is_unmeasurable_not_instant(self):
+        # Four of the ten markets were in this state. Treating "we never saw a
+        # trade at our price" as missing data would invert the rule exactly
+        # where the finding is strongest.
+        assert queue_minutes_at(50000.0, 0.0, window_minutes=30.0) == math.inf
+
+    def test_an_empty_level_clears_immediately(self):
+        assert queue_minutes_at(0.0, 100.0, window_minutes=30.0) == 0.0
+
+    def test_a_zero_window_is_unmeasurable(self):
+        assert queue_minutes_at(600.0, 300.0, window_minutes=0.0) == math.inf
+
+
+class TestMakerQueueAllowed:
+    def test_a_queue_inside_the_bar_is_admitted(self):
+        ok, reason = maker_queue_allowed(14.9, max_queue_minutes=15.0)
+        assert ok, reason
+
+    def test_a_queue_exactly_at_the_bar_is_refused(self):
+        # Pinned like `select_min_top3_depth_usd`: a ceiling reached, not
+        # approached, the reading every other cap in this repo takes.
+        ok, reason = maker_queue_allowed(15.0, max_queue_minutes=15.0)
+        assert not ok
+        assert "maker queue" in reason
+
+    def test_an_unmeasurable_queue_is_refused(self):
+        ok, reason = maker_queue_allowed(math.inf, max_queue_minutes=15.0)
+        assert not ok
+        assert "no trade observed" in reason
+
+    def test_a_zero_bar_disables_the_rule(self):
+        # The escape hatch every other limit in MakerConfig has.
+        ok, _ = maker_queue_allowed(50397.0, max_queue_minutes=0.0)
+        assert ok
+
+    def test_record_only_admits_everything_and_still_reports_the_number(self):
+        # How this ships first. A bar that would reject the entire universe is
+        # a verdict, not a filter; enforcing it on day one takes the bot
+        # silent. Record-only turns it into the measurement we do not have.
+        ok, reason = maker_queue_allowed(50397.0, max_queue_minutes=15.0,
+                                         enforce=False)
+        assert ok
+        assert "50397" in reason.replace(",", "")
+        assert "would refuse" in reason
+
+    @pytest.mark.parametrize("minutes,expected", [(686.0, False), (0.5, True)])
+    def test_the_recorded_universe_is_refused_and_a_fast_queue_is_not(
+            self, minutes, expected):
+        ok, _ = maker_queue_allowed(minutes, max_queue_minutes=15.0)
+        assert ok is expected
+
+
+class TestCancelDecay:
+    """Whether the fill model can be salvaged without a real-money order.
+
+    The model drains queue only on TRADES. A real book also advances an order
+    when the orders ahead of it are cancelled, and at queues of 13,000-80,000
+    shares that is very likely the dominant mechanism. It is observable for
+    free: the level shrank by some amount, the tape explains part of it, and
+    the residual is cancels.
+    """
+
+    def test_the_residual_after_trades_is_cancels(self):
+        # Level fell 1000 -> 400. Tape explains 250. The other 350 cancelled.
+        assert cancel_decay(1000.0, 400.0, traded=250.0) == 350.0
+
+    def test_a_level_that_only_traded_shows_no_cancels(self):
+        assert cancel_decay(1000.0, 750.0, traded=250.0) == 0.0
+
+    def test_a_growing_level_reports_net_joins_as_negative(self):
+        # Not clamped to zero: orders joining behind us is real information,
+        # and hiding it would make the daily estimate read as pure decay.
+        assert cancel_decay(1000.0, 1200.0, traded=0.0) == -200.0
+
+    def test_trades_larger_than_the_drop_mean_the_level_was_refilled(self):
+        # 1000 -> 900 while 400 traded: 300 shares joined while we watched.
+        assert cancel_decay(1000.0, 900.0, traded=400.0) == -300.0
+
+
+class TestConfigDefaults:
+    def test_the_bar_ships_recording_not_enforcing(self):
+        from scoring.config import MakerConfig
+
+        cfg = MakerConfig()
+        assert cfg.select_max_queue_minutes == 15.0
+        assert cfg.enforce_max_queue_minutes is False, (
+            "enforcing on day one refuses every measured market and takes the "
+            "bot silent -- record first")

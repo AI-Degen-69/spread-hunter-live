@@ -245,6 +245,7 @@ header {
 }
 .pill.active { background: var(--green-bg); color: #34d399; border: 1px solid var(--green-border); }
 .pill.stopped { background: rgba(100,116,139,0.2); color: var(--text-secondary); border: 1px solid var(--border-subtle); }
+.pill.shadow { background: var(--amber-bg); color: #fbbf24; border: 1px solid var(--amber-border); }
 .pill.error { background: var(--red-bg); color: #fca5a5; border: 1px solid var(--red-border); }
 .pill.reconnecting { background: var(--amber-bg); color: #fbbf24; border: 1px solid var(--amber-border); }
 

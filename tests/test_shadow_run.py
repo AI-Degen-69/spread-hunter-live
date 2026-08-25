@@ -298,6 +298,77 @@ class TestLookupFetchMarket:
         assert fetched == []
 
 
+class TestProgressLog:
+    """What the operator sees while a rehearsal runs.
+
+    The point of a shadow run is watching the decision, so the decision has to
+    reach the terminal. Before this, a wired-up run printed the banner and then
+    nothing for the whole time box -- the per-cycle detail existed only in the
+    ring file and the store.
+    """
+
+    def _emit(self, tmp_path):
+        from core_brain.shadow_run import _make_logging_emit
+        return _make_logging_emit(tmp_path / "shadow.db")
+
+    def test_a_decision_with_intents_logs_the_market_and_the_count(
+            self, tmp_path, caplog):
+        import logging
+
+        emit = self._emit(tmp_path)
+        with caplog.at_level(logging.INFO, logger="shadow_run"):
+            emit(7, "quoting", "decide", market_slug="dota-2026",
+                 reason="pair cost 0.985", extra={"intent_count": 2})
+
+        line = caplog.text
+        assert "cycle=7" in line
+        assert "dota-2026" in line
+        assert "intents=2" in line
+        assert "pair cost 0.985" in line
+
+    def test_a_declined_market_logs_the_reason_it_was_skipped(
+            self, tmp_path, caplog):
+        import logging
+
+        emit = self._emit(tmp_path)
+        with caplog.at_level(logging.INFO, logger="shadow_run"):
+            emit(7, "quoting", "decide", market_slug="lol-2026",
+                 reason="UP: 0.905 outside band 0.10-0.90",
+                 extra={"intent_count": 0})
+
+        assert "intents=0" in caplog.text
+        assert "outside band" in caplog.text
+
+    def test_phases_that_are_not_a_decision_stay_quiet(self, tmp_path, caplog):
+        """One line per market visit. A rotation that logged every phase would
+        bury the decisions it exists to show."""
+        import logging
+
+        emit = self._emit(tmp_path)
+        with caplog.at_level(logging.INFO, logger="shadow_run"):
+            emit(7, "settling", "pairs_completed", market_slug="dota-2026")
+
+        assert caplog.text.strip() == ""
+
+    def test_the_ring_and_store_still_receive_every_event(self, tmp_path):
+        """The log is added beside the telemetry, never instead of it."""
+        from core_brain.order_registry import init_db
+        from core_brain.shadow_run import _make_logging_emit
+
+        db = tmp_path / "shadow.db"
+        init_db(db)
+        emit = _make_logging_emit(db)
+        emit(7, "quoting", "decide", market_slug="dota-2026",
+             reason="pair cost 0.985", extra={"intent_count": 2})
+
+        import sqlite3
+        con = sqlite3.connect(db)
+        rows = con.execute(
+            "select cycle, market_slug, intent_count from cycle_intent").fetchall()
+        con.close()
+        assert rows == [(7, "dota-2026", 2)]
+
+
 class TestMain:
     """The command line: `python -m core_brain.shadow_run --minutes N`."""
 
@@ -337,6 +408,7 @@ class TestMain:
                 markets_fn=lambda max_markets=None: [FakeMarket("0xabc")],
                 client_fn=lambda: object(),
                 decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([], "declined"),
+                fetch_books=_books,
             )
         text = caplog.text.lower()
         assert "shadow" in text
@@ -356,6 +428,39 @@ class TestMain:
             markets_fn=markets,
             client_fn=lambda: object(),
             decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([], "declined"),
+            fetch_books=_books,
         )
 
         assert rc == 0
+
+    def test_main_wires_the_real_book_source_when_none_is_injected(
+            self, tmp_path, monkeypatch):
+        """A rehearsal against empty books rehearses nothing.
+
+        `/book` is a public endpoint -- no key, no API credentials, and not on
+        the CLOB client the deny-by-default proxy guards -- so the entrypoint
+        reads it exactly as the live loop does. Unwired, every market decides
+        against `{"bids": {}, "asks": {}}` and declines with "no two-sided
+        book", which reads on the dashboard as a quiet venue rather than as a
+        seam nobody connected.
+        """
+        import core_brain.markets as markets_mod
+        from core_brain.shadow_run import main
+
+        calls = []
+
+        def fake_full_book(clob_host, token_id):
+            calls.append((clob_host, token_id))
+            return _books(clob_host, token_id)
+
+        monkeypatch.setattr(markets_mod, "full_book", fake_full_book)
+
+        main(
+            ["--minutes", "0", "--db", str(tmp_path / "shadow.db")],
+            markets_fn=lambda max_markets=None: [FakeMarket("0xabc")],
+            client_fn=lambda: object(),
+            decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([], "declined"),
+        )
+
+        assert {t for _, t in calls} == {"tok-up", "tok-dn"}
+        assert all(h.startswith("http") for h, _ in calls)

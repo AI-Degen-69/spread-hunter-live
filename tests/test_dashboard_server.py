@@ -818,6 +818,12 @@ def test_start_refuses_a_second_bot_stack(client, monkeypatch):
 
     import dashboard.server as dash_mod
 
+    # The `client` fixture points the page at a temp database, which START now
+    # refuses on its own (a shadow view may not launch a live stack). Clear the
+    # override so what is under test here is the second-stack guard; the fixture
+    # clears it again on teardown. Not monkeypatch: its restore would put the
+    # temp path back after the fixture has already reset it.
+    dash_mod.set_db_override(None)
     monkeypatch.setattr(
         dash_mod, "get_system_status", lambda: {"bot_state": "RUNNING"}
     )
@@ -1533,3 +1539,147 @@ def test_every_toggle_start_asks_for_typed_confirmation():
     assert "svc === 'decide'" not in tail, (
         "the confirmation must not be gated on which service card was clicked"
     )
+
+
+# ── Active-database identity: LIVE vs SHADOW ────────────────────────────────
+
+
+def test_system_status_reports_shadow_mode_for_non_production_db(client):
+    """The status payload names the database it reads, and its mode.
+
+    The dashboard renders identically against `data/orders.db` and against a
+    shadow store, so an operator watching a shadow rehearsal has no way to tell
+    which registry the numbers came from. The payload must say.
+    """
+    data = client.get("/api/system/status").json()
+
+    assert data["db_mode"] == "SHADOW"
+    assert data["db_is_production"] is False
+    assert data["db_path"].endswith("live.db")
+
+
+def test_system_status_reports_live_mode_for_production_registry(monkeypatch):
+    """No override and no LIVE_DB_PATH resolves to the production registry."""
+    import dashboard.server as dash_mod
+    from core_brain.order_registry import DEFAULT_DB_PATH
+
+    monkeypatch.delenv("LIVE_DB_PATH", raising=False)
+    dash_mod.set_db_override(None)
+
+    data = dash_mod.get_system_status()
+
+    assert data["db_mode"] == "LIVE"
+    assert data["db_is_production"] is True
+    assert Path(data["db_path"]) == DEFAULT_DB_PATH
+
+
+def test_db_identity_is_unknown_when_path_cannot_be_resolved(monkeypatch):
+    """A path that will not resolve is never reported as the live registry.
+
+    Fail closed: START is gated on `db_is_production`, so a path we cannot
+    resolve must not carry the flag that unlocks a live stack.
+    """
+    import dashboard.server as dash_mod
+
+    def _boom(self, *a, **k):
+        raise OSError("unresolvable")
+
+    monkeypatch.setattr(Path, "resolve", _boom)
+
+    identity = dash_mod.resolve_db_identity(Path("data/whatever.db"))
+
+    assert identity["mode"] == "UNKNOWN"
+    assert identity["is_production"] is False
+
+
+def test_start_bot_refuses_when_active_db_is_not_production(monkeypatch, tmp_path):
+    """START is a live-money path; it refuses while the page reads a shadow store.
+
+    start_bot always launches the stack against `data/orders.db`, whatever the
+    dashboard is reading. Allowing it from a shadow view would run real orders
+    behind a page that cannot show them.
+    """
+    import subprocess
+
+    import dashboard.server as dash_mod
+
+    spawned = []
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            spawned.append(args)
+            self.pid = 12345
+
+    monkeypatch.setattr(dash_mod, "LIVE_ROOT", tmp_path)
+    monkeypatch.setattr(dash_mod, "resolve_sweep_interval", lambda: None)
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+    dash_mod.set_db_override(tmp_path / "shadow.db")
+    try:
+        result = dash_mod.start_bot()
+    finally:
+        dash_mod.set_db_override(None)
+
+    assert result["ok"] is False
+    assert "shadow.db" in result["message"]
+    assert spawned == [], "no process may be launched from a shadow view"
+
+
+def test_start_bot_refusal_leaves_no_start_lock(monkeypatch, tmp_path):
+    """The refusal happens before the start lock, so a later live start works."""
+    import subprocess
+
+    import dashboard.server as dash_mod
+
+    monkeypatch.setattr(dash_mod, "LIVE_ROOT", tmp_path)
+    monkeypatch.setattr(dash_mod, "resolve_sweep_interval", lambda: None)
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: None)
+    dash_mod.set_db_override(tmp_path / "shadow.db")
+    try:
+        dash_mod.start_bot()
+    finally:
+        dash_mod.set_db_override(None)
+
+    assert not (tmp_path / "runtime" / ".bot_start.lock").exists()
+
+
+@pytest.mark.skipif(NODE is None, reason="node not installed")
+def test_shadow_view_toggle_never_prompts_or_posts_a_start():
+    """The click itself is tested, not the words in the file.
+
+    The server refuses a shadow-view START, but the page must not offer it
+    either: a prompt that reads "this rests REAL maker bids" on a view that
+    cannot show them teaches the operator the wrong thing about what the page
+    is. Driven through the real handler in `app.js`, with the DOM stubbed --
+    the same click on a LIVE view still prompts and still POSTs, which is what
+    makes this fail if the guard is removed.
+    """
+    harness = Path(__file__).resolve().parent / "js" / "start_toggle_harness.js"
+    app_js = Path(__file__).resolve().parent.parent / "dashboard" / "static" / "app.js"
+
+    res = subprocess.run(
+        [NODE, str(harness), str(app_js)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout)
+
+    # Shadow view: refused on the page, before any control request.
+    assert out["shadow"]["prompts"] == 0
+    assert out["shadow"]["starts"] == 0
+    assert out["shadow"]["alerts"] == 1
+    assert "production registry" in out["shadow"]["alertMsg"]
+    assert "SHADOW" in out["badgeText"] and "shadow.db" in out["badgeText"]
+    assert "shadow" in out["badgeClass"]
+
+    # Live view: unchanged behaviour, so the assertions above are about the
+    # guard and not about a handler that stopped working.
+    assert out["live"]["prompts"] == 1
+    assert out["live"]["starts"] == 1
+
+
+def test_page_surfaces_the_active_database_mode():
+    """The badge and its wiring ship with the page, not just in the payload."""
+    assert "db-mode-badge" in _read_static("index.html")
+    app_js = _read_static("app.js")
+    assert "db_mode" in app_js
+    assert "db_is_production" in app_js

@@ -45,6 +45,28 @@ Two cautions:
 - The guarantee holds only for this entrypoint. If a change makes `core_brain.shadow_run`
   able to construct a signing client, it comes off the pre-approved list until reviewed.
 
+### Watching one on the dashboard
+
+```powershell
+python -m dashboard.server --db data\shadow.db --port 8799   # terminal 1, read-only
+python -m core_brain.shadow_run --minutes 10 --interval 5     # terminal 2
+```
+
+The page badges itself **SHADOW** with the store it is reading, and **START is refused**
+while it does: the stack it launches always writes `data/orders.db`, so its orders would
+be invisible on a page reading anything else.
+
+What a shadow view shows is the decision path -- scan state, decisions logged, skip and
+pass reasons, the cycle stream. Everything it holds is simulated rehearsal data: recorded
+intents, never venue executions. The order, fill, position and PnL panels read zero today
+because the shadow submit records intents in the session rather than writing registry
+rows. Read a zero there as "no execution happened", which is the truth, and never as a
+result.
+
+One caveat the badge cannot fix: the cycle-stream ring (`runtime/cycle_events.jsonl`) is
+one file for every process, so a shadow run's events land beside whatever a live run left
+there. Each record carries the writing `pid`; that is what tells them apart.
+
 
 ## 4. Limits
 

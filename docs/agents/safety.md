@@ -60,11 +60,24 @@ be invisible on a page reading anything else.
 What a shadow run does now is more than decide: it rests simulated orders, credits fills
 from the trade tape, runs the production single-buy rescue pass, and records a merge close
 per balanced pair -- all inside `data/shadow.db`, next to the decision path (scan state,
-decisions logged, skip and pass reasons, the cycle stream). Every row it writes is labelled
-as what it is: `orders.order_id` and `fills.trade_id` start `shadow-`, and a shadow close
-carries `method='shadow_merge'`. So the order, fill, position and PnL panels no longer read
-zero during a run -- and a zero there is no longer proof that nothing happened. Read it as
-what it is: the shadow store's honest state at that moment, nothing more.
+decisions logged, skip and pass reasons, the cycle stream). So the order, fill, position
+and PnL panels no longer read zero during a run -- and a zero there is no longer proof that
+nothing happened. Read it as what it is: the shadow store's honest state at that moment,
+nothing more.
+
+**What tells a simulated row from a real one is the store file it is in.** `data/shadow.db`
+versus `data/orders.db`, and a shadow run is refused the production registry before it
+constructs anything. Row-level labels are a second line on top of that, and they do not
+cover every row:
+
+- `orders.order_id` and `fills.trade_id` start `shadow-`.
+- A **merge** close carries `method='shadow_merge'`.
+- An **exit** close does not carry a shadow method. The pairs pass a shadow run rehearses is
+  the production one, and its close is written by `core_brain/single_buy_saver.py` -- live
+  money-path code -- so an exit taken during a rehearsal is labelled `single_buy_exit`,
+  exactly as a live exit is. That is deliberate: relabelling it would mean editing the money
+  path to serve a rehearsal. Read the store path, not the method string, when you need to
+  know whether a close was real.
 
 Three things about those numbers an operator has to hold onto:
 

@@ -49,9 +49,16 @@ could sign with.
    unauthenticated client. New code adds no credential read and no new client construction.
 2. **Store guard unchanged.** `assert_not_production_registry(db_path)` still runs before
    anything is constructed, and every simulated row lands in the shadow store only.
-3. **Simulated rows are labelled at the row level.** `orders.order_id` starts `shadow-`,
-   `fills.trade_id` starts `shadow-`, and closes carry `method='shadow_merge'` or
-   `'shadow_exit'`. A row copied into a live context is recognisable on sight.
+3. **Simulated rows are labelled at the row level, except where labelling one would mean
+   editing a live module.** `orders.order_id` starts `shadow-`, `fills.trade_id` starts
+   `shadow-`, and a merge close carries `method='shadow_merge'`. There is no
+   `'shadow_exit'`, and there will not be one: an exit close is written by
+   `core_brain/single_buy_saver.py:_record_exit_close`, live money-path code, so an exit
+   taken during a rehearsal carries the same `method='single_buy_exit'` a live exit does.
+   Relabelling it would mean editing the money path to serve a rehearsal, which costs more
+   than the label is worth. **The store file is the boundary** — `data/shadow.db` versus
+   `data/orders.db`, enforced by `shadow_guard.assert_not_production_registry` before
+   anything is constructed. Row-level labels are a second line, not the only one.
 4. **The live fill engine is not touched, and never imports the shadow model.** Inference
    from book and tape is correct for a rehearsal and forbidden live. A test enforces the
    one-way dependency.

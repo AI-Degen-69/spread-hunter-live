@@ -3,8 +3,16 @@
 Everything here writes `data/shadow.db` through the same `OrderRegistry` the
 live path uses, so the rows downstream stages read have the shape those stages
 expect. What differs is where the facts come from -- a model instead of a venue
--- and every row says so: order ids start `shadow-`, trade ids start `shadow-`,
-closes carry a `shadow_` method.
+-- and the rows written HERE say so: order ids start `shadow-`, trade ids start
+`shadow-`, and a merge close carries `method='shadow_merge'`.
+
+One close in a shadow store is not written here and is not labelled: the exit
+recorded by `core_brain/single_buy_saver.py` when the rehearsed pairs pass sells
+a naked leg carries `method='single_buy_exit'`, the same string a live exit
+carries. Labelling it would mean editing live money-path code to serve a
+rehearsal. The store file is the boundary that always holds --
+`data/shadow.db`, never `data/orders.db` -- and the row labels are a second
+line on top of it, not a replacement for it.
 
 `core_brain/shadow_guard.py` keeps this honest from the other side: the venue
 object a shadow run holds cannot sign, and `data/orders.db` is refused as a

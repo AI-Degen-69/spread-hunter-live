@@ -36,6 +36,7 @@ import logging
 import os
 import sqlite3
 import sys
+import uuid
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,31 @@ from typing import Any, Callable, Optional
 log = logging.getLogger("shadow_run")
 
 DEFAULT_SHADOW_DB = Path("data/shadow.db")
+
+
+def shadow_run_id() -> str:
+    """A fresh run_id for one rehearsal, never the live session's.
+
+    `order_registry._resolve_run_id` reuses `runtime/.current_run_id` for 12
+    hours so the fleet, the dashboard and the exec process tag one LIVE session
+    identically. A rehearsal is not that session and must not borrow its name.
+    Two shadow runs 3.85 hours apart both wrote as `run-2809a7161de1`: the
+    baseline and the re-run landed in one bucket, and telling them apart meant
+    spotting a gap in `posted_ts` by eye. A rehearsal that cannot be selected on
+    its own has no numbers worth comparing.
+
+    The `shadow-` prefix is deliberate and load-bearing. Live ids are `run-`,
+    so a rehearsal can never be read as a live session in the dashboard's run
+    selector -- which matters most for exactly the number a rehearsal produces
+    most often, a zero fill count.
+
+    `SH_RUN_ID` still wins, the one case where sharing an id is the point: an
+    operator continuing a single rehearsal across a restart.
+    """
+    override = os.environ.get("SH_RUN_ID")
+    if override:
+        return override
+    return f"shadow-{uuid.uuid4().hex[:12]}"
 
 
 class _Deadline(KeyboardInterrupt):
@@ -197,6 +223,7 @@ def build_shadow_seam(
     traded_fn: Optional[Callable[[str, set], dict]] = None,
     cfg=None,
     registry=None,
+    run_id: Optional[str] = None,
 ):
     """The seam a shadow run rotates over: live reads, recorded writes.
 
@@ -248,7 +275,7 @@ def build_shadow_seam(
         intents_sink = []
     if registry is None:
         init_db(db_path)
-        registry = OrderRegistry(db_path=Path(db_path))
+        registry = OrderRegistry(db_path=Path(db_path), run_id=run_id)
 
     from core_brain.shadow_guard import ReadOnlyVenue
 
@@ -415,6 +442,19 @@ def run_shadow(
     # Between argv and any database handle.
     assert_not_production_registry(db_path)
 
+    # A rehearsal names itself, before a single row is written. Without this
+    # the registry hands back whatever `runtime/.current_run_id` holds, which
+    # is the LIVE session's id for 12 hours after it was published -- so two
+    # rehearsals hours apart both wrote as `run-2809a7161de1` and the baseline
+    # could only be separated from the re-run by spotting a gap in `posted_ts`.
+    #
+    # Carried on the REGISTRY, never installed process-wide. `set_run_id` would
+    # have leaked in both directions: a second session starting while this one
+    # is alive re-tags this one's later rows, and the id survives the return, so
+    # a live order created afterwards in the same process is stamped
+    # `shadow-...`. See `shadow_run_id` and `OrderRegistry._run_id`.
+    run_id = shadow_run_id()
+
     cfg = load()
 
     # Same open question, same answer as the live loop: attempt the real
@@ -448,6 +488,7 @@ def run_shadow(
         fetch_market=_lookup_fetch_market(lambda: markets_holder[0]),
         fetch_books=fetch_books,
         cfg=cfg,
+        run_id=run_id,
     )
     # Fleet aggregates recomputed per cycle off the SHADOW store, so the gates
     # see the same shape of numbers they would live.

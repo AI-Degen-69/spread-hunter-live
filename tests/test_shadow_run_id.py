@@ -11,16 +11,26 @@ on its own is a rehearsal whose numbers cannot be compared to anything.
 from __future__ import annotations
 
 import os
+import re
 from unittest import mock
 
 from core_brain.shadow_run import shadow_run_id
 
 
 class TestShadowRunId:
-    def test_every_call_mints_a_fresh_id(self):
+    def test_every_call_mints_a_fresh_id(self, monkeypatch):
+        monkeypatch.delenv("SH_RUN_ID", raising=False)
         assert shadow_run_id() != shadow_run_id()
 
-    def test_the_id_is_marked_as_a_rehearsal(self):
+    def test_the_generated_id_has_the_documented_shape(self, monkeypatch):
+        # `shadow-` plus 12 lowercase hex. Pinned because the prefix is what
+        # keeps a rehearsal out of the live run selector, and the width is what
+        # makes a collision between two same-second sessions implausible.
+        monkeypatch.delenv("SH_RUN_ID", raising=False)
+        assert re.fullmatch(r"shadow-[0-9a-f]{12}", shadow_run_id())
+
+    def test_the_id_is_marked_as_a_rehearsal(self, monkeypatch):
+        monkeypatch.delenv("SH_RUN_ID", raising=False)
         # A shadow id must never be mistakable for a live one in the dashboard's
         # run selector, or a rehearsal's zero fills read as a live session's.
         rid = shadow_run_id()
@@ -61,7 +71,7 @@ def _book(_clob_host, token_id):
             "best_bid": 0.50, "best_ask": 0.51, "malformed": 0}
 
 
-def _one_session(tmp_path, monkeypatch, db_name):
+def _one_session(tmp_path, monkeypatch, db_name, run_id_env=None):
     """One real shadow session over a stub market; returns the run_ids written."""
     import core_brain.markets as markets_mod
     from core_brain.order_registry import OrderRegistry
@@ -78,6 +88,10 @@ def _one_session(tmp_path, monkeypatch, db_name):
     monkeypatch.setattr("core_brain.shadow_run.make_deadline_sleep",
                         lambda *a, **k: counting_sleep)
     monkeypatch.setattr(markets_mod, "recent_trades", lambda cid, s: {})
+    if run_id_env is None:
+        monkeypatch.delenv("SH_RUN_ID", raising=False)
+    else:
+        monkeypatch.setenv("SH_RUN_ID", run_id_env)
 
     db = tmp_path / db_name
     run_shadow(
@@ -107,3 +121,60 @@ class TestRunShadowUsesIt:
         second = _one_session(tmp_path, monkeypatch, "second.db")
         assert first and second
         assert first.isdisjoint(second), f"{first} overlaps {second}"
+
+
+class TestRunIdIsSessionScoped:
+    """CodeRabbit round 1: a process-wide id leaks out of the session.
+
+    `set_run_id` mutated `order_registry._CURRENT_RUN_ID`, which every write
+    path reads. Two consequences, both worse than the bug this branch set out
+    to fix: a second shadow session starting while a first is alive silently
+    re-tags the first one's later rows, and the shadow id stayed installed
+    after `run_shadow` returned -- so a live order created afterwards in the
+    same process would be stamped `shadow-...`. A rehearsal id on a real order
+    is a worse lie than two rehearsals sharing one id.
+    """
+
+    def test_the_process_wide_id_is_untouched_by_a_session(
+            self, tmp_path, monkeypatch):
+        from core_brain import order_registry
+
+        monkeypatch.setattr(order_registry, "_CURRENT_RUN_ID", "run-liveone")
+        ids = _one_session(tmp_path, monkeypatch, "scoped.db")
+        assert all(i.startswith("shadow-") for i in ids), ids
+        # The live id must survive the rehearsal untouched.
+        assert order_registry.get_run_id() == "run-liveone"
+
+    def test_two_registries_on_one_process_keep_their_own_ids(self, tmp_path):
+        from core_brain.order_registry import OrderRegistry, OrderRecord
+
+        a = OrderRegistry(db_path=tmp_path / "a.db", run_id="shadow-aaaaaaaaaaaa")
+        b = OrderRegistry(db_path=tmp_path / "b.db", run_id="shadow-bbbbbbbbbbbb")
+        for reg, tok in ((a, "tok-a"), (b, "tok-b")):
+            reg.create_order(OrderRecord(
+                id=f"local-{tok}", order_id=f"oid-{tok}", condition_id="0xabc",
+                token_id=tok, side="BUY", price=0.47, original_size=20,
+                status="open", posted_ts=1, last_polled_ts=1))
+        assert {o["run_id"] for o in a.get_all_orders()} == {"shadow-aaaaaaaaaaaa"}
+        assert {o["run_id"] for o in b.get_all_orders()} == {"shadow-bbbbbbbbbbbb"}
+
+    def test_a_registry_without_an_id_still_uses_the_process_one(
+            self, tmp_path, monkeypatch):
+        from core_brain import order_registry
+        from core_brain.order_registry import OrderRegistry, OrderRecord
+
+        monkeypatch.setattr(order_registry, "_CURRENT_RUN_ID", "run-liveone")
+        reg = OrderRegistry(db_path=tmp_path / "c.db")
+        reg.create_order(OrderRecord(
+            id="local-1", order_id="oid-1", condition_id="0xabc",
+            token_id="tok", side="BUY", price=0.47, original_size=20,
+            status="open", posted_ts=1, last_polled_ts=1))
+        assert {o["run_id"] for o in reg.get_all_orders()} == {"run-liveone"}
+
+
+class TestOverrideReachesTheRows:
+    def test_an_explicit_override_tags_every_row(self, tmp_path, monkeypatch):
+        # The override is only useful if it survives all the way to the store.
+        ids = _one_session(tmp_path, monkeypatch, "ovr.db",
+                           run_id_env="shadow-operatorpin")
+        assert ids == {"shadow-operatorpin"}

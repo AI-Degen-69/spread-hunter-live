@@ -223,6 +223,7 @@ def build_shadow_seam(
     traded_fn: Optional[Callable[[str, set], dict]] = None,
     cfg=None,
     registry=None,
+    run_id: Optional[str] = None,
 ):
     """The seam a shadow run rotates over: live reads, recorded writes.
 
@@ -274,7 +275,7 @@ def build_shadow_seam(
         intents_sink = []
     if registry is None:
         init_db(db_path)
-        registry = OrderRegistry(db_path=Path(db_path))
+        registry = OrderRegistry(db_path=Path(db_path), run_id=run_id)
 
     from core_brain.shadow_guard import ReadOnlyVenue
 
@@ -446,9 +447,13 @@ def run_shadow(
     # is the LIVE session's id for 12 hours after it was published -- so two
     # rehearsals hours apart both wrote as `run-2809a7161de1` and the baseline
     # could only be separated from the re-run by spotting a gap in `posted_ts`.
-    # See `shadow_run_id`.
-    from core_brain.order_registry import set_run_id
-    set_run_id(shadow_run_id())
+    #
+    # Carried on the REGISTRY, never installed process-wide. `set_run_id` would
+    # have leaked in both directions: a second session starting while this one
+    # is alive re-tags this one's later rows, and the id survives the return, so
+    # a live order created afterwards in the same process is stamped
+    # `shadow-...`. See `shadow_run_id` and `OrderRegistry._run_id`.
+    run_id = shadow_run_id()
 
     cfg = load()
 
@@ -483,6 +488,7 @@ def run_shadow(
         fetch_market=_lookup_fetch_market(lambda: markets_holder[0]),
         fetch_books=fetch_books,
         cfg=cfg,
+        run_id=run_id,
     )
     # Fleet aggregates recomputed per cycle off the SHADOW store, so the gates
     # see the same shape of numbers they would live.

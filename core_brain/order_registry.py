@@ -663,9 +663,29 @@ class DivergenceEventRecord:
 class OrderRegistry:
     """Thread-safe SQLite-backed registry for live orders, fills, and operational telemetry."""
 
-    def __init__(self, db_path: Path | str | None = None) -> None:
+    def __init__(self, db_path: Path | str | None = None,
+                 run_id: Optional[str] = None) -> None:
         self.db_path = Path(db_path) if db_path is not None else DEFAULT_DB_PATH
+        self.run_id = run_id
         init_db(self.db_path)
+
+    def _run_id(self) -> str:
+        """This store's run id: its own if it was given one, else the process's.
+
+        A registry that owns its id is how a shadow session stays a shadow
+        session. The alternative -- `set_run_id`, mutating the process-wide
+        `_CURRENT_RUN_ID` every write path reads -- leaks in both directions:
+        a second session starting while a first is alive re-tags the first
+        one's later rows, and the id stays installed after the session returns,
+        so a live order created afterwards in the same process is stamped
+        `shadow-...`. A rehearsal id on a real order is a worse lie than two
+        rehearsals sharing one id.
+
+        `None` keeps the old behaviour exactly, which is what every live caller
+        wants: the fleet, the dashboard and the exec process must agree on one
+        id, and that agreement lives in the lock file, not here.
+        """
+        return self.run_id or get_run_id()
 
     @contextmanager
     def _conn(self) -> Iterator[sqlite3.Connection]:
@@ -736,7 +756,7 @@ class OrderRegistry:
 
     def create_order(self, order: OrderRecord) -> None:
         """Insert a new order row before sending to venue."""
-        r_id = order.run_id or get_run_id()
+        r_id = order.run_id or self._run_id()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -835,7 +855,7 @@ class OrderRegistry:
     def record_fill(self, fill: FillRecord) -> bool:
         """Record a fill idempotently. True if inserted, False if already present."""
         rec_ts = fill.recorded_ts if fill.recorded_ts is not None else int(time.time() * 1000)
-        r_id = fill.run_id or get_run_id()
+        r_id = fill.run_id or self._run_id()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             already = conn.execute(
@@ -908,7 +928,7 @@ class OrderRegistry:
 
     def log_quote(self, quote: QuoteRecord) -> int:
         """Record a quote intent to quotes table."""
-        r_id = quote.run_id or get_run_id()
+        r_id = quote.run_id or self._run_id()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
@@ -961,7 +981,7 @@ class OrderRegistry:
 
     def log_market_event(self, event: MarketEventRecord) -> None:
         """Record a market event (decision, skip reason, fill, state transition)."""
-        r_id = event.run_id or get_run_id()
+        r_id = event.run_id or self._run_id()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -988,7 +1008,7 @@ class OrderRegistry:
 
     def log_markout(self, markout: MarkoutRecord) -> int:
         """Record initial markout row on fill."""
-        r_id = markout.run_id or get_run_id()
+        r_id = markout.run_id or self._run_id()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             cur = conn.execute(
@@ -1060,7 +1080,7 @@ class OrderRegistry:
 
     def log_close(self, close: CloseRecord) -> None:
         """Record an early exit or merge close."""
-        r_id = close.run_id or get_run_id()
+        r_id = close.run_id or self._run_id()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -1099,7 +1119,7 @@ class OrderRegistry:
     ) -> None:
         """Record periodic portfolio marks."""
         now_ts = ts if ts is not None else time.time()
-        r_id = run_id or get_run_id()
+        r_id = run_id or self._run_id()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -1121,7 +1141,7 @@ class OrderRegistry:
         these rows and must be able to tell "not measured" from "measured flat".
         """
         now_ts = ts if ts is not None else time.time()
-        r_id = run_id or get_run_id()
+        r_id = run_id or self._run_id()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -1154,7 +1174,7 @@ class OrderRegistry:
 
     def log_hedge_census(self, census: HedgeCensusRecord) -> None:
         """Record market hedge census evaluation."""
-        r_id = census.run_id or get_run_id()
+        r_id = census.run_id or self._run_id()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -1179,7 +1199,7 @@ class OrderRegistry:
 
     def log_resolution(self, res: ResolutionRecord) -> None:
         """Record market resolution."""
-        r_id = res.run_id or get_run_id()
+        r_id = res.run_id or self._run_id()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -1193,7 +1213,7 @@ class OrderRegistry:
 
     def log_venue_error(self, err: VenueErrorRecord) -> None:
         """Record venue error or rejection."""
-        r_id = err.run_id or get_run_id()
+        r_id = err.run_id or self._run_id()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -1217,7 +1237,7 @@ class OrderRegistry:
 
     def log_divergence_event(self, div: DivergenceEventRecord) -> None:
         """Record 3-way divergence incident."""
-        r_id = div.run_id or get_run_id()
+        r_id = div.run_id or self._run_id()
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
@@ -1472,7 +1492,7 @@ def _reconcile_pass(
                         status="unattributed",
                         posted_ts=now_ms,
                         last_polled_ts=now_ms,
-                        run_id=get_run_id(),
+                        run_id=registry._run_id(),
                     )
                     registry.create_order(unattr_order)
                     summary.unattributed_recorded += 1
@@ -1489,7 +1509,7 @@ def _reconcile_pass(
                     status="unattributed",
                     posted_ts=now_ms,
                     last_polled_ts=now_ms,
-                    run_id=get_run_id(),
+                    run_id=registry._run_id(),
                 )
                 registry.create_order(unattr_order)
                 summary.unattributed_recorded += 1
@@ -1568,7 +1588,7 @@ def _reconcile_pass(
                             price=m_price,
                             venue_ts=t_ts,
                             recorded_ts=now_ms,
-                            run_id=get_run_id(),
+                            run_id=registry._run_id(),
                         )
                         if registry.record_fill(fill_rec):
                             summary.fills_recorded += 1
@@ -1585,7 +1605,7 @@ def _reconcile_pass(
                                     size=m_size,
                                     ref_mid=m_price,  # initial ref mid fallback
                                     ref_mid_source="contaminated",
-                                    run_id=get_run_id(),
+                                    run_id=registry._run_id(),
                                 )
                             )
                         else:
@@ -1623,7 +1643,7 @@ def _reconcile_pass(
                     price=t_price,
                     venue_ts=t_ts,
                     recorded_ts=now_ms,
-                    run_id=get_run_id(),
+                    run_id=registry._run_id(),
                 )
                 if registry.record_fill(fill_rec):
                     summary.fills_recorded += 1
@@ -1639,7 +1659,7 @@ def _reconcile_pass(
                             size=t_size,
                             ref_mid=t_price,
                             ref_mid_source="contaminated",
-                            run_id=get_run_id(),
+                            run_id=registry._run_id(),
                         )
                     )
                 else:

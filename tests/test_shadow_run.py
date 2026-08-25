@@ -907,19 +907,24 @@ class TestSecondRotation:
     def test_the_superseded_order_stops_resting(self, tmp_path, monkeypatch):
         """An order the loop decided to replace must not keep collecting
         simulated fills at a price the live loop would have cancelled.
+
+        The price steps here are 4c apart, OUTSIDE `requote_dead_band` (3c):
+        a step inside the band is now deliberately KEPT -- that is the dead
+        band working, not a supersession bug -- so this test's replacement
+        scenario needs moves big enough to actually trigger a re-quote.
         """
         from core_brain.order_registry import OrderRegistry
 
         self._run_cycles(tmp_path, monkeypatch, cycles=3,
-                         prices=[0.47, 0.48, 0.49], tape=lambda n: {})
+                         prices=[0.47, 0.52, 0.57], tape=lambda n: {})
 
         reg = OrderRegistry(db_path=tmp_path / "shadow.db")
         rows = [o for o in reg.get_all_orders() if o["token_id"] == "tok-up"]
         by_price = {round(float(o["price"]), 2): o["status"] for o in rows}
 
         assert by_price[0.47] == "cancelled"
-        assert by_price[0.48] == "cancelled"
-        assert by_price[0.49] == "open"
+        assert by_price[0.52] == "cancelled"
+        assert by_price[0.57] == "open"
         assert [o for o in reg.get_active_orders()
                 if o.token_id == "tok-up" and o.status in ("open", "partial")
                 ] != [], "nothing rests at the current price"

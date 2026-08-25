@@ -454,6 +454,7 @@ def _visit_one(
     live: bool,
     cycle: int = 0,
     emit_fn: Optional[Callable] = None,
+    plan_fn: Optional[Callable] = None,
 ) -> LiveFleetResult:
     """One poll of one market: fetch -> decide -> plan -> submit/cancel."""
     cid = _cid(spec)
@@ -483,7 +484,19 @@ def _visit_one(
         )
         intents, why = ev.intents, ev.why
         open_orders = seam.open_orders_fn(market) if seam.open_orders_fn else []
-        to_cancel, to_submit = plan_orders(open_orders, intents)
+        # The hedge ask for a token is the OTHER token's ask -- that is the
+        # price a fill on this leg would have to pay to finish the pair.
+        # `evaluate_market_quote` already fetched both books; re-reading them
+        # here would be a second venue round-trip for a number we hold.
+        hedge_asks = {
+            ev.up_book.get("token_id"): ev.down_book.get("best_ask"),
+            ev.down_book.get("token_id"): ev.up_book.get("best_ask"),
+        }
+        to_cancel, to_submit = (plan_fn or plan_orders)(
+            open_orders, intents,
+            dead_band=float(getattr(cfg, "requote_dead_band", 0.0)),
+            cfg=cfg, hedge_asks=hedge_asks,
+        )
     except Exception as e:
         emit_fn(service="decide", cycle=cycle, phase="quoting",
                 action="market_error", market_slug=title,

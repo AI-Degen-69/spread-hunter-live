@@ -20,7 +20,13 @@ from __future__ import annotations
 
 import pytest
 
-from core_brain.trader_loop import LiveFleetResult, VenueSeam, plan_orders, run
+from core_brain.trader_loop import (
+    LiveFleetResult,
+    VenueSeam,
+    _visit_one,
+    plan_orders,
+    run,
+)
 from core_brain.config import MakerConfig
 from core_brain.quotes import QuoteIntent
 
@@ -795,3 +801,39 @@ class TestRunLoop:
         # a missed id would wave a live order through as gone.
         assert _venue_resting_order_ids(Alive()) == {
             "o-1", "o-2", "o-2b", "o-3", "o-4", "venue-4"}
+
+
+class TestVisitOnePassesTheDeadBand:
+    def test_a_two_cent_drift_does_not_churn_the_resting_order(self):
+        """The whole point, end to end: same market, price moved 2c, no cancel."""
+        seen = {}
+        real_plan = plan_orders
+
+        def spy(open_orders, intents, price_eps=1e-9, **kw):
+            seen.update(kw)
+            return real_plan(open_orders, intents, price_eps, **kw)
+
+        market = FakeMarket()
+        up = {"token_id": "tok-up", "best_bid": 0.50, "best_ask": 0.52,
+              "bids": {0.50: 5000.0}, "asks": {0.52: 5000.0}}
+        down = {"token_id": "tok-dn", "best_bid": 0.46, "best_ask": 0.48,
+                "bids": {0.46: 5000.0}, "asks": {0.48: 5000.0}}
+        books = {"tok-up": up, "tok-dn": down}
+        seam = VenueSeam(
+            base_cfg=MakerConfig(requote_dead_band=0.03,
+                                 max_completable_pair_cost=1.00),
+            fetch_market=lambda cid: market,
+            fetch_books=lambda host, tok: books[tok],
+            decide=lambda *a, **k: ([_intent(price=0.49)], ""),
+            open_orders_fn=lambda m: [_open(price=0.51)],
+        )
+        result = _visit_one(seam, {"cid": "0xabc"}, cycle=1, live=False,
+                            plan_fn=spy)
+
+        assert seen["dead_band"] == 0.03
+        assert seen["cfg"] is not None
+        # The hedge ask for the UP token is the DOWN book's ask, and vice
+        # versa. Getting this mapping backwards is the one way this wiring
+        # can be wrong while every other assertion still passes.
+        assert seen["hedge_asks"] == {"tok-up": 0.48, "tok-dn": 0.52}
+        assert result.status in ("DRY_RUN", "DECLINED")

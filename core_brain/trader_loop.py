@@ -59,6 +59,7 @@ def plan_orders(
     dead_band: float = 0.0,
     cfg=None,
     hedge_asks: Optional[dict] = None,
+    hedge_held: Optional[set] = None,
 ) -> tuple[list[dict], list[QuoteIntent]]:
     """Split open orders + desired intents into (cancel, submit).
 
@@ -89,6 +90,16 @@ def plan_orders(
     the OTHER token's best ask) are what that test needs; without both, the
     re-gate stands down and the band behaves as a plain tolerance.
 
+    `hedge_held` names the tokens whose OPPOSITE leg we already own, and the
+    re-gate skips them -- exactly as `quotes._decide_quotes_from_mid` skips the
+    gate when `inv.avg(other) > 0`. Completion is not needed there, so the
+    hedge ASK is not the price that finishes the pair, and gating on it
+    cancels a valid hedge. Concretely: a kept UP bid at 0.54 against a DOWN leg
+    held at 0.43 average is a 0.97 pair, but a DOWN ask of 0.50 reads as 1.04
+    and would cancel and resubmit that bid every single cycle -- the churn this
+    whole change exists to stop, while the naked DOWN leg stays open longer for
+    it. This function has no inventory of its own, so it has to be told.
+
     A re-gated cancel drops the order out of the kept set, so this cycle's
     intent for that token IS submitted in its place. Cancelling without
     replacing would leave the market dark for a cycle on a price that is
@@ -110,8 +121,10 @@ def plan_orders(
         ):
             to_cancel.append(o)
             continue
-        if cfg is not None and hedge_asks is not None and risk.completable_pair_block(
-                cfg, float(o["price"]), hedge_asks.get(tok)):
+        if (cfg is not None and hedge_asks is not None
+                and tok not in (hedge_held or ())
+                and risk.completable_pair_block(
+                    cfg, float(o["price"]), hedge_asks.get(tok))):
             to_cancel.append(o)
             continue
         kept.setdefault(tok, []).append(o)
@@ -488,14 +501,26 @@ def _visit_one(
         # price a fill on this leg would have to pay to finish the pair.
         # `evaluate_market_quote` already fetched both books; re-reading them
         # here would be a second venue round-trip for a number we hold.
+        up_tok = ev.up_book.get("token_id")
+        dn_tok = ev.down_book.get("token_id")
         hedge_asks = {
-            ev.up_book.get("token_id"): ev.down_book.get("best_ask"),
-            ev.down_book.get("token_id"): ev.up_book.get("best_ask"),
+            up_tok: ev.down_book.get("best_ask"),
+            dn_tok: ev.up_book.get("best_ask"),
         }
+        # A token whose hedge we already hold stands down from the re-gate:
+        # the pair is finished from inventory, not by paying the hedge ask.
+        # This mirrors the `inv.avg(other) > 0` skip in
+        # `quotes._decide_quotes_from_mid` -- the two gates must agree, or the
+        # planner cancels every cycle what the decider was happy to post.
+        hedge_held = set()
+        if ev.inventory.avg("DOWN") > 0:
+            hedge_held.add(up_tok)
+        if ev.inventory.avg("UP") > 0:
+            hedge_held.add(dn_tok)
         to_cancel, to_submit = (plan_fn or plan_orders)(
             open_orders, intents,
             dead_band=float(getattr(cfg, "requote_dead_band", 0.0)),
-            cfg=cfg, hedge_asks=hedge_asks,
+            cfg=cfg, hedge_asks=hedge_asks, hedge_held=hedge_held,
         )
     except Exception as e:
         emit_fn(service="decide", cycle=cycle, phase="quoting",

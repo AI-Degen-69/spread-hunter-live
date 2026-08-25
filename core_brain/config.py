@@ -889,6 +889,32 @@ class MakerConfig:
     market_daily_rate: float = 0.0
 
 
+def _bounded_float(name: str, raw: str, lo: float, hi: float) -> float:
+    """One env override, parsed and bounded, or a ValueError naming the variable.
+
+    `float()` accepts "nan" and "inf" without complaint, and NaN poisons every
+    comparison it touches: `cost >= float("nan")` is False for every cost, so a
+    cap set to NaN reads as enforced while permitting a pair over $1.00 -- the
+    one outcome this system exists to prevent. An out-of-range but finite value
+    does the same damage more honestly (a $1.05 cap buys a booked loss on
+    purpose), so both are refused here rather than found later in the fills
+    ledger.
+
+    Raising beats clamping. A silently clamped cap is a config the operator
+    believes is in force and is not; a refused load is a message on the console
+    before a share is bought.
+    """
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{name}={raw!r} is not a number") from None
+    if not math.isfinite(value):
+        raise ValueError(f"{name}={raw!r} is not finite")
+    if not lo <= value <= hi:
+        raise ValueError(f"{name}={raw!r} is outside {lo:g}..{hi:g}")
+    return value
+
+
 def load() -> MakerConfig:
     """Config, with the per-bot fields overridable from the environment.
 
@@ -927,10 +953,18 @@ def load() -> MakerConfig:
         kw["enable_pairs_rule"] = pr.strip().lower() not in ("0", "false", "off")
     ccap = os.environ.get("HUNTER_COMPLETABLE_CAP") or ""
     if ccap.strip():
-        kw["max_completable_pair_cost"] = float(ccap)
+        # 0 disables the cap, the escape hatch every other limit here has.
+        # Above $1.00 is refused outright: the pair pays exactly $1.00, so a
+        # higher cap is not a looser risk setting, it is a losing one.
+        kw["max_completable_pair_cost"] = _bounded_float(
+            "HUNTER_COMPLETABLE_CAP", ccap, 0.0, 1.0)
     rdb = os.environ.get("HUNTER_REQUOTE_DEAD_BAND") or ""
     if rdb.strip():
-        kw["requote_dead_band"] = float(rdb)
+        # 0 turns the hysteresis off. The ceiling is the instrument's whole
+        # price range: a band of 1.00 already means "never re-quote", and
+        # anything past it is a typo, not a setting.
+        kw["requote_dead_band"] = _bounded_float(
+            "HUNTER_REQUOTE_DEAD_BAND", rdb, 0.0, 1.0)
     cno = os.environ.get("HUNTER_NET_ONEWAY_MS") or os.environ.get("HUNTER_CANCEL_NET_ONEWAY_MS")
     if cno and cno.strip():
         kw["net_oneway_ms"] = float(cno)

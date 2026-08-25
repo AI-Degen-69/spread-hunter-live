@@ -9,6 +9,8 @@ and the other has to be TAKEN at its ask.
 import os
 from unittest import mock
 
+import pytest
+
 from core_brain import risk
 from core_brain.config import MakerConfig, load
 
@@ -127,3 +129,48 @@ class TestGateInDecideQuotes:
         inv = Inventory(down_shares=100.0, down_cost=43.0)
         intents, why = decide_quotes(cfg, up, down, inv, 1e9, None)
         assert [i.side for i in intents] == ["UP"]
+
+
+class TestOverrideValidation:
+    """CodeRabbit round 1: `float()` accepts "nan" and "inf".
+
+    A cap of NaN makes `cost >= cap` false for every cost, so the gate reads as
+    enforced and silently permits a pair over $1.00 -- the one outcome this
+    repo exists to prevent. A finite cap above $1.00 permits the same loss on
+    purpose. Both must be refused at load, loudly, rather than discovered from
+    the fills ledger.
+    """
+
+    @pytest.mark.parametrize("bad", ["nan", "NaN", "inf", "-inf", "abc", ""])
+    def test_a_non_finite_or_unparseable_cap_is_refused(self, bad):
+        # "" is the one blank that must NOT raise -- it means "unset".
+        with mock.patch.dict(os.environ, {"HUNTER_COMPLETABLE_CAP": bad}):
+            if bad == "":
+                assert load().max_completable_pair_cost == 1.00
+            else:
+                with pytest.raises(ValueError, match="HUNTER_COMPLETABLE_CAP"):
+                    load()
+
+    @pytest.mark.parametrize("bad", ["1.05", "-0.01"])
+    def test_a_cap_outside_zero_to_a_dollar_is_refused(self, bad):
+        with mock.patch.dict(os.environ, {"HUNTER_COMPLETABLE_CAP": bad}):
+            with pytest.raises(ValueError, match="HUNTER_COMPLETABLE_CAP"):
+                load()
+
+    def test_zero_still_disables_the_cap(self):
+        with mock.patch.dict(os.environ, {"HUNTER_COMPLETABLE_CAP": "0"}):
+            assert load().max_completable_pair_cost == 0.0
+
+    def test_a_dollar_is_still_accepted(self):
+        with mock.patch.dict(os.environ, {"HUNTER_COMPLETABLE_CAP": "1.0"}):
+            assert load().max_completable_pair_cost == 1.0
+
+    @pytest.mark.parametrize("bad", ["nan", "inf", "-0.01", "1.5", "abc"])
+    def test_a_non_finite_negative_or_oversized_dead_band_is_refused(self, bad):
+        with mock.patch.dict(os.environ, {"HUNTER_REQUOTE_DEAD_BAND": bad}):
+            with pytest.raises(ValueError, match="HUNTER_REQUOTE_DEAD_BAND"):
+                load()
+
+    def test_a_zero_dead_band_is_accepted(self):
+        with mock.patch.dict(os.environ, {"HUNTER_REQUOTE_DEAD_BAND": "0"}):
+            assert load().requote_dead_band == 0.0

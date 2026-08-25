@@ -567,6 +567,29 @@ class TestProgressLog:
         assert "intents=0" in caplog.text
         assert "outside band" in caplog.text
 
+    def test_a_malformed_intent_count_logs_unknown_and_does_not_raise(
+            self, tmp_path, caplog):
+        """Telemetry must never be what stops the loop.
+
+        `cycle_stream.emit` protects itself from a malformed event and
+        returns. This wrapper called it first and then repeated the same
+        conversion outside that protection, so a decision event carrying a
+        non-numeric `intent_count` raised after the telemetry had already
+        been handled -- ending the rehearsal on a logging detail. The count
+        is unknown, and an unknown count is worth saying out loud, not worth
+        a crash.
+        """
+        import logging
+
+        emit = self._emit(tmp_path)
+        with caplog.at_level(logging.INFO, logger="shadow_run"):
+            emit(7, "quoting", "decide", market_slug="dota-2026",
+                 reason="pair cost 0.985", extra={"intent_count": "two"})
+
+        assert "cycle=7" in caplog.text
+        assert "dota-2026" in caplog.text
+        assert "intents=?" in caplog.text
+
     def test_phases_that_are_not_a_decision_stay_quiet(self, tmp_path, caplog):
         """One line per market visit. A rotation that logged every phase would
         bury the decisions it exists to show."""

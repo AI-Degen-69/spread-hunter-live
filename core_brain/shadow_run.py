@@ -159,7 +159,14 @@ def _make_logging_emit(
             return
 
         extra = kw.get("extra") or {}
-        count = int(extra.get("intent_count", 0) or 0)
+        # The telemetry call above protects itself from a malformed event and
+        # returns; repeating the conversion here unprotected would let a
+        # non-numeric count end the rehearsal after telemetry had already been
+        # handled. An unknown count is worth printing, not worth a crash.
+        try:
+            count = int(extra.get("intent_count", 0) or 0)
+        except (TypeError, ValueError):
+            count = "?"
         reason = (kw.get("reason") or "").strip()
 
         shares = ""
@@ -168,7 +175,7 @@ def _make_logging_emit(
             shares = f" up={inv.up_shares:g} down={inv.down_shares:g}"
 
         log.info(
-            "cycle=%s %s intents=%d%s%s",
+            "cycle=%s %s intents=%s%s%s",
             cycle,
             kw.get("market_slug") or extra.get("condition_id") or "?",
             count,

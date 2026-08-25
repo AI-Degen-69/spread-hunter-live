@@ -742,10 +742,38 @@ class MakerConfig:
     # pays exactly $1.00, so anything at/above 1.00 is a guaranteed loss.
     max_pair_cost: float = 0.995
 
+    # THE COMPLETABLE-COST GATE. `max_pair_cost` above is a BOTH-MAKER check:
+    # what the pair costs if both legs fill as resting bids. On a binary market
+    # UP + DOWN = 1.00, so the legs are anti-correlated -- measured -0.9989
+    # across 98 mid steps on shadow run run-2809a7161de1, 97 of them opposite
+    # sign -- and simultaneous maker fills are rare by construction. The pair
+    # that actually assembles is one maker fill plus a TAKER completion at the
+    # other leg's ask, and nothing checked that price: all 209 orders of that
+    # run carried max_pair_cost_at_post=0.995 while never testing bid + hedge
+    # ask. This is that test. The pair pays exactly $1.00, so `>=` the cap is a
+    # booked loss or a zero-profit fill slot -- a ceiling reached, not
+    # approached, like every other cap here.
+    max_completable_pair_cost: float = 1.00
+    # Switchable so the rule can be attributed a result on its own, the same
+    # escape hatch `enforce_price_band` and `enable_pairs_rule` have.
+    enforce_completable_pair_cost: bool = True
+
     # --- pacing -----------------------------------------------------------
     # He averages 19.1 fills/market (median 17), one every ~5s.
     max_fills_per_market: int = 25
     requote_interval_sec: float = 2.0
+    # THE RE-QUOTE DEAD BAND, in price units. Move a resting order only once
+    # the desired price has moved at least this far. On run-2809a7161de1, 205
+    # of 205 consecutive re-quotes changed price (median 3.0c) and every one
+    # sent the order to the back of the queue at a new level; median order
+    # lifetime was 11.7s against a median queue_ahead of 1058.7 shares. Not
+    # fidgeting -- the mid walked 0.815 -> 0.285 in 30 minutes and every
+    # re-quote answered a real book move. Answering it still cost the whole
+    # queue position. Measured suppression on that run's own price series:
+    # 1c 0/205, 2c 74/205, 3c 98/205, 4c 118/205, 5c 139/205. 3c roughly
+    # doubles median lifetime to ~23s. 2c leaves too much churn; 4c and up hold
+    # a price the book has left behind.
+    requote_dead_band: float = 0.03
     poll_interval_sec: float = 1.0
 
     # Only quote while the window is open enough to resolve sensibly.
@@ -897,6 +925,12 @@ def load() -> MakerConfig:
     pr = os.environ.get("HUNTER_PAIRS_RULE") or ""
     if pr.strip():
         kw["enable_pairs_rule"] = pr.strip().lower() not in ("0", "false", "off")
+    ccap = os.environ.get("HUNTER_COMPLETABLE_CAP") or ""
+    if ccap.strip():
+        kw["max_completable_pair_cost"] = float(ccap)
+    rdb = os.environ.get("HUNTER_REQUOTE_DEAD_BAND") or ""
+    if rdb.strip():
+        kw["requote_dead_band"] = float(rdb)
     cno = os.environ.get("HUNTER_NET_ONEWAY_MS") or os.environ.get("HUNTER_CANCEL_NET_ONEWAY_MS")
     if cno and cno.strip():
         kw["net_oneway_ms"] = float(cno)

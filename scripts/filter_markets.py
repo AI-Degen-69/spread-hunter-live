@@ -27,7 +27,8 @@ from scoring.allocate import (marginal, spread_capture_daily)   # noqa: E402
 from scoring.config import load as _load_cfg   # noqa: E402
 from scoring.markets import parse_book   # noqa: E402
 from scoring.rewards import score_per_share   # noqa: E402
-from scoring.selector import identity_allowed, pair_books_allowed  # noqa: E402
+from scoring.selector import (identity_allowed, maker_queue_allowed,  # noqa: E402
+                              pair_books_allowed)
 
 RUN = ROOT / "runtime"
 OFFSET = 0.020          # where we intend to quote, in price units
@@ -346,11 +347,47 @@ def order_score(v: float, s: float, size: float, min_size: float) -> float:
     return ((v - s) / v) ** 2 * size
 
 
+def queue_bar_reject(m: dict, *, source: str,
+                     max_queue_minutes, queue_minutes_fn):
+    """A rejection row when this market's queue at our price will not clear.
+
+    The three bars around it are FLOORS on depth, and from the maker's side
+    depth near mid IS the queue ahead of us: `select_min_top3_depth_usd` and
+    `book_health` protect our ability to EXIT, which is real and points the
+    other way. `select_min_volume_24h_usd` measures market-wide 24-hour tape
+    across every price, so a market can clear six figures a day while trading
+    nothing at `mid - 2.5c`, the only level our maker order ever sits at.
+
+    Returns None when the market passes, when no bar is set, or when nothing
+    can measure the queue -- and in the first of those cases it does not call
+    `queue_minutes_fn` at all. Measuring costs a tape read per market, and
+    paying for a number the caller has already decided not to act on is how a
+    ranking pass gets slow for nothing. That is also what "record-only" means
+    at this layer: `enforce_max_queue_minutes` is False by default, `main`
+    passes no bar, and this function stays inert.
+    """
+    if not max_queue_minutes or max_queue_minutes <= 0 or queue_minutes_fn is None:
+        return None
+    minutes = queue_minutes_fn(m)
+    ok, reason = maker_queue_allowed(minutes, max_queue_minutes)
+    if ok:
+        return None
+    return {
+        "source": source, "eligible": False, "reject_reason": reason,
+        "queue_minutes": minutes,
+        "cid": m.get("condition_id"),
+        "title": m.get("question", "")[:90],
+        "slug": m.get("market_slug", ""),
+    }
+
+
 def evaluate(session: requests.Session, rate: float, m: dict,
              volume_24h: Optional[float] = None,
              source: str = "rewards", *,
              min_depth_usd: Optional[float] = None,
-             min_volume_usd: Optional[float] = None) -> dict | None:
+             min_volume_usd: Optional[float] = None,
+             max_queue_minutes: Optional[float] = None,
+             queue_minutes_fn=None) -> dict | None:
     """Income and capital for one market, from its live book.
 
     `rate` is the market's pot in $/day, and `source` says what pays it. For a
@@ -371,6 +408,16 @@ def evaluate(session: requests.Session, rate: float, m: dict,
             "title": m.get("question", "")[:90],
             "slug": m.get("market_slug", ""),
         }
+    # THE MAKER-QUEUE BAR, before the two book fetches below rather than
+    # after them. A market whose queue at our own price never clears cannot be
+    # quoted at all, so paying for its books to score it is wasted venue work.
+    # Inert unless a bar is passed in -- see `resolve_queue_bar`.
+    queue_row = queue_bar_reject(m, source=source,
+                                 max_queue_minutes=max_queue_minutes,
+                                 queue_minutes_fn=queue_minutes_fn)
+    if queue_row is not None:
+        return queue_row
+
     v = (rw.get("max_spread") or 3.5) / 100.0
     min_size = rw.get("min_size") or 50
     toks = [t.get("token_id") for t in (m.get("tokens") or [])]
@@ -1026,11 +1073,37 @@ def _worker_session() -> requests.Session:
     return s
 
 
+def resolve_queue_bar(cfg) -> Optional[float]:
+    """The maker-queue bar in force, or None while it is not being enforced.
+
+    Record-only is the shipping default, and it has to be honoured HERE rather
+    than deeper: with no bar resolved, `score_pool` passes none, `evaluate`
+    calls no measurement function, and the ranking pass buys no extra tape
+    reads for a number nothing will act on.
+
+    A bar that never reaches `evaluate` is worse than no bar -- it reads as an
+    enforced limit in the config while changing nothing. That failure has now
+    been found twice on this branch, at two different frames, which is why the
+    tests assert the bar at every frame from here down to the predicate.
+    """
+    if not getattr(cfg, "enforce_max_queue_minutes", False):
+        return None
+    bar = float(getattr(cfg, "select_max_queue_minutes", 0.0) or 0.0)
+    # `> 0`, not truthiness. A negative bar is truthy, so it would travel down
+    # the stack and make `queue_bar_reject` pay for a tape read per market
+    # before `maker_queue_allowed` declined to use it -- a disabled rule
+    # costing venue work. 0 disables, as everywhere else here; negative is a
+    # typo and disables too rather than half-running.
+    return bar if bar > 0 else None
+
+
 def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],
                *, session_factory=_worker_session,
                max_workers: int = 12,
                min_depth_usd: Optional[float] = None,
-               min_volume_usd: Optional[float] = None) -> list[dict]:
+               min_volume_usd: Optional[float] = None,
+               max_queue_minutes: Optional[float] = None,
+               queue_minutes_fn=None) -> list[dict]:
     """Score candidate jobs across a worker pool, one session per worker.
 
     `session_factory` is injected so a test can prove the pool never shares
@@ -1045,7 +1118,9 @@ def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],
                 lambda a: evaluate(session_factory(), a[0], a[1], a[2],
                                    source=a[3],
                                    min_depth_usd=min_depth_usd,
-                                   min_volume_usd=min_volume_usd),
+                                   min_volume_usd=min_volume_usd,
+                                   max_queue_minutes=max_queue_minutes,
+                                   queue_minutes_fn=queue_minutes_fn),
                 jobs):
             if r:
                 out.append(r)
@@ -1108,7 +1183,8 @@ def main() -> None:
              for m in spread_cands]
 
     out = score_pool(jobs, min_depth_usd=trial_bar,
-                     min_volume_usd=volume_bar)
+                     min_volume_usd=volume_bar,
+                     max_queue_minutes=resolve_queue_bar(_CFG))
     # Eligibility BEFORE ranking. Sorting on return_pct_day alone put the
     # top-ranked market at $0.25/day actual against $18.96 projected, because a
     # spectacular percentage return on an income of eleven cents is still

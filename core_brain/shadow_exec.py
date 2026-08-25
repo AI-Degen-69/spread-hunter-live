@@ -26,7 +26,7 @@ import time
 import uuid
 from contextlib import closing
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from core_brain.order_registry import (
     SIZE_EPS, CloseRecord, FillRecord, OrderRecord, OrderRegistry, QuoteRecord,
@@ -70,6 +70,27 @@ def ensure_shadow_tables(db_path: Path | str) -> None:
                 queue_ahead REAL NOT NULL
             )
             """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS queue_marks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                condition_id TEXT,
+                market_slug TEXT,
+                token_id TEXT NOT NULL,
+                price REAL NOT NULL,
+                level_size REAL NOT NULL,
+                traded REAL NOT NULL DEFAULT 0,
+                cancel_decay REAL,
+                queue_minutes REAL,
+                run_id TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_queue_marks_level "
+            "ON queue_marks (token_id, price, ts)"
         )
         conn.execute(
             """
@@ -207,6 +228,105 @@ def record_submit(
     return placed
 
 
+
+def write_queue_mark(db_path: Path | str, *, ts: float, condition_id, market_slug,
+                     token_id: str, price: float, level_size: float,
+                     traded: float, cancel_decay, queue_minutes,
+                     run_id=None) -> None:
+    """One observation of the queue at one price on one token."""
+    with closing(get_connection(Path(db_path))) as conn:
+        conn.execute(
+            """
+            INSERT INTO queue_marks (
+                ts, condition_id, market_slug, token_id, price, level_size,
+                traded, cancel_decay, queue_minutes, run_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (float(ts), condition_id, market_slug, str(token_id),
+             round(float(price), 4), float(level_size), float(traded),
+             cancel_decay, queue_minutes, run_id),
+        )
+        conn.commit()
+
+
+def read_last_queue_mark(db_path: Path | str, token_id: str, price: float,
+                         run_id=None):
+    """The previous observation of this exact level in this run, or None.
+
+    Keyed on (token, price) and not on token alone: two levels on one token are
+    two independent queues, and differencing across them would invent decay
+    that never happened.
+
+    Scoped to `run_id` for the same reason, one gap larger. `data/shadow.db` is
+    reused between rehearsals by design, so without the run filter the first
+    cycle of a new run differences its level against the LAST cycle of an older
+    one -- hours or days earlier. The decay and the clear time that come out of
+    that gap are fiction, and they land in the first rows an operator reads.
+    """
+    sql = ("SELECT * FROM queue_marks WHERE token_id = ? AND price = ?")
+    args: list = [str(token_id), round(float(price), 4)]
+    if run_id is not None:
+        sql += " AND run_id = ?"
+        args.append(run_id)
+    with closing(get_connection(Path(db_path))) as conn:
+        row = conn.execute(sql + " ORDER BY ts DESC, id DESC LIMIT 1",
+                           tuple(args)).fetchone()
+    return dict(row) if row else None
+
+
+def _record_queue_marks(db_path, market, orders, traded, book_fn, now,
+                        run_id=None, clob_host=None) -> None:
+    """Observe every level we rest at: its size, its tape, and what cancelled.
+
+    Runs inside `settle_market` because that is the only place the tape exists.
+    `markets.recent_trades` de-duplicates against a per-market `seen` set, so a
+    second call in the same cycle returns nothing at all.
+
+    The split is a subtraction. The level fell by `before - now`; the tape
+    explains `traded` of it; the residual is cancels. That residual is the
+    number the whole fill model is missing -- it credits queue progress only
+    from trades, so it cannot see the mechanism most likely to move a maker up
+    a 13,000-share queue.
+
+    Telemetry, therefore never fatal. A book read that fails costs one cycle of
+    observation; raising here would take down a rehearsal to protect a
+    measurement.
+    """
+    from scoring.selector import cancel_decay as _decay
+    from scoring.selector import queue_minutes_at
+
+    seen_levels = set()
+    for o in orders:
+        key = (str(o.token_id), round(float(o.price), 4))
+        if key in seen_levels:
+            continue
+        seen_levels.add(key)
+        token_id, price = key
+        try:
+            book = book_fn(clob_host, token_id)
+            level_size = queue_ahead_at(book, price)
+        except Exception as exc:  # noqa: BLE001 - telemetry degrades, never stops
+            _log.warning("queue mark skipped for %s @ %.4f: %s",
+                         str(token_id)[:12], price, exc)
+            continue
+
+        at_level = float((traded or {}).get(token_id, {}).get(price, 0.0))
+        prev = read_last_queue_mark(db_path, token_id, price, run_id=run_id)
+        decay = qmin = None
+        if prev is not None:
+            decay = _decay(prev["level_size"], level_size, at_level)
+            elapsed_min = (float(now) - float(prev["ts"])) / 60.0
+            qmin = queue_minutes_at(level_size, at_level, elapsed_min)
+
+        write_queue_mark(
+            db_path, ts=float(now),
+            condition_id=getattr(market, "condition_id", None),
+            market_slug=getattr(market, "market_slug", None),
+            token_id=token_id, price=price, level_size=level_size,
+            traded=at_level, cancel_decay=decay, queue_minutes=qmin,
+            run_id=run_id)
+
+
 def _filled_size(db_path: Path | str, local_id: str) -> float:
     with closing(get_connection(Path(db_path))) as conn:
         row = conn.execute(
@@ -224,12 +344,21 @@ def settle_market(
     traded_fn: Callable[[str, set], dict],
     seen: set,
     now_fn: Callable[[], float] = time.time,
+    book_fn: Optional[Callable] = None,
+    clob_host: Optional[str] = None,
 ) -> list[ShadowFill]:
     """Credit this market's resting rows from the tape, then persist the result.
 
     One `seen` set per market for the whole session: `markets.recent_trades`
     de-duplicates by trade identity against it, and a fresh set every cycle
     would re-credit the same trades until the order looked full.
+
+    `book_fn` is OPT-IN queue telemetry. Passing one records a `queue_marks`
+    row per level we rest at: the size there now, the tape at that exact price,
+    the residual that cancelled, and the implied minutes to clear. It lives
+    here rather than in its own pass because the tape is consumed once -- the
+    `seen` set above means a second `recent_trades` call this cycle returns
+    nothing. Omitting `book_fn` keeps the previous behaviour exactly.
     """
     traded = traded_fn(market.condition_id, seen)
 
@@ -252,6 +381,11 @@ def settle_market(
 
     for local_id, queue_ahead in queues.items():
         write_queue_ahead(db_path, local_id, queue_ahead)
+
+    if book_fn is not None:
+        _record_queue_marks(db_path, market, orders, traded, book_fn,
+                            now_fn(), run_id=registry._run_id(),
+                            clob_host=clob_host)
 
     now_ms = int(now_fn() * 1000)
     by_id = {o.local_id: o for o in orders}

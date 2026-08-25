@@ -34,7 +34,7 @@ whether a queue is joinable is the one direction that must not be wrong.
 
     python -m pytest -q tests/test_queue_report.py
 
-Expected: 21 passed.
+Expected: 27 passed.
 
     python scripts/queue_report.py --minutes 45
 

@@ -176,3 +176,85 @@ class TestVerdict:
     ])
     def test_the_bands_are_pinned(self, minutes, expected):
         assert verdict(minutes) == expected
+
+
+class TestThePublicPaths:
+    """The exit codes are the operator contract, and nothing asserted them.
+
+    Everything above tests the pure helpers. `report` and `main` are what an
+    operator actually runs, and their three outcomes -- nothing to report,
+    a real reading, a bad argument -- were untested.
+    """
+
+    def test_no_history_explains_itself_and_exits_one(self, tmp_path, capsys):
+        import sqlite3
+
+        from scripts.queue_report import report
+
+        db = tmp_path / "empty.db"
+        sqlite3.connect(db).close()
+        assert report(db, None) == 1
+        out = capsys.readouterr().out
+        assert "predates the telemetry" in out
+        assert "wait one cycle" in out
+
+    def test_a_real_reading_prints_the_verdict_and_exits_zero(
+            self, tmp_path, capsys):
+        from scripts.queue_report import report
+
+        db = tmp_path / "s.db"
+        ensure_shadow_tables(db)
+        # 600 resting, 300 shares/min traded -> 2 minutes to clear: JOINABLE.
+        _mark(db, ts=0.0, size=600.0, traded=0.0, decay=None)
+        _mark(db, ts=60.0, size=600.0, traded=300.0, decay=0.0)
+
+        assert report(db, None) == 0
+        out = capsys.readouterr().out
+        assert "JOINABLE" in out
+        assert "DIRECTIONAL" in out, "the caveat must survive into the output"
+        assert "cancel share of all queue movement" in out
+        assert "joinable now: ['m']" in out
+
+    def test_an_unclearable_queue_reads_as_never(self, tmp_path, capsys):
+        from scripts.queue_report import report
+
+        db = tmp_path / "s.db"
+        ensure_shadow_tables(db)
+        _mark(db, ts=0.0, size=50000.0, traded=0.0, decay=None)
+        _mark(db, ts=60.0, size=50000.0, traded=0.0, decay=0.0)
+
+        assert report(db, None) == 0
+        out = capsys.readouterr().out
+        assert "NEVER" in out
+        assert "inf" in out
+        assert "joinable now: none" in out
+
+    def test_a_negative_window_exits_two_with_the_reason(self, tmp_path, capsys):
+        from scripts.queue_report import main
+
+        db = tmp_path / "s.db"
+        ensure_shadow_tables(db)
+        assert main(["--db", str(db), "--minutes", "-5"]) == 2
+        assert "must not be negative" in capsys.readouterr().out
+
+    def test_main_reaches_the_report_and_returns_its_code(self, tmp_path):
+        from scripts.queue_report import main
+
+        db = tmp_path / "s.db"
+        ensure_shadow_tables(db)
+        _mark(db, ts=0.0, size=600.0, traded=0.0, decay=None)
+        _mark(db, ts=60.0, size=600.0, traded=300.0, decay=0.0)
+        assert main(["--db", str(db)]) == 0
+
+    def test_main_defaults_to_the_shadow_store(self):
+        # The default must stay data/shadow.db: an operator typing the bare
+        # command should never be pointed at the production registry.
+        import argparse
+        import inspect
+
+        from scripts.queue_report import main
+
+        src = inspect.getsource(main)
+        assert '"data/shadow.db"' in src
+        assert "orders.db" not in src
+        assert argparse  # imported for the reader's benefit

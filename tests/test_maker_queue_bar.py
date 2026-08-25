@@ -15,6 +15,7 @@ Depth is good for exiting and bad for queueing, and the selector only knew the
 first half. This is the other half.
 """
 import math
+import sys
 
 import pytest
 
@@ -187,3 +188,101 @@ class TestTheRankerCanActuallyRejectOnIt:
         assert queue_bar_reject(self._market(), source="spread",
                                 max_queue_minutes=15.0,
                                 queue_minutes_fn=None) is None
+
+
+class TestTheBarClimbsTheWholeStack:
+    """Round 2 taught the lesson twice: fix the path, not the frame shown.
+
+    Round 1 said `evaluate` never called the bar. Fixing `evaluate` alone left
+    `score_pool` dropping the arguments, so the bar was still unreachable from
+    the ranking command -- the same bug, one frame up. These tests assert the
+    bar at EVERY frame between the operator's command and the predicate, so a
+    third round cannot find it one frame higher again.
+    """
+
+    def _job(self, slug="atp-slow-2026-08-26"):
+        market = {"condition_id": "0xslow", "question": "Will X win?",
+                  "market_slug": slug,
+                  "tokens": [{"token_id": "t1"}, {"token_id": "t2"}],
+                  "rewards": {"max_spread": 3.5, "min_size": 50}}
+        return (1.0, market, 500_000.0, "spread")
+
+    def test_score_pool_forwards_the_bar_to_evaluate(self):
+        from scripts.filter_markets import score_pool
+
+        out = score_pool([self._job()], session_factory=lambda: None,
+                         max_workers=1, max_queue_minutes=15.0,
+                         queue_minutes_fn=lambda _m: 686.0)
+        assert len(out) == 1
+        assert out[0]["eligible"] is False
+        assert "maker queue" in out[0]["reject_reason"]
+
+    def test_score_pool_leaves_a_fast_queue_to_the_normal_path(self):
+        # It must reach the book fetch rather than being rejected here. With no
+        # session the fetch fails and evaluate returns None -- which is proof
+        # enough that the queue bar did not short-circuit it.
+        from scripts.filter_markets import score_pool
+
+        out = score_pool([self._job()], session_factory=lambda: None,
+                         max_workers=1, max_queue_minutes=15.0,
+                         queue_minutes_fn=lambda _m: 3.0)
+        assert [r for r in out if r.get("reject_reason", "").startswith(
+            "maker queue")] == []
+
+    def test_main_resolves_the_bar_only_when_enforcement_is_on(self):
+        from scripts.filter_markets import resolve_queue_bar
+
+        class Cfg:
+            select_max_queue_minutes = 15.0
+            enforce_max_queue_minutes = False
+
+        assert resolve_queue_bar(Cfg()) is None
+
+        Cfg.enforce_max_queue_minutes = True
+        assert resolve_queue_bar(Cfg()) == 15.0
+
+    def test_main_passes_the_resolved_bar_into_score_pool(self, monkeypatch):
+        """The last frame: the operator's ranking command itself.
+
+        `main` opens its own `requests.Session` inline, so the venue reads are
+        stubbed at the module boundary rather than injected -- everything from
+        `main`'s first line to the `score_pool` call is the real code path.
+        Stopping inside the spy keeps the test off the network and away from
+        `runtime/markets.json`, which this must never write.
+        """
+        from dataclasses import replace as dc_replace
+
+        import scripts.filter_markets as fm
+
+        seen = {}
+
+        class _StopHere(RuntimeError):
+            pass
+
+        def spy(jobs, **kw):
+            seen.update(kw)
+            raise _StopHere()
+
+        class _Resp:
+            @staticmethod
+            def json():
+                return {}
+
+        class _Session:
+            def get(self, *a, **k):
+                return _Resp()
+
+        monkeypatch.setattr(fm, "score_pool", spy)
+        monkeypatch.setattr(fm, "_CFG", dc_replace(
+            fm._CFG, enforce_max_queue_minutes=True,
+            select_max_queue_minutes=15.0))
+        monkeypatch.setattr(fm.requests, "Session", _Session)
+        monkeypatch.setattr(fm, "gamma_volume", lambda *a, **k: {})
+        monkeypatch.setattr(fm, "gamma_spread_universe", lambda *a, **k: [])
+        monkeypatch.setattr(sys, "argv", ["filter_markets.py"])
+
+        with pytest.raises(_StopHere):
+            fm.main()
+
+        assert seen.get("max_queue_minutes") == 15.0, (
+            "main did not forward the bar -- the same bug one frame up")

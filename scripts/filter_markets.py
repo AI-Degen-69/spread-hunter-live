@@ -408,6 +408,16 @@ def evaluate(session: requests.Session, rate: float, m: dict,
             "title": m.get("question", "")[:90],
             "slug": m.get("market_slug", ""),
         }
+    # THE MAKER-QUEUE BAR, before the two book fetches below rather than
+    # after them. A market whose queue at our own price never clears cannot be
+    # quoted at all, so paying for its books to score it is wasted venue work.
+    # Inert unless a bar is passed in -- see `resolve_queue_bar`.
+    queue_row = queue_bar_reject(m, source=source,
+                                 max_queue_minutes=max_queue_minutes,
+                                 queue_minutes_fn=queue_minutes_fn)
+    if queue_row is not None:
+        return queue_row
+
     v = (rw.get("max_spread") or 3.5) / 100.0
     min_size = rw.get("min_size") or 50
     toks = [t.get("token_id") for t in (m.get("tokens") or [])]
@@ -469,15 +479,6 @@ def evaluate(session: requests.Session, rate: float, m: dict,
     # path) means the permanent bar; `main` passes the resolved trial bar.
     depth_bar = (MIN_TOP3_DEPTH_USD if min_depth_usd is None
                  else min_depth_usd)
-    # THE MAKER-QUEUE BAR, after the depth bar and before anything is scored:
-    # a market whose queue at our own price never clears cannot be quoted, so
-    # ranking it is wasted work. Inert unless a bar is passed in.
-    queue_row = queue_bar_reject(m, source=source,
-                                 max_queue_minutes=max_queue_minutes,
-                                 queue_minutes_fn=queue_minutes_fn)
-    if queue_row is not None:
-        return queue_row
-
     books_ok, books_reason = pair_books_allowed(
         books, depth_bar, MAX_BOOK_SPREAD)
     if not books_ok:
@@ -1072,11 +1073,32 @@ def _worker_session() -> requests.Session:
     return s
 
 
+def resolve_queue_bar(cfg) -> Optional[float]:
+    """The maker-queue bar in force, or None while it is not being enforced.
+
+    Record-only is the shipping default, and it has to be honoured HERE rather
+    than deeper: with no bar resolved, `score_pool` passes none, `evaluate`
+    calls no measurement function, and the ranking pass buys no extra tape
+    reads for a number nothing will act on.
+
+    A bar that never reaches `evaluate` is worse than no bar -- it reads as an
+    enforced limit in the config while changing nothing. That failure has now
+    been found twice on this branch, at two different frames, which is why the
+    tests assert the bar at every frame from here down to the predicate.
+    """
+    if not getattr(cfg, "enforce_max_queue_minutes", False):
+        return None
+    bar = float(getattr(cfg, "select_max_queue_minutes", 0.0) or 0.0)
+    return bar or None
+
+
 def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],
                *, session_factory=_worker_session,
                max_workers: int = 12,
                min_depth_usd: Optional[float] = None,
-               min_volume_usd: Optional[float] = None) -> list[dict]:
+               min_volume_usd: Optional[float] = None,
+               max_queue_minutes: Optional[float] = None,
+               queue_minutes_fn=None) -> list[dict]:
     """Score candidate jobs across a worker pool, one session per worker.
 
     `session_factory` is injected so a test can prove the pool never shares
@@ -1091,7 +1113,9 @@ def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],
                 lambda a: evaluate(session_factory(), a[0], a[1], a[2],
                                    source=a[3],
                                    min_depth_usd=min_depth_usd,
-                                   min_volume_usd=min_volume_usd),
+                                   min_volume_usd=min_volume_usd,
+                                   max_queue_minutes=max_queue_minutes,
+                                   queue_minutes_fn=queue_minutes_fn),
                 jobs):
             if r:
                 out.append(r)
@@ -1154,7 +1178,8 @@ def main() -> None:
              for m in spread_cands]
 
     out = score_pool(jobs, min_depth_usd=trial_bar,
-                     min_volume_usd=volume_bar)
+                     min_volume_usd=volume_bar,
+                     max_queue_minutes=resolve_queue_bar(_CFG))
     # Eligibility BEFORE ranking. Sorting on return_pct_day alone put the
     # top-ranked market at $0.25/day actual against $18.96 projected, because a
     # spectacular percentage return on an income of eleven cents is still

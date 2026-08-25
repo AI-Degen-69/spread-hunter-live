@@ -379,6 +379,75 @@ def test_a_single_buy_is_completed_against_the_shadow_store(registry):
     assert completion_fill["trade_id"].startswith("shadow-")
 
 
+def test_completion_refuses_when_pair_has_empty_condition_id(registry):
+    """A pair row with a NULL or empty condition_id cannot be completed: the
+    condition_id is the key that ties an order to its market, and without it,
+    inventory_from_registry has no way to track the position. Accepting an
+    empty condition_id would produce a completion row invisible to the pair
+    it belongs to.
+    """
+    from py_clob_client_v2.clob_types import MarketOrderArgsV2
+
+    from core_brain.order_registry import OrderRecord, FillRecord
+    from core_brain.shadow_exec import (
+        ShadowExecutionClient, ShadowOrderRefused, ensure_shadow_tables,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+
+    # Hand-craft a pair with empty condition_id in the store.
+    pair_id = "pair-empty-cid-test"
+    local_id_up = str(__import__("uuid").uuid4())
+    local_id_dn = str(__import__("uuid").uuid4())
+    now_ms = int(__import__("time").time() * 1000)
+
+    reg.create_order(OrderRecord(
+        id=local_id_up,
+        order_id="shadow-test-up",
+        condition_id="", token_id="tok-up", side="BUY",
+        price=0.47, original_size=20, status="open",
+        posted_ts=now_ms, last_polled_ts=now_ms, pair_id=pair_id
+    ))
+    reg.create_order(OrderRecord(
+        id=local_id_dn,
+        order_id="shadow-test-dn",
+        condition_id="", token_id="tok-dn", side="BUY",
+        price=0.51, original_size=20, status="open",
+        posted_ts=now_ms, last_polled_ts=now_ms, pair_id=pair_id
+    ))
+
+    # Record a fill on tok-up to make tok-dn the naked leg.
+    reg.record_fill(FillRecord(
+        trade_id="shadow-fill-up",
+        order_uuid=local_id_up,
+        size=20,
+        price=0.47
+    ))
+
+    client = ShadowExecutionClient(reg, db, book_fn=lambda h, t: {})
+
+    # Attempting to complete tok-dn should raise ShadowOrderRefused.
+    with pytest.raises(Exception) as exc_info:
+        client.create_and_post_market_order(
+            MarketOrderArgsV2(token_id="tok-dn", amount=10.2, side="BUY",
+                              price=0.51))
+
+    # Verify it's the right exception and mentions the pair and token.
+    from core_brain.shadow_exec import ShadowOrderRefused
+    assert isinstance(exc_info.value, ShadowOrderRefused)
+    assert "tok-dn" in str(exc_info.value) or "pair" in str(exc_info.value).lower()
+
+    # Verify no new order was written to the store.
+    all_orders = reg.get_all_orders()
+    # Should still be the 2 we created (the tok-up and tok-dn naked pair).
+    order_ids = [o["id"] for o in all_orders]
+    assert len([oid for oid in order_ids if oid in (local_id_up, local_id_dn)]) == 2
+    # Verify no new shadow- order was added.
+    new_shadow_orders = [o for o in all_orders if o["id"] not in (local_id_up, local_id_dn)]
+    assert len(new_shadow_orders) == 0
+
+
 def test_a_completion_lands_on_the_older_naked_pair_when_two_pairs_share_a_token(registry):
     """Two pairs post rows on tok-dn, both currently naked; the completion
     under test is for the OLDER one.
@@ -403,8 +472,10 @@ def test_a_completion_lands_on_the_older_naked_pair_when_two_pairs_share_a_token
     ensure_shadow_tables(db)
 
     # Older pair: tok-up filled 20, tok-dn naked (open, unfilled).
+    # Use explicit now_fn so posted_ts values differ deterministically.
     record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
-                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+                  db_path=db, book_fn=lambda h, t: {"bids": {}},
+                  now_fn=lambda: 1000.0)
     settle_market(reg, FakeMarket(), db_path=db, seen=set(),
                   traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
     older_pair_id = next(
@@ -414,7 +485,8 @@ def test_a_completion_lands_on_the_older_naked_pair_when_two_pairs_share_a_token
     # filled 20, tok-dn naked. A posted_ts-only lookup on tok-dn finds this
     # one first.
     record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
-                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+                  db_path=db, book_fn=lambda h, t: {"bids": {}},
+                  now_fn=lambda: 2000.0)
     settle_market(reg, FakeMarket(), db_path=db, seen=set(),
                   traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
     newer_pair_id = next(

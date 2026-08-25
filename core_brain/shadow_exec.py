@@ -338,8 +338,8 @@ class ShadowExecutionClient:
         with closing(get_connection(self._db_path)) as conn:
             rows = conn.execute(
                 """
-                SELECT o.pair_id AS pair_id, o.condition_id AS condition_id,
-                       o.token_id AS token_id, o.posted_ts AS posted_ts,
+                SELECT o.pair_id AS pair_id, MIN(o.condition_id) AS condition_id,
+                       o.token_id AS token_id, MIN(o.posted_ts) AS posted_ts,
                        COALESCE(SUM(f.size), 0) AS matched
                 FROM orders o
                 LEFT JOIN fills f ON f.order_uuid = o.id
@@ -377,7 +377,14 @@ class ShadowExecutionClient:
             return None
         naked_candidates.sort(key=lambda c: c[0])
         _, pid, cid = naked_candidates[0]
-        return str(cid or ""), pid
+
+        if not cid:
+            raise ShadowOrderRefused(
+                f"cannot record completion buy for {str(token_id)[:12]}: pair "
+                f"{pid} has empty condition_id, which would make the "
+                f"completion row invisible to inventory tracking")
+
+        return str(cid), pid
 
     def create_and_post_market_order(self, order_args) -> dict:
         """Cross the book in the rehearsal: called with one positional

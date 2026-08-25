@@ -21,6 +21,7 @@ from __future__ import annotations
 import pytest
 
 from core_brain.trader_loop import LiveFleetResult, VenueSeam, plan_orders, run
+from core_brain.config import MakerConfig
 from core_brain.quotes import QuoteIntent
 
 
@@ -71,6 +72,76 @@ class TestPlanOrders:
         to_cancel, to_submit = plan_orders(open_orders, intents, price_eps=0.001)
         assert to_cancel == []
         assert to_submit == []
+
+    def test_dead_band_keeps_an_order_that_only_drifted_a_couple_of_cents(self):
+        # 205 of 205 consecutive re-quotes on run-2809a7161de1 changed price
+        # (median 3.0c) and every one reset queue position to zero.
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.58)]
+        to_cancel, to_submit = plan_orders(open_orders, intents, dead_band=0.03)
+        assert to_cancel == []
+        assert to_submit == []
+
+    def test_dead_band_still_re_quotes_once_the_price_moves_past_it(self):
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.55)]
+        to_cancel, to_submit = plan_orders(open_orders, intents, dead_band=0.03)
+        assert to_cancel == open_orders
+        assert [i.price for i in to_submit] == [0.55]
+
+    def test_dead_band_is_symmetric(self):
+        # Queue position is lost in both directions.
+        open_orders = [_open(price=0.58)]
+        intents = [_intent(price=0.60)]
+        to_cancel, to_submit = plan_orders(open_orders, intents, dead_band=0.03)
+        assert to_cancel == []
+        assert to_submit == []
+
+    def test_dead_band_defaults_off_so_existing_callers_are_unchanged(self):
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.58)]
+        to_cancel, to_submit = plan_orders(open_orders, intents)
+        assert to_cancel == open_orders
+
+    def test_the_larger_of_dead_band_and_price_eps_wins(self):
+        # Two independent reasons to keep an order; neither may silently
+        # disable the other.
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.58)]
+        to_cancel, _ = plan_orders(open_orders, intents,
+                                   price_eps=0.001, dead_band=0.03)
+        assert to_cancel == []
+
+    def test_a_kept_order_is_cancelled_when_its_own_price_fails_the_gate(self):
+        # The order rests at 0.60. The desired price is 0.58, within the band,
+        # so the band would keep it -- but completing at the DOWN ask of 0.42
+        # costs 1.02, which is exactly the hole the band would otherwise open.
+        cfg = MakerConfig(max_completable_pair_cost=1.00)
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.58)]
+        to_cancel, to_submit = plan_orders(
+            open_orders, intents, dead_band=0.03, cfg=cfg,
+            hedge_asks={"tok-up": 0.42})
+        assert to_cancel == open_orders
+        assert [i.price for i in to_submit] == [0.58]
+
+    def test_a_kept_order_that_still_completes_under_the_cap_is_left_alone(self):
+        cfg = MakerConfig(max_completable_pair_cost=1.00)
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.58)]
+        to_cancel, to_submit = plan_orders(
+            open_orders, intents, dead_band=0.03, cfg=cfg,
+            hedge_asks={"tok-up": 0.38})
+        assert to_cancel == []
+        assert to_submit == []
+
+    def test_a_missing_hedge_ask_leaves_the_kept_order_alone(self):
+        cfg = MakerConfig(max_completable_pair_cost=1.00)
+        open_orders = [_open(price=0.60)]
+        intents = [_intent(price=0.58)]
+        to_cancel, _ = plan_orders(open_orders, intents, dead_band=0.03,
+                                   cfg=cfg, hedge_asks={})
+        assert to_cancel == []
 
 
 class FakeMarket:

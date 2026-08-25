@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from core_brain.quotes import Inventory, QuoteIntent, evaluate_market_quote
+from core_brain import risk
 from core_brain.cycle_stream import emit as _emit_cycle_event
 
 log = logging.getLogger("main_spread_hunter_loop")
@@ -54,33 +55,71 @@ def plan_orders(
     open_orders: list[dict],
     intents: list[QuoteIntent],
     price_eps: float = 1e-9,
+    *,
+    dead_band: float = 0.0,
+    cfg=None,
+    hedge_asks: Optional[dict] = None,
 ) -> tuple[list[dict], list[QuoteIntent]]:
     """Split open orders + desired intents into (cancel, submit).
 
-    An order resting at (or within `price_eps` of) the desired price is kept.
-    Orders on tokens we no longer quote are cancelled. An intent whose token has
-    no resting order at that price is submitted. A venue rounding jitter below
-    a tick must not churn cancel+resubmit, hence the epsilon.
+    An order resting within the keep tolerance of the desired price is kept.
+    Orders on tokens we no longer quote are cancelled. An intent with no kept
+    order near its price is submitted.
+
+    TWO INDEPENDENT REASONS TO KEEP AN ORDER, and the tolerance is the larger
+    of them so neither can silently disable the other:
+
+      * `price_eps`, sub-tick venue rounding jitter. A rounding difference
+        below a tick is not a price change and must not churn cancel+resubmit.
+      * `dead_band`, the re-quote hysteresis. Every cancel+resubmit sends the
+        order to the back of the queue at a new level, and on shadow run
+        run-2809a7161de1 that happened 205 times out of 205 consecutive
+        re-quotes -- median move 3.0c, median order lifetime 11.7s against a
+        median queue_ahead of 1058.7 shares. Not fidgeting: the mid genuinely
+        walked 0.815 -> 0.285 in 30 minutes and every re-quote answered a real
+        book move. Answering it still cost the whole queue position, so the
+        band trades a slightly stale price for time in the queue.
+
+    THE RE-GATE. A kept order rests at its OWN price, up to `dead_band` away
+    from the price `risk.hard_block` approved. Left unchecked, the band is a
+    hole through that gate: a 3c-stale bid in a moving market can carry a
+    completable cost 3c worse than anything the gate ever allowed. So a kept
+    order is re-tested against `risk.completable_pair_block` at its own price
+    and cancelled when it no longer passes. `cfg` and `hedge_asks` (token id ->
+    the OTHER token's best ask) are what that test needs; without both, the
+    re-gate stands down and the band behaves as a plain tolerance.
+
+    A re-gated cancel drops the order out of the kept set, so this cycle's
+    intent for that token IS submitted in its place. Cancelling without
+    replacing would leave the market dark for a cycle on a price that is
+    still quotable.
     """
+    tolerance = max(float(price_eps), float(dead_band))
+
     wanted: dict[str, list[QuoteIntent]] = {}
     for i in intents:
         wanted.setdefault(i.token_id, []).append(i)
 
-    resting: dict[str, list[dict]] = {}
+    kept: dict[str, list[dict]] = {}
     to_cancel: list[dict] = []
     for o in open_orders:
         tok = o["token_id"]
-        resting.setdefault(tok, []).append(o)
         targets = wanted.get(tok)
         if not targets or not any(
-            abs(i.price - o["price"]) <= price_eps for i in targets
+            abs(i.price - o["price"]) <= tolerance for i in targets
         ):
             to_cancel.append(o)
+            continue
+        if cfg is not None and hedge_asks is not None and risk.completable_pair_block(
+                cfg, float(o["price"]), hedge_asks.get(tok)):
+            to_cancel.append(o)
+            continue
+        kept.setdefault(tok, []).append(o)
 
     to_submit: list[QuoteIntent] = []
     for i in intents:
-        sits = resting.get(i.token_id, [])
-        if not any(abs(o["price"] - i.price) <= price_eps for o in sits):
+        sits = kept.get(i.token_id, [])
+        if not any(abs(o["price"] - i.price) <= tolerance for o in sits):
             to_submit.append(i)
 
     return to_cancel, to_submit

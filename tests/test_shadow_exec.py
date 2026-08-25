@@ -574,3 +574,49 @@ def test_a_merged_pair_is_not_merged_again(registry):
     assert len(record_shadow_merges(reg, db)) == 1
     assert record_shadow_merges(reg, db) == []
     assert len(reg.get_all_closes()) == 1
+
+
+def test_a_pair_that_fills_incrementally_records_merges_incrementally(registry):
+    """A pair filled 10/10, merged, then fills another 10/10 should produce a
+    SECOND close for the newly merged 10 shares, not be excluded outright."""
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_shadow_merges, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+
+    # Cycle 1: settle 10/20 on each leg
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 10.0},
+                                               "tok-dn": {0.51: 10.0}})
+
+    # First merge records 10 shares
+    merged_1 = record_shadow_merges(reg, db)
+    assert len(merged_1) == 1
+    closes_after_first = reg.get_all_closes()
+    assert len(closes_after_first) == 1
+    first_close = closes_after_first[0]
+    assert first_close["shares"] == 10.0
+
+    # Cycle 2: settle remaining 10/10 on each leg
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 10.0},
+                                               "tok-dn": {0.51: 10.0}})
+
+    # Second merge records the additional 10 shares
+    merged_2 = record_shadow_merges(reg, db)
+    assert len(merged_2) == 1
+    closes_after_second = reg.get_all_closes()
+    assert len(closes_after_second) == 2
+    second_close = closes_after_second[1]
+    assert second_close["shares"] == 10.0
+    # Both closes should reference the same logical pair (tx_hash starts with same pair_id)
+    first_pair_id = first_close["tx_hash"].split(":")[0]
+    second_pair_id = second_close["tx_hash"].split(":")[0]
+    assert first_pair_id == second_pair_id
+    # Sum of merged shares never exceeds min(leg fills) = 20
+    total_merged = sum(c["shares"] for c in closes_after_second)
+    assert total_merged == 20.0

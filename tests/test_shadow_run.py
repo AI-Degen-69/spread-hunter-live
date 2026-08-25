@@ -745,3 +745,121 @@ class TestPositionInTheLog:
         assert "cycle=3" in caplog.text
         assert "up=" not in caplog.text
         assert "down=" not in caplog.text
+
+
+class TestSecondRotation:
+    """Three cycles of the real loop over one market, with the price moving.
+
+    Every other `run_shadow` test in this file passes `minutes=0.0`, which is
+    exactly one rotation, and the rest drive seam ports one at a time. That is
+    why a defect that only appears the SECOND time a market is visited -- a
+    re-quote, which needs a cancel first -- survived seven scoped reviews. This
+    class exists to make the second and third visits real.
+
+    The loop under test is `trader_loop.run` itself, reached through
+    `run_shadow` so the whole wiring (seam, sweep, fleet state) is the one a
+    session gets. Only the deadline sleep is replaced: counting rotations is
+    hermetic where a wall clock is not.
+    """
+
+    @staticmethod
+    def _canonical_book(_clob_host, token_id):
+        return {"token_id": token_id, "bids": {0.46: 500.0},
+                "asks": {0.52: 500.0}, "best_bid": 0.46, "best_ask": 0.52,
+                "malformed": 0}
+
+    def _run_cycles(self, tmp_path, monkeypatch, *, cycles, prices, tape):
+        """Rotate one market `cycles` times, quoting `prices[i]` on cycle i."""
+        import core_brain.markets as markets_mod
+        from core_brain.shadow_run import _Deadline, run_shadow
+
+        seen_cycles = {"n": 0}
+
+        def counting_sleep(_seconds):
+            seen_cycles["n"] += 1
+            if seen_cycles["n"] >= cycles:
+                raise _Deadline()
+
+        monkeypatch.setattr("core_brain.shadow_run.make_deadline_sleep",
+                            lambda *a, **k: counting_sleep)
+
+        tape_calls = {"n": 0}
+
+        def fake_recent_trades(condition_id, seen):
+            tape_calls["n"] += 1
+            return tape(tape_calls["n"])
+
+        monkeypatch.setattr(markets_mod, "recent_trades", fake_recent_trades)
+
+        decided = {"n": 0}
+
+        def decide_fn(cfg, up, dn, inv, t_rem, wf):
+            price = prices[min(decided["n"], len(prices) - 1)]
+            decided["n"] += 1
+            return ([QuoteIntent(side="UP", token_id="tok-up", price=price,
+                                 size=20, mid=0.5, edge_vs_mid=0.0)],
+                    f"cycle price {price}")
+
+        result = run_shadow(
+            minutes=1.0, db_path=tmp_path / "shadow.db",
+            markets_fn=lambda max_markets=None: [FakeMarket("0xabc")],
+            client_fn=lambda: object(),
+            decide_fn=decide_fn,
+            fetch_books=self._canonical_book,
+            interval=0.0,
+        )
+        return result, seen_cycles["n"], decided["n"]
+
+    def test_a_requote_does_not_park_the_market_in_error(
+            self, tmp_path, monkeypatch):
+        """Cycle 1 rests at 0.47; cycles 2 and 3 want 0.48 and 0.49, which
+        means cancelling first. With a `cancel_fn` that reports 0 cancelled,
+        `_still_resting` cannot verify anything (the shadow seam wires no
+        `resting_order_ids_fn`), so it fails closed and the market goes ERROR
+        on every re-quote -- the rehearsal stops rehearsing it.
+        """
+        result, cycles, decisions = self._run_cycles(
+            tmp_path, monkeypatch, cycles=3, prices=[0.47, 0.48, 0.49],
+            tape=lambda n: {})
+
+        assert cycles == 3
+        assert decisions == 3, "the market was not visited on every cycle"
+        errors = [r for r in result.results if r.status == "ERROR"]
+        assert errors == [], f"re-quote errored: {[r.error for r in errors]}"
+        assert [r.status for r in result.results] == ["QUOTED"]
+
+    def test_the_superseded_order_stops_resting(self, tmp_path, monkeypatch):
+        """An order the loop decided to replace must not keep collecting
+        simulated fills at a price the live loop would have cancelled.
+        """
+        from core_brain.order_registry import OrderRegistry
+
+        self._run_cycles(tmp_path, monkeypatch, cycles=3,
+                         prices=[0.47, 0.48, 0.49], tape=lambda n: {})
+
+        reg = OrderRegistry(db_path=tmp_path / "shadow.db")
+        rows = [o for o in reg.get_all_orders() if o["token_id"] == "tok-up"]
+        by_price = {round(float(o["price"]), 2): o["status"] for o in rows}
+
+        assert by_price[0.47] == "cancelled"
+        assert by_price[0.48] == "cancelled"
+        assert by_price[0.49] == "open"
+        assert [o for o in reg.get_active_orders()
+                if o.token_id == "tok-up" and o.status in ("open", "partial")
+                ] != [], "nothing rests at the current price"
+
+    def test_inventory_reflects_what_settled_before_the_requote(
+            self, tmp_path, monkeypatch):
+        """The tape credits 5 shares against the first resting order. Those
+        shares are bought and stay bought when the order is replaced.
+        """
+        from core_brain.order_registry import inventory_from_registry
+
+        self._run_cycles(
+            tmp_path, monkeypatch, cycles=3, prices=[0.47, 0.48, 0.49],
+            tape=lambda n: {"tok-up": {0.47: 5.0}} if n == 2 else {})
+
+        inv = inventory_from_registry("0xabc", "tok-up", "tok-dn",
+                                      db_path=tmp_path / "shadow.db")
+        assert inv.up_shares == pytest.approx(5.0)
+        assert inv.up_cost == pytest.approx(5.0 * 0.47)

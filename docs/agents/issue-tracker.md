@@ -13,6 +13,46 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 Infer the repo from `git remote -v` — `gh` does this automatically when run inside a clone.
 
+## Raw idea intake
+
+The operator drops raw thoughts (Hebrew voice-notes style, bullet fragments, half-formed
+questions) and the agent turns each one into a professional issue. One idea = one issue.
+
+### Intake template
+
+Every intake issue uses this body. English only — the operator's raw words are not quoted
+back; they are interpreted into the sections below.
+
+```markdown
+## Summary
+<One sentence: what this is and why it matters.>
+
+## Background
+<Where the thought came from, what problem it solves, prior context.>
+
+## Scope
+<What this work covers, and explicitly what it does NOT cover.>
+
+## Relevant files
+<Paths found by scanning the repo, or "None yet — research needed".>
+
+## Acceptance criteria
+- [ ] <Verifiable outcome>
+```
+
+### Labels
+
+- New capture that still needs shaping: `idea` + `needs-triage`.
+- Shaped and fully specified so an agent can pick it up AFK: swap to `ready-for-agent`.
+- Requires operator hands or operator decisions, not agent work: `ready-for-human`.
+
+### Intake flow
+
+1. Operator throws a raw idea in chat.
+2. Agent scans the repo for relevant files and drafts the issue from the template.
+3. Agent shows the draft; on approval publishes it with `gh issue create`.
+4. Later pickup: "work on #42" → `gh issue view 42 --comments` and go.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_

@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Callable
 
 from core_brain.order_registry import (
-    SIZE_EPS, FillRecord, OrderRecord, OrderRegistry, get_connection,
+    SIZE_EPS, CloseRecord, FillRecord, OrderRecord, OrderRegistry, get_connection,
 )
 from core_brain.shadow_fills import (
     ShadowFill, ShadowRestingOrder, credit_fills, queue_ahead_at,
@@ -492,22 +492,33 @@ def record_shadow_merges(
     part a rehearsal can honestly reproduce -- a merged pair pays $1.00, so the
     result is `shares * (1.00 - pair cost)`, and `method='shadow_merge'` says
     where the row came from.
-    """
-    from core_brain.order_registry import CloseRecord
 
+    Tracks merged shares per pair rather than per-pair boolean, allowing
+    multiple merges as a pair fills incrementally. If a pair filled 10/10
+    shares and merged, then fills another 10/10, a second close records for
+    the newly merged 10 shares.
+    """
     with closing(get_connection(Path(db_path))) as conn:
+        # Current fills per pair per leg
         rows = conn.execute(
             """
             SELECT o.pair_id AS pair_id, o.condition_id AS condition_id,
                    o.token_id AS token_id,
                    COALESCE(SUM(f.size), 0) AS shares,
                    COALESCE(SUM(f.size * f.price), 0) AS cost
-            FROM orders o JOIN fills f ON f.order_uuid = o.id
+            FROM orders o LEFT JOIN fills f ON f.order_uuid = o.id
             WHERE o.pair_id IS NOT NULL
-              AND o.pair_id NOT IN (
-                  SELECT COALESCE(tx_hash, '') FROM closes
-                   WHERE method = 'shadow_merge')
             GROUP BY o.pair_id, o.token_id
+            """
+        ).fetchall()
+
+        # Already-merged shares per pair: tx_hash is prefixed pair_id
+        merged_rows = conn.execute(
+            """
+            SELECT tx_hash AS pair_tx, COALESCE(SUM(shares), 0) AS merged_shares
+            FROM closes
+            WHERE method = 'shadow_merge' AND tx_hash IS NOT NULL
+            GROUP BY tx_hash
             """
         ).fetchall()
 
@@ -515,25 +526,55 @@ def record_shadow_merges(
     for r in rows:
         by_pair.setdefault(str(r["pair_id"]), []).append(r)
 
+    # Build a map from pair_id to already-merged shares. tx_hash is formatted
+    # as "pair-xxx" for the first merge, "pair-xxx:2" for the second, etc.
+    already_merged: dict[str, float] = {}
+    for r in merged_rows:
+        tx = str(r["pair_tx"])
+        # Extract pair_id from tx_hash (everything before the optional ":N" suffix)
+        pair_id = tx.split(":")[0] if ":" in tx else tx
+        already = float(r["merged_shares"])
+        already_merged[pair_id] = already_merged.get(pair_id, 0.0) + already
+
     merged: list[str] = []
     for pair_id, legs in by_pair.items():
         if len(legs) != 2:
             continue
-        shares = min(float(leg["shares"]) for leg in legs)
-        if shares <= 0:
+        min_fills = min(float(leg["shares"]) for leg in legs)
+        if min_fills <= 0:
             continue
+        already = already_merged.get(pair_id, 0.0)
+        mergeable = min_fills - already
+        if mergeable <= SIZE_EPS:
+            continue
+        # Cost basis for the newly merged shares only: scale existing costs by
+        # the ratio of newly merged to originally filled
         cost_basis = sum(
-            float(leg["cost"]) * (shares / float(leg["shares"])) for leg in legs
+            float(leg["cost"]) * (mergeable / float(leg["shares"])) for leg in legs
         )
-        proceeds = shares * 1.0
+        proceeds = mergeable * 1.0
+        # Version the tx_hash to ensure uniqueness within (condition_id, tx_hash)
+        # constraint: first merge uses pair_id as-is, second uses "pair_id:2", etc.
+        # Count existing closes for this pair with tx_hash starting with pair_id
+        with closing(get_connection(Path(db_path))) as conn:
+            merge_count_row = conn.execute(
+                """
+                SELECT COUNT(*) as cnt FROM closes
+                WHERE method = 'shadow_merge' AND tx_hash LIKE ?
+                """,
+                (f"{pair_id}%",),
+            ).fetchone()
+        merge_count = int(merge_count_row["cnt"]) if merge_count_row else 0
+        tx_hash = pair_id if merge_count == 0 else f"{pair_id}:{merge_count + 1}"
         registry.log_close(CloseRecord(
             ts=now_fn(), condition_id=str(legs[0]["condition_id"]),
-            method="shadow_merge", shares=shares, cost_basis=cost_basis,
+            method="shadow_merge", shares=mergeable, cost_basis=cost_basis,
             proceeds=proceeds, fee=0.0, gas=0.0,
             realized_pnl=proceeds - cost_basis,
-            # The pair id rides in tx_hash: it is the natural idempotency key
-            # here, and a shadow close has no transaction to name.
-            tx_hash=pair_id,
+            # The pair id rides in tx_hash, versioned to satisfy the unique
+            # constraint on (condition_id, tx_hash). Multiple closes reference
+            # the same logical pair by sharing a common prefix in tx_hash.
+            tx_hash=tx_hash,
         ))
         merged.append(pair_id)
 

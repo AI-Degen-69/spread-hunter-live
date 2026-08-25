@@ -394,11 +394,10 @@ def run_shadow(
                     log.warning("pairs %s error: %s", pair_id, pr.get("error"))
                 elif action not in ("hold", "balanced"):
                     log.info("pairs %s %s", pair_id, action)
+            for pair_id in record_shadow_merges(seam.registry, db_path):
+                log.info("merged %s at $1.00 a share", pair_id)
         except (sqlite3.Error, OSError, ValueError) as e:
             log.warning("shadow pairs pass failed: %s", e)
-
-        for pair_id in record_shadow_merges(seam.registry, db_path):
-            log.info("merged %s at $1.00 a share", pair_id)
 
     seam.sweep_fn = shadow_sweep
 

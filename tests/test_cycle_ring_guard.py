@@ -70,18 +70,36 @@ def test_decide_path_default_emit_leaves_production_ring_untouched(
     assert _ring_state() == before
 
 
+def test_the_fixture_actually_moved_the_default():
+    """The module-level import binds the PRE-fixture value, so it is the
+    production path; the module attribute is what the fixture patches.
+
+    Without this, every other test here could pass on a checkout where the
+    fixture silently did nothing -- an emit that reached the production ring
+    and an emit that reached a temp ring both leave the assertions below
+    satisfied if the two paths are the same path.
+    """
+    assert cycle_stream.DEFAULT_RING_PATH != DEFAULT_RING_PATH, (
+        "the autouse fixture did not redirect the default ring")
+    assert cycle_stream.LIVE_ROOT != DEFAULT_RING_PATH.parent.parent
+
+
 def test_read_ring_default_resolves_away_from_production_ring():
     """read_ring()'s fallback resolves through LIVE_ROOT; both are redirected.
 
     The live ring holds hundreds of lines, so an empty default read is
     positive proof the fallback resolved into this test's own temp dir.
     """
+    assert cycle_stream.DEFAULT_RING_PATH != DEFAULT_RING_PATH
     assert read_ring(tail=10) == []
 
 
 def test_redirected_ring_receives_the_event(tmp_path):
     """The redirected default actually works: the event lands and reads back."""
+    assert cycle_stream.DEFAULT_RING_PATH != DEFAULT_RING_PATH
     emit(7, "reconciling", "reconcile_ok", market_slug="mkt")
+    assert cycle_stream.DEFAULT_RING_PATH.exists(), (
+        "the event went somewhere other than the redirected default")
     events = read_ring(tail=10)
     assert len(events) == 1
     assert events[0]["cycle"] == 7

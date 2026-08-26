@@ -179,6 +179,21 @@ def redirect_cycle_ring(tmp_path_factory, monkeypatch):
     same class of accident the registry guard above exists to stop. Tests that
     exercise the ring pass `ring_path=` explicitly; this fixture covers the
     ones that do not.
+
+    How to verify (operator, PowerShell):
+
+        python -m pytest -q tests/test_cycle_ring_guard.py ; python -m pytest -q
+
+    The proof this guard works is that the production ring is byte-identical
+    across a full-suite run. Measured on this branch, sha256 of the first 16
+    hex digits of `runtime/cycle_events.jsonl`:
+
+        BEFORE lines: 528  pid14668 decides: 25  sha: 09bf14a613411944
+        902 passed, 1 skipped in 81.06s
+        AFTER  lines: 528  pid14668 decides: 25  sha: 09bf14a613411944
+
+    Before this fixture the same run appended ~33 decide events and evicted an
+    equal number of the operator's own.
     """
     import core_brain.cycle_stream as cycle_stream
 

@@ -72,4 +72,6 @@ Thumbs.db
 
 # Multi-agent session artifacts
 .hermes/
+.scratch/
+.superpowers/
 

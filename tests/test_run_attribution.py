@@ -149,3 +149,72 @@ class TestEffectiveConfigIsLogged:
 def order_registry_current():
     from core_brain import order_registry
     return order_registry
+
+
+class TestTheFilterUnderItsTwoEdgeCases:
+    """The run filter is `(o.run_id or mine) == mine`. Both halves of that
+    expression are a decision about money-adjacent telemetry, and neither was
+    pinned when the filter landed.
+
+    An unstamped row is counted as ours, deliberately: `run_id` is nullable on
+    `orders` (order_registry.py:301) and a store written before the column was
+    populated holds rows no run can claim. Dropping them would silently shrink
+    a rehearsal's measured resting set instead of loudly failing.
+
+    A registry with no id of its own falls back to the process id, so a shadow
+    store's `shadow-...` rows stop matching and the run measures NOTHING. That
+    is the safe direction -- a zero is visible, a foreign price is not -- but
+    it is fail-quiet, so it is pinned here rather than left to be rediscovered.
+    """
+
+    def _seed(self, db_path, order_run_id, mine_run_id):
+        from core_brain.order_registry import OrderRecord, OrderRegistry
+        from core_brain.shadow_exec import ensure_shadow_tables
+
+        ensure_shadow_tables(db_path)
+        writer = OrderRegistry(db_path=db_path, run_id=order_run_id)
+        writer.create_order(OrderRecord(
+            id="local-1", order_id="oid-1", condition_id="0xabc",
+            token_id="tok-up", side="BUY", price=0.47, original_size=20.0,
+            status="open", posted_ts=1, last_polled_ts=1))
+        return OrderRegistry(db_path=db_path, run_id=mine_run_id)
+
+    def _settle(self, reg, db):
+        from core_brain.shadow_exec import settle_market
+
+        def book_fn(_host, token_id):
+            return {"token_id": token_id, "best_bid": 0.47, "best_ask": 0.49,
+                    "bids": {0.47: 100.0}, "asks": {0.49: 100.0}}
+
+        return settle_market(reg, FakeMarket(), db_path=db,
+                             traded_fn=lambda cid, seen: {}, seen=set(),
+                             now_fn=lambda: 500.0, book_fn=book_fn)
+
+    def test_an_unstamped_order_is_measured_as_this_runs(self, tmp_path):
+        db = tmp_path / "s.db"
+        reg = self._seed(db, "shadow-writeraaaaa", "shadow-mineaaaaaaa")
+        conn = sqlite3.connect(db)
+        try:
+            conn.execute("UPDATE orders SET run_id = NULL")
+            conn.commit()
+        finally:
+            conn.close()
+
+        self._settle(reg, db)
+
+        marked = [r["price"] for r in _rows(db)]
+        assert marked == [pytest.approx(0.47)], (
+            "an order no run claims must be measured, not dropped: dropping it "
+            "shrinks the resting set silently")
+
+    def test_a_registry_without_its_own_id_measures_nothing_rather_than_foreign(
+            self, tmp_path):
+        db = tmp_path / "s.db"
+        reg = self._seed(db, "shadow-writeraaaaa", None)
+
+        marks = self._settle(reg, db)
+
+        assert marks == [], marks
+        assert _rows(db) == [], (
+            "a registry that fell back to the process id must measure nothing, "
+            "never another session's resting prices")

@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sqlite3
 import sys
 import uuid
@@ -148,6 +149,26 @@ class ShadowResult:
     skipped_stages: tuple = ()
 
 
+def _run_ring_name(run_id: str) -> str:
+    """File name for a run-scoped ring: `shadow-<token>.jsonl`.
+
+    The id is not ours to trust. `_resolve_run_id` takes `SH_RUN_ID` from the
+    environment verbatim (order_registry.py:61-74), so anything the operator
+    exports lands here -- including a separator, which would put the ring
+    outside `runtime/`, or a dot pair, which would climb out of it. Every
+    character outside `[A-Za-z0-9_.-]` becomes a dash, leading and trailing
+    dots and dashes go, and the result is capped.
+
+    Ids already carrying the `shadow-` prefix are not prefixed twice:
+    `shadow_run_id()` returns `shadow-<hex>`, which would otherwise name the
+    file `shadow-shadow-<hex>.jsonl`.
+    """
+    token = re.sub(r"[^A-Za-z0-9_.-]", "-", run_id).strip("-.")[:64] or "unnamed"
+    if token.startswith("shadow-"):
+        return f"{token}.jsonl"
+    return f"shadow-{token}.jsonl"
+
+
 def _make_logging_emit(
     db_path,
     inventory_lookup: Optional[Callable[[str], Any]] = None,
@@ -194,15 +215,18 @@ def _make_logging_emit(
     """
     from core_brain.cycle_stream import LIVE_ROOT
 
-    ring_path = (LIVE_ROOT / "runtime" / f"shadow-{run_id}.jsonl") if run_id else None
+    ring_path = (LIVE_ROOT / "runtime" / _run_ring_name(run_id)) if run_id else None
 
     def emit_fn(cycle, phase, action, **kw) -> None:
         from core_brain.cycle_stream import emit as _emit_cycle_event
 
         if ring_path is not None:
-            kw.setdefault("ring_path", ring_path)
-            # Run-scoped rings do not rotate against themselves: see above.
-            kw.setdefault("can_rotate", False)
+            # Assigned, not defaulted: a caller that passed its own ring_path
+            # here would put the rehearsal back in someone else's file, and
+            # can_rotate=True would reintroduce the eviction this exists to
+            # stop. With a run_id, the run-scoped ring is not negotiable.
+            kw["ring_path"] = ring_path
+            kw["can_rotate"] = False
         _emit_cycle_event(cycle, phase, action, db_path=db_path,
                           run_id=run_id, **kw)
 

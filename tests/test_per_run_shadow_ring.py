@@ -4,6 +4,13 @@ Before this, `_make_logging_emit` passed no `ring_path`, so a rehearsal's
 events fell through to `cycle_stream.DEFAULT_RING_PATH` -- the live engine's
 500-line production ring, shared with the query loop, the settling sweep and
 the test suite. The rehearsal was a bystander in someone else's rotation.
+
+How to verify (operator, PowerShell):
+
+    python -m pytest -q tests/test_per_run_shadow_ring.py ; python -m pytest -q
+
+The second command is the bar this repo merges against. The production ring
+must be byte-identical across it; the fixture below asserts that directly.
 """
 from __future__ import annotations
 
@@ -167,3 +174,54 @@ class TestPerRunRingDoesNotRotate:
         emit(1, "reconciling", "reconcile_ok", market_slug="m")
         assert seen.get("can_rotate") is False
         assert seen.get("ring_path") == _expected_ring("captest")
+
+
+class TestTheRingNameIsNotTakenOnTrust:
+    """`SH_RUN_ID` is read from the environment verbatim, so the id that names
+    this file is operator input, not a generated token."""
+
+    def test_an_id_that_already_says_shadow_is_not_prefixed_twice(self):
+        from core_brain.shadow_run import _run_ring_name, shadow_run_id
+
+        generated = shadow_run_id()
+        assert generated.startswith("shadow-"), generated
+        assert _run_ring_name(generated) == f"{generated}.jsonl", (
+            "the generated id already carries the prefix; naming the file "
+            "shadow-shadow-<hex>.jsonl makes the run harder to find, not safer")
+
+    @pytest.mark.parametrize("hostile", [
+        "../../etc/passwd",
+        "..",
+        r"a/b\c",
+        "run id with spaces",
+        "",
+    ])
+    def test_a_hostile_id_cannot_leave_the_runtime_directory(self, hostile):
+        from core_brain.shadow_run import _run_ring_name
+
+        name = _run_ring_name(hostile)
+        assert "/" not in name and "\\" not in name, name
+        assert ".." not in name, name
+        assert name.endswith(".jsonl") and len(name) > len(".jsonl"), name
+
+
+class TestTheRunRingIsNotNegotiable:
+    """With a run_id, a caller must not be able to put the rehearsal back in
+    someone else's file or switch rotation on."""
+
+    def test_a_caller_cannot_redirect_or_rotate_the_run_ring(self, tmp_path):
+        from core_brain.order_registry import init_db
+        from core_brain.shadow_run import _make_logging_emit
+
+        db = tmp_path / "shadow.db"
+        init_db(db)
+        elsewhere = tmp_path / "someone-elses-ring.jsonl"
+        emit = _make_logging_emit(db, run_id="testrun2")
+
+        emit(1, "quoting", "decide", market_slug="dota-2026",
+             extra={"intent_count": 0}, ring_path=elsewhere, can_rotate=True)
+
+        assert not elsewhere.exists(), (
+            "a caller redirected the rehearsal out of its own ring")
+        run_ring = _expected_ring("testrun2")
+        assert run_ring.exists() and _read_events(run_ring), run_ring

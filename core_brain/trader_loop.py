@@ -877,12 +877,42 @@ def _fleet_state(registry, cfg) -> dict:
     from core_brain.order_registry import (
         registry_committed_usd, registry_naked_usd,
     )
+    from core_brain.config import derive_dynamic_caps
+
+    portfolio_usd = None
+    if registry is not None:
+        if hasattr(registry, "get_latest_account_mark"):
+            try:
+                am = registry.get_latest_account_mark()
+                if am and am.get("account_value_usd") is not None and float(am["account_value_usd"]) > 0:
+                    portfolio_usd = float(am["account_value_usd"])
+            except Exception:
+                pass
+        if portfolio_usd is None and hasattr(registry, "get_all_float_marks"):
+            try:
+                fms = registry.get_all_float_marks()
+                if fms:
+                    from core_brain.order_registry import get_run_id
+                    active_rid = get_run_id()
+                    run_fms = [fm for fm in fms if (not fm.get("run_id") or fm.get("run_id") == active_rid)] if active_rid else fms
+                    if run_fms:
+                        latest = run_fms[-1]
+                        unrealized = latest.get("unrealized_usd")
+                        if unrealized is not None:
+                            val = float(cfg.bankroll_usd) + float(unrealized)
+                            if val > 0:
+                                portfolio_usd = val
+            except Exception:
+                pass
+
+    dynamic_caps = derive_dynamic_caps(cfg, portfolio_usd)
 
     return {
         "fleet_naked_usd": registry_naked_usd(registry),
         "committed_usd": registry_committed_usd(registry),
         "fleet_posture": fleet_posture(
             fleet_stats(registry, cfg.markout_fleet_min_sample), cfg),
+        **dynamic_caps,
     }
 
 

@@ -1,0 +1,719 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spread Hunter — Strategy, Timing & Risk Engine</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      --bg-primary: #0a0d14;
+      --bg-card: rgba(18, 24, 38, 0.75);
+      --bg-card-hover: rgba(26, 35, 56, 0.85);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --border-accent: rgba(56, 189, 248, 0.35);
+      --text-main: #f1f5f9;
+      --text-muted: #94a3b8;
+      --text-dim: #64748b;
+      --cyan: #38bdf8;
+      --emerald: #10b981;
+      --amber: #f59e0b;
+      --rose: #f43f5e;
+      --purple: #a855f7;
+      --shadow-glow: 0 0 25px rgba(56, 189, 248, 0.15);
+      --font-main: 'Inter', system-ui, -apple-system, sans-serif;
+      --font-mono: 'JetBrains Mono', monospace;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background-color: var(--bg-primary);
+      background-image: 
+        radial-gradient(circle at 15% 15%, rgba(56, 189, 248, 0.08) 0%, transparent 40%),
+        radial-gradient(circle at 85% 85%, rgba(168, 85, 247, 0.06) 0%, transparent 45%);
+      color: var(--text-main);
+      font-family: var(--font-main);
+      line-height: 1.6;
+      min-height: 100vh;
+      padding: 2.5rem 1.5rem;
+    }
+
+    .container { max-width: 1200px; margin: 0 auto; }
+
+    header {
+      text-align: center;
+      margin-bottom: 3rem;
+      padding-bottom: 2rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.3);
+      color: var(--cyan);
+      font-size: 0.8rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      padding: 0.35rem 0.85rem;
+      border-radius: 9999px;
+      margin-bottom: 1rem;
+    }
+
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      background: var(--emerald);
+      border-radius: 50%;
+      box-shadow: 0 0 8px var(--emerald);
+    }
+
+    h1 {
+      font-size: 2.75rem;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      background: linear-gradient(135deg, #ffffff 30%, #94a3b8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 0.75rem;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 1.15rem;
+      max-width: 760px;
+      margin: 0 auto;
+    }
+
+    .nav-tabs {
+      display: flex;
+      justify-content: center;
+      gap: 0.75rem;
+      margin-bottom: 2.5rem;
+      flex-wrap: wrap;
+    }
+
+    .tab-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+      padding: 0.6rem 1.2rem;
+      border-radius: 10px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .tab-btn:hover {
+      background: var(--bg-card-hover);
+      color: var(--text-main);
+      border-color: var(--border-accent);
+    }
+
+    .tab-btn.active {
+      background: rgba(56, 189, 248, 0.15);
+      border-color: var(--cyan);
+      color: #ffffff;
+      box-shadow: var(--shadow-glow);
+    }
+
+    .section-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-subtle);
+      backdrop-filter: blur(16px);
+      border-radius: 16px;
+      padding: 2rem;
+      margin-bottom: 2.5rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 1.5rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    .card-title {
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .pill {
+      font-size: 0.75rem;
+      padding: 0.25rem 0.65rem;
+      border-radius: 6px;
+      font-weight: 600;
+      font-family: var(--font-mono);
+    }
+
+    .pill-cyan { background: rgba(56, 189, 248, 0.15); color: var(--cyan); }
+    .pill-emerald { background: rgba(16, 185, 129, 0.15); color: var(--emerald); }
+    .pill-amber { background: rgba(245, 158, 11, 0.15); color: var(--amber); }
+    .pill-purple { background: rgba(168, 85, 247, 0.15); color: var(--purple); }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 1.5rem;
+      margin-top: 1.5rem;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.25rem;
+      margin-top: 1.5rem;
+    }
+
+    .subcard {
+      background: rgba(10, 15, 26, 0.6);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 1.25rem;
+    }
+
+    .subcard h4 {
+      font-size: 1.05rem;
+      margin-bottom: 0.5rem;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .subcard p {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+    }
+
+    .time-tag {
+      display: inline-block;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      font-weight: 700;
+      color: var(--amber);
+      background: rgba(245, 158, 11, 0.12);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+      padding: 0.15rem 0.5rem;
+      border-radius: 4px;
+      margin-bottom: 0.4rem;
+    }
+
+    .diagram-container {
+      background: #070a10;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+      overflow-x: auto;
+    }
+
+    .mermaid {
+      display: flex;
+      justify-content: center;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 1rem;
+      font-size: 0.9rem;
+    }
+
+    th {
+      background: rgba(15, 23, 42, 0.85);
+      color: var(--text-muted);
+      font-weight: 600;
+      text-align: left;
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
+    td {
+      padding: 0.85rem 1rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+      color: var(--text-main);
+    }
+
+    tr:hover td {
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    code {
+      font-family: var(--font-mono);
+      background: rgba(255, 255, 255, 0.08);
+      padding: 0.2rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.85em;
+      color: var(--cyan);
+    }
+
+    .calculator-container {
+      background: linear-gradient(145deg, rgba(18, 24, 38, 0.9), rgba(10, 15, 26, 0.95));
+      border: 1px solid var(--border-accent);
+      border-radius: 14px;
+      padding: 1.75rem;
+      margin-top: 1.5rem;
+    }
+
+    .slider-group { margin-bottom: 1.25rem; }
+    .slider-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.9rem;
+      font-weight: 500;
+      margin-bottom: 0.4rem;
+      color: var(--text-muted);
+    }
+    .slider-value {
+      font-family: var(--font-mono);
+      color: var(--cyan);
+      font-weight: 700;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      height: 6px;
+      background: #1e293b;
+      border-radius: 3px;
+      outline: none;
+      -webkit-appearance: none;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--cyan);
+      cursor: pointer;
+      box-shadow: 0 0 10px var(--cyan);
+    }
+
+    .calc-results {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1rem;
+      padding-top: 1.25rem;
+      margin-top: 1rem;
+      border-top: 1px solid var(--border-subtle);
+      text-align: center;
+    }
+
+    .res-metric {
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+    }
+
+    .res-value {
+      font-family: var(--font-mono);
+      font-size: 1.4rem;
+      font-weight: 800;
+    }
+
+    .val-green { color: var(--emerald); }
+    .val-red { color: var(--rose); }
+
+    footer {
+      text-align: center;
+      padding: 2rem 0;
+      color: var(--text-dim);
+      font-size: 0.85rem;
+      border-top: 1px solid var(--border-subtle);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="badge">
+        <span class="badge-dot"></span>
+        Polymarket Real-Money Engine
+      </div>
+      <h1>Spread Hunter Live</h1>
+      <p class="subtitle">
+        System architecture, loop execution cadences, risk parameters, and order management mechanics.
+      </p>
+    </header>
+
+    <div class="nav-tabs">
+      <button class="tab-btn active" onclick="scrollToSection('loop-timing')">1. Loop Cadences & Timings</button>
+      <button class="tab-btn" onclick="scrollToSection('requote-logic')">2. Re-Quote & Dead Band</button>
+      <button class="tab-btn" onclick="scrollToSection('risk-params')">3. Core Risk Parameters</button>
+      <button class="tab-btn" onclick="scrollToSection('architecture')">4. Full Lifecycle Diagram</button>
+      <button class="tab-btn" onclick="scrollToSection('calculator')">5. Live Calculator</button>
+    </div>
+
+    <!-- Section 1: Loop Timings -->
+    <section id="loop-timing" class="section-card">
+      <div class="card-header">
+        <h2 class="card-title">
+          <span>⏱️</span> 1. System Loops & Execution Intervals
+        </h2>
+        <span class="pill pill-amber">Loop Cadences</span>
+      </div>
+
+      <p>
+        The system runs multiple asynchronous loops with dedicated execution frequencies to balance venue rate limits, order latency, and book freshness.
+      </p>
+
+      <div class="grid-3">
+        <div class="subcard">
+          <div class="time-tag">EVERY 10 MIN (600s)</div>
+          <h4>🔍 Market Filter Loop</h4>
+          <p>
+            <code>scripts/filter_loop.py</code> queries the venue, evaluates ~200 candidate markets for depth &gt; 200sh and spread &lt; 6¢, and writes survivors to <code>runtime/markets.json</code>.
+          </p>
+        </div>
+
+        <div class="subcard">
+          <div class="time-tag">EVERY 1.0 SECONDS</div>
+          <h4>⚡ Fleet Trader Loop</h4>
+          <p>
+            <code>core_brain/trader_loop.py</code> performs order reconciliation, fetches live order books, evaluates pricing &amp; risk gates, plans submits/cancels, and sweeps the float.
+          </p>
+        </div>
+
+        <div class="subcard">
+          <div class="time-tag">15-MIN ACTION WINDOW</div>
+          <h4>🚑 Single-Buy Rescue</h4>
+          <p>
+            <code>core_brain/single_buy_saver.py</code> acts on one-sided fills within 15 minutes of <code>last_fill_ts</code> to complete the pair or execute an unhedged stop-loss.
+          </p>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="subcard">
+          <div class="time-tag">HORIZONS: 5m, 15m, 1h, 6h</div>
+          <h4>📊 Post-Fill Markout Horizons</h4>
+          <p>
+            Fill mark-to-market prices are tracked at <code>(300s, 900s, 3600s, 21600s)</code> to measure toxic flow and trigger posture widening if adverse drift exceeds -0.5¢/share.
+          </p>
+        </div>
+
+        <div class="subcard">
+          <div class="time-tag">EVERY 2.0 SECONDS</div>
+          <h4>🖥️ Dashboard Telemetry</h4>
+          <p>
+            <code>dashboard/server.py</code> polls <code>data/orders.db</code> every 2000ms with a 500ms SSE event stream to render live PnL, active orders, and reconcile lag.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 2: Re-Quote & Plan Orders -->
+    <section id="requote-logic" class="section-card">
+      <div class="card-header">
+        <h2 class="card-title">
+          <span>🎯</span> 2. `plan_orders` Re-Quote & Timing Mechanics
+        </h2>
+        <span class="pill pill-cyan">Queue Priority Protection</span>
+      </div>
+
+      <p>
+        <strong>Does `plan_orders` re-quote on a fixed timer?</strong> <br/>
+        <strong>No.</strong> Re-quoting is <em>price-event driven</em> with a strict hysteresis window (Dead Band) to protect maker queue seniority.
+      </p>
+
+      <div class="diagram-container">
+        <div class="mermaid">
+          flowchart TD
+            classDef default fill:#0e1626,stroke:#1e293b,stroke-width:1px,color:#f1f5f9;
+            classDef check fill:#082f49,stroke:#38bdf8,stroke-width:2px,color:#ffffff;
+            classDef actKeep fill:#064e3b,stroke:#10b981,stroke-width:2px,color:#ffffff;
+            classDef actRequote fill:#451a03,stroke:#f59e0b,stroke-width:2px,color:#ffffff;
+
+            TICK["Every 1.0s Trader Tick"] --> EVAL["Compute Target Price: mid - offset"]
+            EVAL --> CMP{"|Target Price - Resting Price| &le; 3&cent; ?"}:::check
+
+            CMP -->|"YES (&le; 3&cent; move)"| REGATE{"1s Re-Gate:<br/>Resting Price + Hedge Ask &lt; $1.00 ?"}:::check
+            REGATE -->|"PASSES"| KEEP["KEEP Resting Order<br/>(Preserves ~1050 shares queue seniority)"]:::actKeep
+            REGATE -->|"FAILS (Ask moved up)"| CXL["CANCEL immediately<br/>(Closes risk hole)"]:::actRequote
+
+            CMP -->|"NO (&gt; 3&cent; move)"| REQ["CANCEL Old & SUBMIT New Bid<br/>(Moves to new price level)"]:::actRequote
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="subcard">
+          <h4>3¢ Re-Quote Dead Band (`requote_dead_band = 0.03`)</h4>
+          <p>
+            Every cancel+replace sends an order to the back of the queue (median queue depth ahead is ~1058 shares). The 3¢ dead band suppresses ~48% of unnecessary re-quotes caused by minor mid-price flutter, giving orders time to fill.
+          </p>
+        </div>
+        <div class="subcard">
+          <h4>1.0s Cycle Re-Gating</h4>
+          <p>
+            Kept orders are re-tested against <code>risk.completable_pair_block</code> <strong>every single second</strong>. If the opposing token's ask price increases such that the pair can no longer complete profitably, the order is cancelled immediately.
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 3: Core Risk Parameters -->
+    <section id="risk-params" class="section-card">
+      <div class="card-header">
+        <h2 class="card-title">
+          <span>🛡️</span> 3. Core Brain Risk Parameters
+        </h2>
+        <span class="pill pill-purple">Configured in core_brain/</span>
+      </div>
+
+      <table>
+        <thead>
+          <tr>
+            <th>Parameter Name</th>
+            <th>Default Value</th>
+            <th>Enforcement Location</th>
+            <th>Operational Role &amp; Protection</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>max_completable_pair_cost</code></td>
+            <td><code>1.00</code> ($1.00)</td>
+            <td><code>core_brain/risk.py</code></td>
+            <td><strong>Completable-Cost Gate</strong>: Refuses any maker bid if <code>bid + best_ask(other_leg) &ge; 1.00</code>. Guarantees a single fill can be hedged at market ask without loss.</td>
+          </tr>
+          <tr>
+            <td><code>max_pair_cost</code></td>
+            <td><code>0.99</code> ($0.99)</td>
+            <td><code>core_brain/config.py</code></td>
+            <td><strong>Profit Condition</strong>: Hard ceiling on combined both-maker bids (<code>up_bid + down_bid</code>) to ensure net merge profit.</td>
+          </tr>
+          <tr>
+            <td><code>max_naked_usd</code></td>
+            <td><code>6%</code> of portfolio ($5.40 at $90, $6.00 at $100)</td>
+            <td><code>core_brain/risk.py</code></td>
+            <td><strong>Dynamic Directional Cap</strong>: 6% of account value. Denominator for quadratic size ladder &amp; inventory skew spring.</td>
+          </tr>
+          <tr>
+            <td><code>MAX_ORDER_USD</code></td>
+            <td><code>25%</code> of portfolio ($22.50 at $90, $25.00 at $100)</td>
+            <td><code>core_brain/venue.py</code></td>
+            <td><strong>Dynamic Single Order Ceiling</strong>: 25% of account value. Caps single order notional.</td>
+          </tr>
+          <tr>
+            <td><code>MAX_TOTAL_USD</code></td>
+            <td><code>90%</code> of portfolio ($81.00 at $90, $90.00 at $100)</td>
+            <td><code>core_brain/venue.py</code></td>
+            <td><strong>Dynamic Bankroll Ceiling</strong>: 90% of total portfolio value deployed across active orders and inventory.</td>
+          </tr>
+          <tr>
+            <td><code>max_skew</code></td>
+            <td><code>0.015</code> (1.5¢)</td>
+            <td><code>core_brain/risk.py</code></td>
+            <td><strong>Inventory Skew Spring</strong>: Pushes heavy-leg bid outward and pulls light-leg bid closer to mid to accelerate flattening.</td>
+          </tr>
+          <tr>
+            <td><code>emergency_hedge_frac</code></td>
+            <td><code>0.8</code> (80%)</td>
+            <td><code>core_brain/quotes.py</code></td>
+            <td><strong>Taker Cross Trigger</strong>: At 80% of <code>max_naked_usd</code>, permits the light side to cross the spread and take the hedge before cap freezes.</td>
+          </tr>
+          <tr>
+            <td><code>max_book_spread</code></td>
+            <td><code>0.06</code> (6¢)</td>
+            <td><code>core_brain/config.py</code></td>
+            <td><strong>Book Health Spread Gate</strong>: Rejects books with bid-ask spread wider than 6¢ to prevent quoting into illiquid spreads.</td>
+          </tr>
+          <tr>
+            <td><code>min_book_depth_sh</code></td>
+            <td><code>200.0</code> shares</td>
+            <td><code>core_brain/config.py</code></td>
+            <td><strong>Book Depth Floor</strong>: Rejects markets with less than 200 shares in top-3 levels to guarantee exit liquidity.</td>
+          </tr>
+          <tr>
+            <td><code>decided_price</code></td>
+            <td><code>0.02</code> (2¢ / 98¢)</td>
+            <td><code>core_brain/config.py</code></td>
+            <td><strong>Decided Outcome Gate</strong>: Refuses to quote markets priced &le; 0.02 or &ge; 0.98 where outcome is resolved.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Section 4: Architecture Diagram with Timings -->
+    <section id="architecture" class="section-card">
+      <div class="card-header">
+        <h2 class="card-title">
+          <span>🔄</span> 4. Complete Lifecycle with Timestamps &amp; Loops
+        </h2>
+        <span class="pill pill-emerald">End-to-End Diagram</span>
+      </div>
+
+      <div class="diagram-container">
+        <div class="mermaid">
+          flowchart TD
+            classDef filterNode fill:#1e1b4b,stroke:#818cf8,stroke-width:1px,color:#ffffff;
+            classDef engineNode fill:#082f49,stroke:#38bdf8,stroke-width:1px,color:#ffffff;
+            classDef gateNode fill:#451a03,stroke:#f59e0b,stroke-width:1px,color:#ffffff;
+            classDef actionNode fill:#064e3b,stroke:#10b981,stroke-width:1px,color:#ffffff;
+
+            subgraph L1["Loop 1: Market Universe Filter (Every 600s / 10 min)"]
+                API["Polymarket Venue API"] --> FL["scripts/filter_loop.py"]:::filterNode
+                FL -->|"Filters: 24h Vol, Depth>200sh, Spread<6c, Horizon<30d"| MKT["runtime/markets.json"]:::filterNode
+            end
+
+            subgraph L2["Loop 2: Execution & Quoting Rotation (Every 1.0s)"]
+                MKT --> TL["core_brain/trader_loop.py"]:::engineNode
+                TL -->|"1. Reconcile with Venue"| REC["reconcile_orders() -> data/orders.db"]:::engineNode
+                REC -->|"2. For each market: Read Book"| QP["core_brain/quotes.py<br/>mid = (bid+ask)/2<br/>price = mid - 0.020"]:::engineNode
+                
+                QP --> RG{"Risk Gates (risk.py):<br/>- max_completable_cost < 1.00<br/>- max_pair_cost < 0.99<br/>- naked_usd < 6% equity<br/>- order < 25%, total < 90%"}:::gateNode
+                
+                RG -->|"Fails Gate"| DEC["Decline / Skip Quoting"]:::gateNode
+                RG -->|"Passes Gates"| PLAN["plan_orders():<br/>Check 3c Dead Band & 1s Re-Gate"]:::engineNode
+                
+                PLAN -->|"Price move <= 3c & Passes Re-Gate"| KEEP["KEEP Resting Order<br/>(Maintain Queue Seniority)"]:::actionNode
+                PLAN -->|"Price move > 3c"| SUB["CANCEL Old & SUBMIT New Maker Bid"]:::actionNode
+            end
+
+            subgraph L3["Loop 3: Post-Fill Resolution & Rescues"]
+                SUB --> FCHK{"Fill Occurred?"}:::gateNode
+                KEEP --> FCHK
+                
+                FCHK -->|"Both Legs Filled"| MRG["core_brain/merge_pairs.py:<br/>Gasless Merge -> $1.00 USDC Collateral"]:::actionNode
+                FCHK -->|"One-Sided Fill (Single Buy)<br/>[Within 15-min window]"| SBS["core_brain/single_buy_saver.py"]:::gateNode
+                
+                SBS -->|"Hedge Ask + Cost < $1.00"| TKR["Taker BUY other leg at Ask"]:::actionNode
+                SBS -->|"Cannot Complete Profitably"| STP["Market SELL naked leg (Stop-Loss)"]:::gateNode
+            end
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 5: Live Calculator -->
+    <section id="calculator" class="section-card">
+      <div class="card-header">
+        <h2 class="card-title">
+          <span>🧮</span> 5. Live Pair &amp; Spread Calculator
+        </h2>
+        <span class="pill pill-cyan">Interactive Simulation</span>
+      </div>
+
+      <div class="calculator-container">
+        <div class="slider-group">
+          <div class="slider-label">
+            <label for="upPrice">Leg A (UP) Fill Price</label>
+            <span class="slider-value" id="upVal">$0.48</span>
+          </div>
+          <input type="range" id="upPrice" min="0.05" max="0.95" step="0.01" value="0.48" oninput="updateCalc()" />
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label">
+            <label for="downPrice">Leg B (DOWN) Fill Price</label>
+            <span class="slider-value" id="downVal">$0.48</span>
+          </div>
+          <input type="range" id="downPrice" min="0.05" max="0.95" step="0.01" value="0.48" oninput="updateCalc()" />
+        </div>
+
+        <div class="slider-group">
+          <div class="slider-label">
+            <label for="shares">Pair Quantity (Shares)</label>
+            <span class="slider-value" id="sharesVal">50 shares</span>
+          </div>
+          <input type="range" id="shares" min="5" max="250" step="5" value="50" oninput="updateCalc()" />
+        </div>
+
+        <div class="calc-results">
+          <div>
+            <div class="res-metric">Combined Pair Cost</div>
+            <div class="res-value" id="pairCost">$0.960</div>
+          </div>
+          <div>
+            <div class="res-metric">Net Profit / Pair</div>
+            <div class="res-value val-green" id="profitPerPair">+$0.040</div>
+          </div>
+          <div>
+            <div class="res-metric">Total Cycle Return</div>
+            <div class="res-value val-green" id="totalProfit">+$2.00</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      Spread Hunter Live &bull; Real-Money Pair Assembly &amp; Risk Engine &bull; Port: 8800
+    </footer>
+  </div>
+
+  <script>
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'dark',
+      themeVariables: {
+        darkMode: true,
+        background: '#070a10',
+        primaryColor: '#0369a1',
+        primaryTextColor: '#f1f5f9',
+        primaryBorderColor: '#38bdf8',
+        lineColor: '#64748b',
+        secondaryColor: '#064e3b',
+        tertiaryColor: '#1e1b4b'
+      }
+    });
+
+    function scrollToSection(id) {
+      document.getElementById(id).scrollIntoView({ behavior: 'smooth' });
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      event.target.classList.add('active');
+    }
+
+    function updateCalc() {
+      const up = parseFloat(document.getElementById('upPrice').value);
+      const down = parseFloat(document.getElementById('downPrice').value);
+      const shares = parseInt(document.getElementById('shares').value);
+
+      document.getElementById('upVal').innerText = `$${up.toFixed(2)}`;
+      document.getElementById('downVal').innerText = `$${down.toFixed(2)}`;
+      document.getElementById('sharesVal').innerText = `${shares} shares`;
+
+      const cost = up + down;
+      const profit = 1.00 - cost;
+      const total = profit * shares;
+      const isAllowed = cost <= 0.99;
+
+      const costElem = document.getElementById('pairCost');
+      const profitElem = document.getElementById('profitPerPair');
+      const totalElem = document.getElementById('totalProfit');
+
+      costElem.innerText = `$${cost.toFixed(3)}${isAllowed ? '' : ' (BLOCKED > $0.99)'}`;
+      profitElem.innerText = isAllowed ? `${profit >= 0 ? '+' : ''}$${profit.toFixed(3)}` : 'BLOCKED';
+      totalElem.innerText = isAllowed ? `${total >= 0 ? '+' : ''}$${total.toFixed(2)}` : 'BLOCKED';
+
+      if (isAllowed && profit > 0) {
+        profitElem.className = 'res-value val-green';
+        totalElem.className = 'res-value val-green';
+        costElem.className = 'res-value';
+      } else {
+        profitElem.className = 'res-value val-red';
+        totalElem.className = 'res-value val-red';
+        costElem.className = 'res-value val-red';
+      }
+    }
+
+    updateCalc();
+  </script>
+</body>
+</html>

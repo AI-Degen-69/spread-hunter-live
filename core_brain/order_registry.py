@@ -1311,6 +1311,19 @@ class OrderRegistry:
             rows = conn.execute("SELECT * FROM account_marks ORDER BY ts ASC").fetchall()
             return [dict(r) for r in rows]
 
+    def get_latest_account_mark(self, run_id: Optional[str] = None) -> Optional[dict]:
+        """Retrieve the most recent account mark for the active run (or specified run_id)."""
+        r_id = run_id if run_id is not None else get_run_id()
+        with self._conn() as conn:
+            if r_id:
+                row = conn.execute(
+                    "SELECT * FROM account_marks WHERE run_id = ? ORDER BY ts DESC, id DESC LIMIT 1",
+                    (r_id,),
+                ).fetchone()
+                return dict(row) if row else None
+            row = conn.execute("SELECT * FROM account_marks ORDER BY ts DESC, id DESC LIMIT 1").fetchone()
+            return dict(row) if row else None
+
     def get_all_orders(self) -> list[dict]:
         """Return all orders ordered by their posting timestamp.
         

@@ -45,7 +45,7 @@ RING_PATH = ROOT / "runtime" / "cycle_events.jsonl"
 # candidates) from becoming a burden while cutting the worst-case wait from an
 # hour to ten minutes.
 INTERVAL_SEC = 600.0
-TOP = 20
+TOP = int(os.environ.get("SH_TOP_MARKETS", "1"))
 
 
 def _emit_scan_event(record: dict) -> None:

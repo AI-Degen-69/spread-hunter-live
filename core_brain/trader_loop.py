@@ -923,6 +923,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     `--once` runs a single rotation (the smoke-test path); without it the loop
     runs until interrupted.
     """
+    from dotenv import load_dotenv
+    load_dotenv()
+
     from core_brain.config import load
     from core_brain.markets import full_book
     from core_brain.order_registry import DEFAULT_DB_PATH, OrderRegistry

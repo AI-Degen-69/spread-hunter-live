@@ -764,7 +764,7 @@ def start_bot() -> dict:
         # and double the venue reads poll already makes.
         p_fleet = subprocess.Popen(
             [sys.executable, "-m", "core_brain.trader_loop", "--live",
-             "--no-reconcile", "--no-sweep", "--interval", "5"],
+             "--no-reconcile", "--no-sweep", "--interval", "5", "--max-markets", "1"],
             cwd=str(LIVE_ROOT),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

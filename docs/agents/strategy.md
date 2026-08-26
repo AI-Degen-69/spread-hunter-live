@@ -15,7 +15,7 @@ Measured over the paper run: 476 merge closes returned **+$1,172.35** at an aver
 cost of **$0.96006** — roughly 4c per pair. That is the strategy, and it is what the name
 "spread hunter" refers to.
 
-`max_pair_cost = 0.995` is therefore the **profit condition**, not a side constraint. The
+`max_pair_cost = 0.99` is therefore the **profit condition**, not a side constraint. The
 merge is the exit and the P&L event, not housekeeping.
 
 ## Maker rebates are extra, not the income
@@ -76,7 +76,7 @@ A **one-sided fill** is a directional bet nobody decided to take. Everything in 
 Two execution rules from shadow run `run-2809a7161de1` (209 orders, zero fills, 2026-08-25):
 
 **Completable-cost gate** (`max_completable_pair_cost`, default `1.00`). The existing
-`max_pair_cost = 0.995` checks a **both-maker** pair: `up_bid + down_bid`. On a binary
+`max_pair_cost = 0.99` checks a **both-maker** pair: `up_bid + down_bid`. On a binary
 market the legs are anti-correlated (`UP + DOWN ≈ 1.00`, measured correlation −0.9989),
 so a double-maker fill is rare by construction — almost every pair actually assembles as
 one maker fill plus a **taker completion at the other leg's ask**. The new gate refuses a

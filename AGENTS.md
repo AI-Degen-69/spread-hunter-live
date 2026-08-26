@@ -20,7 +20,7 @@ nobody decided to take.
    and the dashboard's **START** button all spend money. Propose them; do not run them
    unless the operator says so in that session.
 3. **`data/orders.db` is the production registry.** Read it; never rewrite or delete it.
-4. **Caps:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (`core_brain/venue.py`).
+4. **Dynamic Caps (`core_brain/config.py`):** `order_risk_pct = 25%` ($25.0 at $100 baseline), `naked_risk_pct = 6%` ($6.0 at $100 baseline), `bankroll_ceiling_pct = 90%` ($90.0 at $100 baseline), `max_pair_cost = 0.99`. Dynamic caps scale with live account value.
 
 Full rules, including which commands are pre-approved: [docs/agents/safety.md](docs/agents/safety.md).
 

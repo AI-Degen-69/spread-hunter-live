@@ -21,7 +21,7 @@ profit per pair = 1.00 - (avg UP price + avg DOWN price)
 ```
 
 Measured over the paper run: **476 merge closes returned +$1,172.35** at an average pair cost
-of **$0.96006** — roughly 4c per pair. `max_pair_cost = 0.995` is the profit condition: the
+of **$0.96006** — roughly 4c per pair. `max_pair_cost = 0.99` is the profit condition: the
 merge is the exit and the P&L event.
 
 - **Maker rebates are extra, not the income.** Over the same run they accrued about
@@ -138,7 +138,7 @@ identity in one aligned, color-coded report.
    and the dashboard's START button all rest or spend real funds. `complete` buys the
    missing side: it removes the risk of a single buy, but it does so by spending, so it is
    an opening command and not a closing one.
-4. **Limits:** `MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` (in `core_brain/venue.py`).
+4. **Dynamic Caps:** `order_risk_pct = 25%` ($25.0 baseline), `naked_risk_pct = 6%` ($6.0 baseline), `bankroll_ceiling_pct = 90%` ($90.0 baseline), `max_pair_cost = 0.99` (`core_brain/config.py`).
 
 ## Docs
 

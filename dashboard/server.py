@@ -1145,7 +1145,7 @@ def api_system_reset(request: Request):
     try:
         cancel_all(live=True)
         steps.append("venue: all open orders cancelled")
-    except Exception as e:
+    except (Exception, SystemExit) as e:
         steps.append(f"venue: cancel-all skipped ({e})")
 
     # 3. Archive + wipe the database
@@ -1154,18 +1154,20 @@ def api_system_reset(request: Request):
         return JSONResponse(reset_result, status_code=409)
     steps.append(f"db: {reset_result['message']}")
 
-    # 4. Clear runtime state files (ring buffer, heartbeats, processes).
+    # 4. Clear runtime state files (ring buffer, heartbeats, processes, screener universe & pipeline).
     #    Both the current runtime/ name and the pre-rename run/ name, or
     #    "clean run ready" would leave state the fallback reader still finds.
     for fname in ["cycle_events.jsonl", "live_poll_heartbeat.json",
                   "global_stop_loss_heartbeat.json", "live_orders.json",
-                  "processes.json"]:
+                  "processes.json", "markets.json", "pipeline.json",
+                  "rerank.log"]:
         for target in (runtime_file(fname, root=LIVE_ROOT),
                        legacy_runtime_file(fname, root=LIVE_ROOT)):
             try:
                 target.unlink(missing_ok=True)
             except OSError:
                 pass
+    steps.append("screener: universe and pipeline files cleared")
     steps.append("run: state files cleared")
 
     # 5. Snapshot the live Polymarket wallet as starting capital.
@@ -1183,7 +1185,7 @@ def api_system_reset(request: Request):
                 steps.append(f"wallet: starting capital = ${starting_capital:,.2f}")
             else:
                 steps.append("wallet: venue returned null account value")
-    except Exception as e:
+    except (Exception, SystemExit) as e:
         steps.append(f"wallet: snapshot failed ({e})")
 
     # Write starting capital to processes.json so get_starting_capital() can

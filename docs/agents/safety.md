@@ -100,13 +100,16 @@ there. Each record carries the writing `pid`; that is what tells them apart.
 
 ## 4. Limits
 
-`MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 100.0` are defined in `core_brain/venue.py`,
-which reads them from the `max_order_usd` / `max_total_usd` fields of `MakerConfig` in
-`core_brain/config.py`. Grep for the lowercase field names there; the uppercase constants
-exist only in `venue.py`.
+Risk caps scale dynamically with the live Polymarket account mark via `derive_dynamic_caps`
+in `core_brain/config.py`:
+- **Single Order Cap (`order_risk_pct`):** `25%` of account value ($25.00 baseline at $100).
+- **Single Buy / Naked Cap (`naked_risk_pct`):** `6%` of account value ($6.00 baseline at $100).
+- **Total Portfolio Risk Ceiling (`bankroll_ceiling_pct`):** `90%` of account value ($90.00 baseline at $100).
+- **Max Pair Cost:** `$0.99` (guarantees $\ge \$0.01$ profit per pair upon merge).
 
-They are enforced at the call sites, not in `venue.py`: `core_brain/order_manager.py`,
-`core_brain/trader_loop.py` and `core_brain/single_buy_saver.py`.
+`MAX_ORDER_USD = 25.0`, `MAX_TOTAL_USD = 90.0` in `core_brain/venue.py` reflect the baseline
+constants read from `MakerConfig`. Dynamic caps are evaluated at cycle runtime in
+`core_brain/trader_loop.py`, `core_brain/order_manager.py`, and `core_brain/single_buy_saver.py`.
 
 Real-money checks are allowed and are often the only real proof of a change. Keep them at
 the venue minimum, inside these caps, and always pair them with the undo command.

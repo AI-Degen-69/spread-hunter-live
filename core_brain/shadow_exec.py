@@ -362,9 +362,18 @@ def settle_market(
     """
     traded = traded_fn(market.condition_id, seen)
 
+    # Scoped to THIS run's orders. `data/shadow.db` is reused between
+    # rehearsals by design, and `get_active_orders` reads every open row in
+    # the store: without this filter a run started while an older run's
+    # orders were still resting measures THOSE as its own -- six marks of the
+    # 08-26 rehearsal (shadow-c52e533f5725) sat at the previous rehearsal's
+    # prices, four minutes before it quoted anything, and a verification pass
+    # reasoned from them to a false conclusion about touch-resting.
+    mine_run_id = registry._run_id()
     resting = [
         o for o in registry.get_active_orders()
         if o.condition_id == market.condition_id and o.status in ("open", "partial")
+        and (o.run_id or mine_run_id) == mine_run_id
     ]
     if not resting:
         return []

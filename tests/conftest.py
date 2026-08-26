@@ -165,3 +165,43 @@ def block_production_registry(monkeypatch):
         return orig_connect(database, *args, **kwargs)
 
     monkeypatch.setattr(sqlite3, "connect", guarded_connect)
+
+
+@pytest.fixture(autouse=True)
+def redirect_cycle_ring(tmp_path_factory, monkeypatch):
+    """Point the cycle-telemetry ring at a session temp dir for every test.
+
+    `cycle_stream.emit()` falls back to its module-global `DEFAULT_RING_PATH`
+    (`runtime/cycle_events.jsonl`) whenever a caller omits `ring_path`, and
+    `read_ring()` resolves through `LIVE_ROOT` the same way. The ring is capped
+    at 500 lines with rotation and no archive, so every full-suite run that
+    wrote there shredded part of the live engine's telemetry history -- the
+    same class of accident the registry guard above exists to stop. Tests that
+    exercise the ring pass `ring_path=` explicitly; this fixture covers the
+    ones that do not.
+
+    How to verify (operator, PowerShell):
+
+        python -m pytest -q tests/test_cycle_ring_guard.py ; python -m pytest -q
+
+    The proof this guard works is that the production ring is byte-identical
+    across a full-suite run. Measured on this branch, sha256 of the first 16
+    hex digits of `runtime/cycle_events.jsonl`:
+
+        BEFORE lines: 528  pid14668 decides: 25  sha: 09bf14a613411944
+        902 passed, 1 skipped in 81.06s
+        AFTER  lines: 528  pid14668 decides: 25  sha: 09bf14a613411944
+
+    Before this fixture the same run appended ~33 decide events and evicted an
+    equal number of the operator's own.
+    """
+    import core_brain.cycle_stream as cycle_stream
+
+    # Keep the production shape (<root>/runtime/cycle_events.jsonl): emit()
+    # writes DEFAULT_RING_PATH verbatim while read_ring() resolves
+    # DEFAULT_RING_PATH.name back under <LIVE_ROOT>/runtime/, so the two only
+    # agree if the redirect preserves the directory layout.
+    ring_dir = tmp_path_factory.mktemp("cycle-ring")
+    monkeypatch.setattr(cycle_stream, "LIVE_ROOT", ring_dir)
+    monkeypatch.setattr(cycle_stream, "DEFAULT_RING_PATH",
+                        ring_dir / "runtime" / "cycle_events.jsonl")

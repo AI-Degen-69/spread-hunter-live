@@ -396,7 +396,22 @@ def settle_market(
     if not resting:
         return []
 
+    # Observation (queue marks) covers every resting order we can see, including
+    # unowned legacy rows: a NULL run_id is "nobody's order" but still sitting in
+    # the book, and dropping it would silently shrink the resting set. Fill credit
+    # is stricter -- only orders this run actually owns may consume this run's
+    # tape. Claiming a NULL-run row's tape would let a stale, foreign order
+    # absorb volume that belongs to a current-run order resting at the same price.
+    owned = [o for o in resting if o.run_id == mine_run_id]
     orders = [
+        ShadowRestingOrder(
+            local_id=o.id, token_id=o.token_id, price=o.price,
+            size=o.original_size, filled=_filled_size(db_path, o.id),
+            queue_ahead=read_queue_ahead(db_path, o.id),
+        )
+        for o in owned
+    ]
+    marks = [
         ShadowRestingOrder(
             local_id=o.id, token_id=o.token_id, price=o.price,
             size=o.original_size, filled=_filled_size(db_path, o.id),
@@ -410,7 +425,7 @@ def settle_market(
         write_queue_ahead(db_path, local_id, queue_ahead)
 
     if book_fn is not None:
-        _record_queue_marks(db_path, market, orders, traded, book_fn,
+        _record_queue_marks(db_path, market, marks, traded, book_fn,
                             now_fn(), run_id=registry._run_id(),
                             clob_host=clob_host)
 

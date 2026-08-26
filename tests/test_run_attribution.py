@@ -14,6 +14,13 @@ which corrupted a measurement an operator then reasoned from:
   * Nothing recorded the effective reward_offset / price_risk_widen a
     rehearsal ran under; recovering them cost a full verification pass over
     the quotes ledger.
+
+How to verify (operator, PowerShell):
+
+    python -m pytest -q tests/test_run_attribution.py ; python -m pytest -q
+
+The first command runs the attribution tests alone; the second is the full
+suite, which is the bar this repo merges against.
 """
 from __future__ import annotations
 
@@ -113,6 +120,38 @@ class TestIntentsCarryTheSessionId:
                                              "cycle_intent")}
         assert tagged, "no cycle_intent rows were written, so this proves none"
         assert all(i.startswith("shadow-") for i in tagged), tagged
+
+    def test_the_submit_event_updates_the_row_the_decide_event_inserted(
+            self, tmp_path, monkeypatch):
+        """The decide event INSERTs the visit; the submit event UPDATEs its
+        counts. `_update_cycle_intent` matches on cycle + market + run_id, so a
+        submit that resolved the run id process-wide would match no row and the
+        outcome of the visit would be lost -- silently, as a zero."""
+        from core_brain import order_registry
+        import core_brain.cycle_stream as cycle_stream
+
+        monkeypatch.setattr(cycle_stream, "DEFAULT_RING_PATH",
+                            tmp_path / "ring.jsonl")
+        monkeypatch.setattr(order_registry, "_CURRENT_RUN_ID", "run-liveone")
+        db = tmp_path / "shadow.db"
+        mine = "shadow-emitaaaaaaa"
+
+        cycle_stream.emit(
+            7, "quoting", "decide", market_slug="fake-market",
+            extra={"intent_count": 2, "condition_id": "0xabc"},
+            db_path=db, run_id=mine)
+        cycle_stream.emit(
+            7, "quoting", "submit", market_slug="fake-market",
+            extra={"submitted": 2, "cancelled": 1},
+            db_path=db, run_id=mine)
+
+        rows = _rows(db, "cycle_intent")
+        assert len(rows) == 1, rows
+        assert rows[0]["run_id"] == mine, rows[0]
+        assert rows[0]["submitted"] == 2, (
+            "the submit event did not reach the row the decide event inserted: "
+            "its run id did not match, so the visit's outcome was dropped")
+        assert rows[0]["cancelled"] == 1, rows[0]
 
 
 class TestEffectiveConfigIsLogged:

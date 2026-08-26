@@ -1311,6 +1311,12 @@ class OrderRegistry:
             rows = conn.execute("SELECT * FROM account_marks ORDER BY ts ASC").fetchall()
             return [dict(r) for r in rows]
 
+    def get_latest_account_mark(self) -> Optional[dict]:
+        """Retrieve the most recent account mark, or None if none recorded."""
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM account_marks ORDER BY ts DESC LIMIT 1").fetchone()
+            return dict(row) if row else None
+
     def get_all_orders(self) -> list[dict]:
         """Return all orders ordered by their posting timestamp.
         

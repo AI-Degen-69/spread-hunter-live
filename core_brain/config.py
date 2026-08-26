@@ -124,6 +124,11 @@ class MakerConfig:
     # spring above, and U3's size ladder (`risk.size_for`), which decays resting
     # size as base*(1-utilization)^2 so the last order before the cap is 16% of
     # full size rather than 100% of it.
+    # Dynamic risk scaling percentages (denominated against total portfolio value)
+    naked_risk_pct: float = 0.06        # 6% of total portfolio value
+    order_risk_pct: float = 0.25        # 25% of total portfolio value
+    bankroll_ceiling_pct: float = 0.90  # 90% of total portfolio value (bankroll ceiling)
+
     max_naked_usd: float = 6.0
     # Switchable so the dollar gates can be measured on their own rather than
     # bundled with the rest of a release -- the same convention as
@@ -142,7 +147,7 @@ class MakerConfig:
     # these fields moves the number the dashboard displays and not the number
     # that refuses the order. 0 disables the rule, same as max_naked_usd above.
     max_order_usd: float = 25.0
-    max_total_usd: float = 100.0
+    max_total_usd: float = 90.0
 
     # FLOAT-MARK RETENTION. The fleet writes one fleet-wide open-position mark
     # per sweep (unrealized float, committed dollars, naked residue -- the
@@ -740,7 +745,7 @@ class MakerConfig:
     target_balance: float = 0.92
     # Stop quoting a side once the pair would cost more than this. The pair
     # pays exactly $1.00, so anything at/above 1.00 is a guaranteed loss.
-    max_pair_cost: float = 0.995
+    max_pair_cost: float = 0.99
 
     # THE COMPLETABLE-COST GATE. `max_pair_cost` above is a BOTH-MAKER check:
     # what the pair costs if both legs fill as resting bids. On a binary market
@@ -1026,3 +1031,22 @@ def couple_allocation_usd(cfg) -> float:
 def leg_allocation_usd(cfg) -> float:
     """Dollars for one side of a couple. Half the couple, always."""
     return couple_allocation_usd(cfg) / 2.0
+
+
+def derive_dynamic_caps(cfg: MakerConfig, portfolio_usd: float | None = None) -> dict[str, float]:
+    """Derive dynamic risk caps scaled to the account's total portfolio value.
+
+    - max_naked_usd = 6% (naked_risk_pct) of portfolio value
+    - max_order_usd = 25% (order_risk_pct) of portfolio value
+    - max_total_usd = 90% (bankroll_ceiling_pct) of portfolio value
+
+    If portfolio_usd is None or <= 0, falls back to cfg.bankroll_usd.
+    """
+    base_val = float(portfolio_usd) if (portfolio_usd is not None and float(portfolio_usd) > 0) else float(cfg.bankroll_usd)
+    return {
+        "bankroll_usd": round(base_val, 2),
+        "max_naked_usd": round(base_val * getattr(cfg, "naked_risk_pct", 0.06), 2),
+        "max_order_usd": round(base_val * getattr(cfg, "order_risk_pct", 0.25), 2),
+        "max_total_usd": round(base_val * getattr(cfg, "bankroll_ceiling_pct", 0.90), 2),
+    }
+

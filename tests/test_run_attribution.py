@@ -247,9 +247,19 @@ class TestTheFilterUnderItsTwoEdgeCases:
             "shrinks the resting set silently")
 
     def test_a_registry_without_its_own_id_measures_nothing_rather_than_foreign(
-            self, tmp_path):
+            self, tmp_path, monkeypatch):
+        from core_brain import order_registry
+
+        # Pin the process-wide id instead of inheriting whatever the ambient
+        # session resolved. Without this the test still passes, but for an
+        # accidental reason -- it would prove only that the ambient id differed
+        # from the writer's, which says nothing about the filter.
+        monkeypatch.setattr(order_registry, "_CURRENT_RUN_ID", "run-liveone")
+
         db = tmp_path / "s.db"
         reg = self._seed(db, "shadow-writeraaaaa", None)
+        assert reg._run_id() == "run-liveone", (
+            "the registry must fall through to the pinned process id")
 
         marks = self._settle(reg, db)
 

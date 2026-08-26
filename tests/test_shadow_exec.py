@@ -201,6 +201,56 @@ def test_partial_credit_leaves_the_order_partial(registry):
     assert up_row.status == "partial"
 
 
+def test_a_legacy_null_run_order_is_never_this_run_s(registry):
+    """A `run_id = NULL` row is nobody's order, never this rehearsal's.
+
+    `data/shadow.db` is reused between rehearsals and predates run scoping, so
+    it can hold open rows whose `run_id` is NULL. `(o.run_id or mine) == mine`
+    adopted those as ours: their tape was credited to them in posting order,
+    ahead of this run's own orders on the same market. Ownership must match
+    exactly -- an unowned row stays unowned.
+    """
+    import sqlite3
+
+    from core_brain.order_registry import OrderRecord
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+
+    # A legacy row from before run scoping existed: same market, same token,
+    # still open, but with no owner.
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "INSERT INTO orders (id, order_id, condition_id, token_id, side,"
+            " price, original_size, status, posted_ts, last_polled_ts, run_id)"
+            " VALUES ('legacy-1', 'shadow-legacy-1', '0xabc', 'tok-up', 'BUY',"
+            " 0.47, 100.0, 'open', 1.0, 1.0, NULL)",
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    settle_market(reg, FakeMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
+
+    legacy = [r for r in reg.get_active_orders()
+              if (r.order_id or "") == "shadow-legacy-1"]
+    assert legacy, "the legacy row fixture must be present and active"
+    # Observable: the order is still resting (not dropped). NOT credited: the
+    # 20.0 of tape at 0.47 must not fill it -- only orders this run owns may
+    # consume this run's tape.
+    assert legacy[0].status == "open", (
+        "a NULL-run row must remain visible as a resting order")
+    assert legacy[0].original_size == 100.0, (
+        "the NULL-run row must not consume this run's tape -- it stays unfilled")
+
+
 def test_the_same_tape_volume_is_never_credited_twice(registry):
     """`recent_trades` de-duplicates by trade identity through `seen`; the
     settle step carries one `seen` set per market for the whole session."""

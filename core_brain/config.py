@@ -1058,9 +1058,18 @@ def derive_dynamic_caps(cfg: MakerConfig, portfolio_usd: float | None = None) ->
         except (TypeError, ValueError):
             base_val = 100.0
 
-    naked_pct = getattr(cfg, "naked_risk_pct", 0.06)
-    order_pct = getattr(cfg, "order_risk_pct", 0.25)
-    total_pct = getattr(cfg, "bankroll_ceiling_pct", 0.90)
+    def _sanitize_pct(val, default_pct: float) -> float:
+        try:
+            fval = float(val)
+            if math.isfinite(fval) and 0.0 < fval <= 1.0:
+                return fval
+        except (TypeError, ValueError):
+            pass
+        return default_pct
+
+    naked_pct = _sanitize_pct(getattr(cfg, "naked_risk_pct", 0.06), 0.06)
+    order_pct = _sanitize_pct(getattr(cfg, "order_risk_pct", 0.25), 0.25)
+    total_pct = _sanitize_pct(getattr(cfg, "bankroll_ceiling_pct", 0.90), 0.90)
 
     return {
         "bankroll_usd": round(base_val, 2),

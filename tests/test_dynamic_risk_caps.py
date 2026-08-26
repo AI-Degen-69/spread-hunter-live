@@ -97,39 +97,79 @@ def test_derive_dynamic_caps_edge_cases():
     assert caps_neg["bankroll_usd"] == 100.0
 
 
+def test_derive_dynamic_caps_invalid_percentages():
+    """Verify derive_dynamic_caps falls back to defaults for invalid percentage params."""
+    # Percentage > 1.0 or <= 0 or NaN should fall back to defaults (0.06, 0.25, 0.90)
+    cfg_invalid = MakerConfig(naked_risk_pct=1.5, order_risk_pct=-0.1, bankroll_ceiling_pct=float("nan"))
+    caps = derive_dynamic_caps(cfg_invalid, 100.0)
+    assert caps["max_naked_usd"] == 6.00   # default 6%
+    assert caps["max_order_usd"] == 25.00  # default 25%
+    assert caps["max_total_usd"] == 90.00  # default 90%
+
+
 def test_registry_get_latest_account_mark_run_scoping(tmp_path):
-    """get_latest_account_mark prioritizes marks matching the current run_id."""
-    from core_brain.order_registry import OrderRegistry, set_run_id
+    """get_latest_account_mark strictly scopes to the active run without cross-run bleed."""
+    from core_brain.order_registry import OrderRegistry, set_run_id, get_run_id
 
-    db_path = tmp_path / "orders.db"
-    reg = OrderRegistry(db_path=str(db_path))
+    orig_rid = get_run_id()
+    try:
+        db_path = tmp_path / "orders.db"
+        reg = OrderRegistry(db_path=str(db_path))
 
-    # Record mark for run-1
-    reg.log_account_mark(
-        {"collateral_usd": 50.0, "positions_value_usd": 50.0, "account_value_usd": 100.0, "source": "polymarket"},
-        ts=100.0,
-        run_id="run-1",
-    )
+        # Record mark for run-1
+        reg.log_account_mark(
+            {"collateral_usd": 50.0, "positions_value_usd": 50.0, "account_value_usd": 100.0, "source": "polymarket"},
+            ts=100.0,
+            run_id="run-1",
+        )
 
-    # Record mark for run-2 at a later timestamp
-    reg.log_account_mark(
-        {"collateral_usd": 40.0, "positions_value_usd": 40.0, "account_value_usd": 80.0, "source": "polymarket"},
-        ts=200.0,
-        run_id="run-2",
-    )
+        # Record mark for run-2 at a later timestamp
+        reg.log_account_mark(
+            {"collateral_usd": 40.0, "positions_value_usd": 40.0, "account_value_usd": 80.0, "source": "polymarket"},
+            ts=200.0,
+            run_id="run-2",
+        )
 
-    # Active run is run-2 -> should retrieve run-2 mark ($80)
-    set_run_id("run-2")
-    mark_run2 = reg.get_latest_account_mark()
-    assert mark_run2 is not None
-    assert mark_run2["run_id"] == "run-2"
-    assert mark_run2["account_value_usd"] == 80.0
+        # Active run is run-2 -> should retrieve run-2 mark ($80)
+        set_run_id("run-2")
+        mark_run2 = reg.get_latest_account_mark()
+        assert mark_run2 is not None
+        assert mark_run2["run_id"] == "run-2"
+        assert mark_run2["account_value_usd"] == 80.0
 
-    # Explicitly query run-1 -> should retrieve run-1 mark ($100)
-    mark_run1 = reg.get_latest_account_mark(run_id="run-1")
-    assert mark_run1 is not None
-    assert mark_run1["run_id"] == "run-1"
-    assert mark_run1["account_value_usd"] == 100.0
+        # Explicitly query run-1 -> should retrieve run-1 mark ($100)
+        mark_run1 = reg.get_latest_account_mark(run_id="run-1")
+        assert mark_run1 is not None
+        assert mark_run1["run_id"] == "run-1"
+        assert mark_run1["account_value_usd"] == 100.0
+
+        # Query a run with no marks -> returns None (no cross-run bleed)
+        set_run_id("run-3")
+        mark_run3 = reg.get_latest_account_mark()
+        assert mark_run3 is None
+    finally:
+        set_run_id(orig_rid)
+
+
+def test_parameters_endpoint_basis_label():
+    """get_parameters displays 'account value' when live mark exists, 'bankroll' otherwise."""
+    import json
+    from dashboard.server import get_parameters
+
+    # 1. Fallback / no mark -> 'bankroll' basis
+    res_fallback = get_parameters()
+    data_fallback = json.loads(res_fallback.body.decode())
+    naked_fallback = next(p for p in data_fallback["parameters"] if p["name"] == "max_naked_usd")
+    assert "bankroll" in naked_fallback["value"]
+
+    # 2. Live mark provided -> 'account value' basis
+    mock_reg = MagicMock()
+    mock_reg.get_latest_account_mark.return_value = {"account_value_usd": 90.0}
+    res_live = get_parameters(registry=mock_reg)
+    data_live = json.loads(res_live.body.decode())
+    naked_live = next(p for p in data_live["parameters"] if p["name"] == "max_naked_usd")
+    assert "account value" in naked_live["value"]
+    assert "$5.40" in naked_live["value"]
 
 
 def test_fleet_state_float_marks_fallback():

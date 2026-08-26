@@ -892,12 +892,16 @@ def _fleet_state(registry, cfg) -> dict:
             try:
                 fms = registry.get_all_float_marks()
                 if fms:
-                    latest = fms[-1]
-                    unrealized = latest.get("unrealized_usd")
-                    if unrealized is not None:
-                        val = float(cfg.bankroll_usd) + float(unrealized)
-                        if val > 0:
-                            portfolio_usd = val
+                    from core_brain.order_registry import get_run_id
+                    active_rid = get_run_id()
+                    run_fms = [fm for fm in fms if (not fm.get("run_id") or fm.get("run_id") == active_rid)] if active_rid else fms
+                    if run_fms:
+                        latest = run_fms[-1]
+                        unrealized = latest.get("unrealized_usd")
+                        if unrealized is not None:
+                            val = float(cfg.bankroll_usd) + float(unrealized)
+                            if val > 0:
+                                portfolio_usd = val
             except Exception:
                 pass
 

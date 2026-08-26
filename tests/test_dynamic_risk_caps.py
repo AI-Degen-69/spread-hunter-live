@@ -219,3 +219,25 @@ def test_dynamic_max_naked_usd_risk_utilization():
     block = risk.hard_block(cfg_90, inv, "UP", 0.54, book, book)
     assert block is not None
     assert "naked" in block
+
+
+def test_derive_dynamic_caps_small_portfolio_enforces_hard_block():
+    """A small positive portfolio ($0.01) retains a positive unrounded cap and enforces hard_block."""
+    cfg_base = MakerConfig()
+    caps = derive_dynamic_caps(cfg_base, 0.01)
+    assert caps["max_naked_usd"] > 0.0
+    assert caps["max_naked_usd"] == pytest.approx(0.0006)
+
+    # Apply derived cap to config (frozen dataclass)
+    cfg = MakerConfig(max_naked_usd=caps["max_naked_usd"])
+
+    # Holding 1 share with $0.01 naked exposure
+    inv = Inventory(up_shares=1, up_cost=0.01)
+    book = {"best_bid": 0.48, "best_ask": 0.52}
+
+    # Verify hard_block stops further naked exposure ($0.01 >= $0.0006)
+    block = risk.hard_block(cfg, inv, "UP", 0.50, book, book)
+    assert block is not None
+    assert "naked" in block
+
+

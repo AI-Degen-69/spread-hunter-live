@@ -1071,10 +1071,19 @@ def derive_dynamic_caps(cfg: MakerConfig, portfolio_usd: float | None = None) ->
     order_pct = _sanitize_pct(getattr(cfg, "order_risk_pct", 0.25), 0.25)
     total_pct = _sanitize_pct(getattr(cfg, "bankroll_ceiling_pct", 0.90), 0.90)
 
+    raw_naked = base_val * naked_pct
+    raw_order = base_val * order_pct
+    raw_total = base_val * total_pct
+
+    # Retain positive unrounded value when rounding would collapse to zero sentinel (0 disables risk blocks)
+    naked_val = round(raw_naked, 2) if raw_naked >= 0.005 else raw_naked
+    order_val = round(raw_order, 2) if raw_order >= 0.005 else raw_order
+    total_val = round(raw_total, 2) if raw_total >= 0.005 else raw_total
+
     return {
-        "bankroll_usd": round(base_val, 2),
-        "max_naked_usd": round(base_val * naked_pct, 2),
-        "max_order_usd": round(base_val * order_pct, 2),
-        "max_total_usd": round(base_val * total_pct, 2),
+        "bankroll_usd": round(base_val, 2) if base_val >= 0.005 else base_val,
+        "max_naked_usd": naked_val,
+        "max_order_usd": order_val,
+        "max_total_usd": total_val,
     }
 

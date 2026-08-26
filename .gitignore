@@ -69,3 +69,7 @@ Thumbs.db
 
 # Antigravity harness state (ECC-managed, regenerate with: ecc install --target antigravity)
 .agent/
+
+# Multi-agent session artifacts
+.hermes/
+

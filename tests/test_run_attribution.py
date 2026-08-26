@@ -1,0 +1,151 @@
+"""Run attribution: telemetry measures THIS run, and says what config ran.
+
+Three defects from the 2026-08-26 rehearsal (shadow-c52e533f5725), each of
+which corrupted a measurement an operator then reasoned from:
+
+  * `settle_market` observed every open order in the shared store, not just
+    this run's -- six marks stamped onto a rehearsal belonged to the PREVIOUS
+    rehearsal's resting orders, and a Prime verification pass reached a false
+    conclusion about touch-resting from them.
+  * `cycle_stream._write_cycle_intent` fell back to the process-wide run id,
+    which is the LIVE lock-file id for 12 hours -- every `cycle_intent` row of
+    a rehearsal was attributed to the live session (`run-5eb297de8751`, all
+    200 rows).
+  * Nothing recorded the effective reward_offset / price_risk_widen a
+    rehearsal ran under; recovering them cost a full verification pass over
+    the quotes ledger.
+"""
+from __future__ import annotations
+
+import logging
+import sqlite3
+
+import pytest
+
+
+class FakeMarket:
+    condition_id = "0xabc"
+    up_token = "tok-up"
+    down_token = "tok-dn"
+    market_slug = "fake-market"
+
+
+def _rows(db_path, table="queue_marks"):
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.row_factory = sqlite3.Row
+        return [dict(r) for r in conn.execute(f"SELECT * FROM {table}")]
+    finally:
+        conn.close()
+
+
+class TestMarksMeasureThisRunOnly:
+    """A shared store must not observe another run's resting orders."""
+
+    def _seed_two_runs(self, db_path):
+        from core_brain.order_registry import OrderRecord, OrderRegistry
+        from core_brain.shadow_exec import ensure_shadow_tables
+
+        ensure_shadow_tables(db_path)
+        old = OrderRegistry(db_path=db_path, run_id="shadow-oldrunaaaaa")
+        old.create_order(OrderRecord(
+            id="local-old", order_id="oid-old", condition_id="0xabc",
+            token_id="tok-up", side="BUY", price=0.51, original_size=20.0,
+            status="open", posted_ts=1, last_polled_ts=1))
+        new = OrderRegistry(db_path=db_path, run_id="shadow-newrunaaaaa")
+        new.create_order(OrderRecord(
+            id="local-new", order_id="oid-new", condition_id="0xabc",
+            token_id="tok-up", side="BUY", price=0.47, original_size=20.0,
+            status="open", posted_ts=2, last_polled_ts=2))
+        return new
+
+    def test_a_new_runs_marks_contain_only_its_own_prices(self, tmp_path):
+        """The ghost-mark defect: six marks in run c52e sat at the PREVIOUS
+        run's resting prices, four minutes before c52e ever quoted."""
+        from core_brain.shadow_exec import settle_market
+
+        db = tmp_path / "s.db"
+        reg = self._seed_two_runs(db)
+
+        def book_fn(_host, token_id):
+            return {"token_id": token_id, "best_bid": 0.47, "best_ask": 0.49,
+                    "bids": {0.47: 100.0}, "asks": {0.49: 100.0}}
+
+        settle_market(reg, FakeMarket(), db_path=db,
+                      traded_fn=lambda cid, seen: {}, seen=set(),
+                      now_fn=lambda: 500.0, book_fn=book_fn)
+
+        mine = [r["price"] for r in _rows(db)
+                if r["run_id"] == "shadow-newrunaaaaa"]
+        foreign = [r for r in _rows(db) if r["price"] == pytest.approx(0.51)]
+        assert mine == [pytest.approx(0.47)], mine
+        assert foreign == [], (
+            "a previous run's resting order was measured as ours")
+
+
+class TestIntentsCarryTheSessionId:
+    """`cycle_intent` rows of a rehearsal are tagged `shadow-`, never the
+    live lock id the process-wide resolver hands back."""
+
+    def test_a_shadow_session_tags_its_own_intents(self, tmp_path, monkeypatch):
+        from core_brain import order_registry
+        from core_brain.quotes import QuoteIntent
+
+        import core_brain.cycle_stream as cycle_stream
+        from core_brain.shadow_run import run_shadow
+
+        # Keep the ring file out of the repo's runtime directory, and make the
+        # process-wide id a LIVE one so a fallback shows up as `run-liveone`.
+        monkeypatch.setattr(cycle_stream, "DEFAULT_RING_PATH",
+                            tmp_path / "ring.jsonl")
+        monkeypatch.setattr(order_registry, "_CURRENT_RUN_ID", "run-liveone")
+
+        intent = QuoteIntent(side="UP", token_id="tok-up", price=0.48, size=2,
+                             mid=0.49, edge_vs_mid=0.01)
+        run_shadow(
+            minutes=0.0, db_path=tmp_path / "shadow.db",
+            markets_fn=lambda max_markets=None: [FakeMarket()],
+            client_fn=lambda: object(),
+            decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([intent], ""),
+        )
+
+        tagged = {r["run_id"] for r in _rows(tmp_path / "shadow.db",
+                                             "cycle_intent")}
+        assert tagged, "no cycle_intent rows were written, so this proves none"
+        assert all(i.startswith("shadow-") for i in tagged), tagged
+
+
+class TestEffectiveConfigIsLogged:
+    """One INFO line at start retires 'what did this rehearsal actually run?'."""
+
+    def test_the_overridden_values_appear_in_the_start_line(
+            self, tmp_path, monkeypatch, caplog):
+        from core_brain.shadow_run import run_shadow
+
+        monkeypatch.setattr(order_registry_current(), "_CURRENT_RUN_ID",
+                            "run-liveone")
+        # `HUNTER_REWARD_OFFSET`/`HUNTER_PRICE_RISK_WIDEN` live on the
+        # reward-offset-override branch; on main the overridable knob is the
+        # completable cap, so assert through it.
+        monkeypatch.setenv("HUNTER_COMPLETABLE_CAP", "0.995")
+
+        with caplog.at_level(logging.INFO, logger="shadow_run"):
+            run_shadow(
+                minutes=0.0, db_path=tmp_path / "shadow.db",
+                markets_fn=lambda max_markets=None: [FakeMarket()],
+                client_fn=lambda: object(),
+                decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([], "declined"),
+            )
+
+        lines = [r.message for r in caplog.records
+                 if "reward_offset" in r.message]
+        assert lines, "no effective-config line was logged at run start"
+        assert "0.9950" in lines[0], lines[0]
+        for field in ("price_risk_widen", "min_reward_offset",
+                      "max_completable_pair_cost"):
+            assert field in lines[0], f"{field} missing from: {lines[0]}"
+
+
+def order_registry_current():
+    from core_brain import order_registry
+    return order_registry

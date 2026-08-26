@@ -350,10 +350,17 @@ def emit(
     ring_path: Path | None = None,
     db_path: Path | None = None,
     can_rotate: bool | None = None,
+    run_id: str | None = None,
 ) -> None:
     """Append one NDJSON event to the ring file and log cycle intent if relevant.
 
     Never raises into caller.
+
+    `run_id` scopes the cycle_intent rows to the session that emitted them.
+    A shadow session must pass its registry's `shadow-...` id here: the
+    fallback is the process-wide resolver, which returns the LIVE lock-file
+    id for 12 hours -- all 200 of a rehearsal's intent rows once landed on
+    the live session (`run-5eb297de8751`) that way.
     """
     try:
         target_ring = Path(ring_path) if ring_path else DEFAULT_RING_PATH
@@ -395,6 +402,7 @@ def emit(
                                 or (reason if (extra or {}).get("intent_count") else None),
                 latency_ms=latency_ms,
                 db_path=db_path,
+                run_id=run_id,
             )
         elif phase == "quoting" and action in ("submit", "market_error"):
             # submit carries the outcome of a successful decide; market_error on
@@ -403,7 +411,7 @@ def emit(
             _update_cycle_intent(
                 market_slug=market_slug,
                 cycle=cycle,
-                run_id=_resolve_run_id(),
+                run_id=run_id or _resolve_run_id(),
                 submitted=int((extra or {}).get("submitted", 0)),
                 cancelled=int((extra or {}).get("cancelled", 0)),
                 db_path=db_path,

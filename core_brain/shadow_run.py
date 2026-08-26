@@ -151,6 +151,7 @@ class ShadowResult:
 def _make_logging_emit(
     db_path,
     inventory_lookup: Optional[Callable[[str], Any]] = None,
+    run_id: Optional[str] = None,
 ) -> Callable[..., None]:
     """`emit`, plus one INFO line per market visit.
 
@@ -179,7 +180,8 @@ def _make_logging_emit(
     from core_brain.cycle_stream import emit as _emit_cycle_event
 
     def emit_fn(cycle, phase, action, **kw) -> None:
-        _emit_cycle_event(cycle, phase, action, db_path=db_path, **kw)
+        _emit_cycle_event(cycle, phase, action, db_path=db_path,
+                          run_id=run_id, **kw)
 
         if phase != "quoting" or action != "decide":
             return
@@ -414,7 +416,8 @@ def build_shadow_seam(
         inventory_fn=settling_inventory_fn,
         open_orders_fn=_make_open_orders_fn(registry),
         emit_fn=_make_logging_emit(
-            db_path, inventory_lookup=last_inventory_by_market.get),
+            db_path, inventory_lookup=last_inventory_by_market.get,
+            run_id=getattr(registry, "run_id", None)),
     )
 
 
@@ -461,6 +464,18 @@ def run_shadow(
     run_id = shadow_run_id()
 
     cfg = load()
+
+    # One line that retires "what did this rehearsal actually run under?".
+    # The two offset knobs are env-overridable per run, and recovering what a
+    # finished rehearsal had used cost a full verification pass over the
+    # quotes ledger. Logged at INFO so the banner and any captured log carry
+    # it without anyone having to ask.
+    log.info(
+        "effective config: reward_offset=%.4f price_risk_widen=%.4f "
+        "min_reward_offset=%.4f max_completable_pair_cost=%.4f",
+        cfg.reward_offset, cfg.price_risk_widen,
+        cfg.min_reward_offset, cfg.max_completable_pair_cost,
+    )
 
     # Same open question, same answer as the live loop: attempt the real
     # balance read (it needs only the public funder address), fall back to the

@@ -1311,10 +1311,18 @@ class OrderRegistry:
             rows = conn.execute("SELECT * FROM account_marks ORDER BY ts ASC").fetchall()
             return [dict(r) for r in rows]
 
-    def get_latest_account_mark(self) -> Optional[dict]:
-        """Retrieve the most recent account mark, or None if none recorded."""
+    def get_latest_account_mark(self, run_id: Optional[str] = None) -> Optional[dict]:
+        """Retrieve the most recent account mark, prioritizing current run_id."""
+        r_id = run_id or get_run_id()
         with self._conn() as conn:
-            row = conn.execute("SELECT * FROM account_marks ORDER BY ts DESC LIMIT 1").fetchone()
+            if r_id:
+                row = conn.execute(
+                    "SELECT * FROM account_marks WHERE run_id = ? ORDER BY ts DESC, id DESC LIMIT 1",
+                    (r_id,),
+                ).fetchone()
+                if row:
+                    return dict(row)
+            row = conn.execute("SELECT * FROM account_marks ORDER BY ts DESC, id DESC LIMIT 1").fetchone()
             return dict(row) if row else None
 
     def get_all_orders(self) -> list[dict]:

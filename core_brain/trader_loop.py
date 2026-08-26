@@ -893,9 +893,11 @@ def _fleet_state(registry, cfg) -> dict:
                 fms = registry.get_all_float_marks()
                 if fms:
                     latest = fms[-1]
-                    val = latest.get("account_value_usd") or latest.get("total_equity_usd")
-                    if val and float(val) > 0:
-                        portfolio_usd = float(val)
+                    unrealized = latest.get("unrealized_usd")
+                    if unrealized is not None:
+                        val = float(cfg.bankroll_usd) + float(unrealized)
+                        if val > 0:
+                            portfolio_usd = val
             except Exception:
                 pass
 

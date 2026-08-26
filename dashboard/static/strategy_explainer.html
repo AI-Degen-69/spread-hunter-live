@@ -614,7 +614,7 @@
       <div class="calculator-container">
         <div class="slider-group">
           <div class="slider-label">
-            <span>Leg A (UP) Fill Price</span>
+            <label for="upPrice">Leg A (UP) Fill Price</label>
             <span class="slider-value" id="upVal">$0.48</span>
           </div>
           <input type="range" id="upPrice" min="0.05" max="0.95" step="0.01" value="0.48" oninput="updateCalc()" />
@@ -622,7 +622,7 @@
 
         <div class="slider-group">
           <div class="slider-label">
-            <span>Leg B (DOWN) Fill Price</span>
+            <label for="downPrice">Leg B (DOWN) Fill Price</label>
             <span class="slider-value" id="downVal">$0.48</span>
           </div>
           <input type="range" id="downPrice" min="0.05" max="0.95" step="0.01" value="0.48" oninput="updateCalc()" />
@@ -630,7 +630,7 @@
 
         <div class="slider-group">
           <div class="slider-label">
-            <span>Pair Quantity (Shares)</span>
+            <label for="shares">Pair Quantity (Shares)</label>
             <span class="slider-value" id="sharesVal">50 shares</span>
           </div>
           <input type="range" id="shares" min="5" max="250" step="5" value="50" oninput="updateCalc()" />
@@ -692,16 +692,17 @@
       const cost = up + down;
       const profit = 1.00 - cost;
       const total = profit * shares;
+      const isAllowed = cost <= 0.99;
 
       const costElem = document.getElementById('pairCost');
       const profitElem = document.getElementById('profitPerPair');
       const totalElem = document.getElementById('totalProfit');
 
-      costElem.innerText = `$${cost.toFixed(3)}`;
-      profitElem.innerText = `${profit >= 0 ? '+' : ''}$${profit.toFixed(3)}`;
-      totalElem.innerText = `${total >= 0 ? '+' : ''}$${total.toFixed(2)}`;
+      costElem.innerText = `$${cost.toFixed(3)}${isAllowed ? '' : ' (BLOCKED > $0.99)'}`;
+      profitElem.innerText = isAllowed ? `${profit >= 0 ? '+' : ''}$${profit.toFixed(3)}` : 'BLOCKED';
+      totalElem.innerText = isAllowed ? `${total >= 0 ? '+' : ''}$${total.toFixed(2)}` : 'BLOCKED';
 
-      if (profit >= 0) {
+      if (isAllowed && profit > 0) {
         profitElem.className = 'res-value val-green';
         totalElem.className = 'res-value val-green';
         costElem.className = 'res-value';

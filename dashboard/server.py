@@ -1604,8 +1604,23 @@ def get_parameters():
     max_naked_usd, min_quote_shares, max_order_usd, max_total_usd) and the sweep
     interval from the dashboard's own config. One config object, not two.
     """
-    from core_brain.config import load as load_cfg
+    from core_brain.config import load as load_cfg, derive_dynamic_caps
     cfg = load_cfg()
+    portfolio_usd = None
+    try:
+        from core_brain.order_registry import OrderRegistry
+        reg = OrderRegistry()
+        am = reg.get_latest_account_mark()
+        if am and am.get("account_value_usd") is not None and float(am["account_value_usd"]) > 0:
+            portfolio_usd = float(am["account_value_usd"])
+    except Exception:
+        pass
+
+    dynamic = derive_dynamic_caps(cfg, portfolio_usd)
+    naked_usd = dynamic["max_naked_usd"]
+    order_usd = dynamic["max_order_usd"]
+    total_usd = dynamic["max_total_usd"]
+
     sweep = resolve_sweep_interval()
     params = [
         {
@@ -1616,20 +1631,20 @@ def get_parameters():
         },
         {
             "name": "max_naked_usd",
-            "value": f"${cfg.max_naked_usd:.2f} ({cfg.naked_risk_pct*100:.0f}% of portfolio)",
-            "trigger": "One leg fills while the opposing leg is unfilled, creating unhedged exposure > ${:.2f}".format(cfg.max_naked_usd),
+            "value": f"${naked_usd:.2f} ({cfg.naked_risk_pct*100:.0f}% of portfolio)",
+            "trigger": f"One leg fills while the opposing leg is unfilled, creating unhedged exposure > ${naked_usd:.2f}",
             "action": "Stops quoting new orders on that market; prepares emergency exit / merge",
         },
         {
             "name": "max_order_usd",
-            "value": f"${cfg.max_order_usd:.2f} ({cfg.order_risk_pct*100:.0f}% of portfolio)",
-            "trigger": "Order sizing calculation generates a single order > ${:.2f}".format(cfg.max_order_usd),
+            "value": f"${order_usd:.2f} ({cfg.order_risk_pct*100:.0f}% of portfolio)",
+            "trigger": f"Order sizing calculation generates a single order > ${order_usd:.2f}",
             "action": "Clamps size to prevent accidental capital overcommitment",
         },
         {
             "name": "max_total_usd",
-            "value": f"${cfg.max_total_usd:.2f} ({cfg.bankroll_ceiling_pct*100:.0f}% bankroll ceiling)",
-            "trigger": "Sum of all open notional across fleet reaches ${:.2f}".format(cfg.max_total_usd),
+            "value": f"${total_usd:.2f} ({cfg.bankroll_ceiling_pct*100:.0f}% bankroll ceiling)",
+            "trigger": f"Sum of all open notional across fleet reaches ${total_usd:.2f}",
             "action": "Refuses all new quotes across all markets until existing orders settle or cancel",
         },
         {

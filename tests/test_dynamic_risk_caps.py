@@ -78,6 +78,77 @@ def test_fleet_state_adopts_dynamic_caps_from_account_mark():
     assert state["max_total_usd"] == 81.00
 
 
+def test_derive_dynamic_caps_edge_cases():
+    """Verify derive_dynamic_caps rejects nan, inf, and negative inputs safely."""
+    cfg = MakerConfig(bankroll_usd=100.0)
+    
+    # NaN and Infs should fall back safely to cfg.bankroll_usd
+    caps_nan = derive_dynamic_caps(cfg, float("nan"))
+    assert caps_nan["bankroll_usd"] == 100.0
+    assert caps_nan["max_naked_usd"] == 6.00
+
+    caps_inf = derive_dynamic_caps(cfg, float("inf"))
+    assert caps_inf["bankroll_usd"] == 100.0
+
+    caps_ninf = derive_dynamic_caps(cfg, float("-inf"))
+    assert caps_ninf["bankroll_usd"] == 100.0
+
+    caps_neg = derive_dynamic_caps(cfg, -50.0)
+    assert caps_neg["bankroll_usd"] == 100.0
+
+
+def test_registry_get_latest_account_mark_run_scoping(tmp_path):
+    """get_latest_account_mark prioritizes marks matching the current run_id."""
+    from core_brain.order_registry import OrderRegistry, set_run_id
+
+    db_path = tmp_path / "orders.db"
+    reg = OrderRegistry(db_path=str(db_path))
+
+    # Record mark for run-1
+    reg.log_account_mark(
+        {"collateral_usd": 50.0, "positions_value_usd": 50.0, "account_value_usd": 100.0, "source": "polymarket"},
+        ts=100.0,
+        run_id="run-1",
+    )
+
+    # Record mark for run-2 at a later timestamp
+    reg.log_account_mark(
+        {"collateral_usd": 40.0, "positions_value_usd": 40.0, "account_value_usd": 80.0, "source": "polymarket"},
+        ts=200.0,
+        run_id="run-2",
+    )
+
+    # Active run is run-2 -> should retrieve run-2 mark ($80)
+    set_run_id("run-2")
+    mark_run2 = reg.get_latest_account_mark()
+    assert mark_run2 is not None
+    assert mark_run2["run_id"] == "run-2"
+    assert mark_run2["account_value_usd"] == 80.0
+
+    # Explicitly query run-1 -> should retrieve run-1 mark ($100)
+    mark_run1 = reg.get_latest_account_mark(run_id="run-1")
+    assert mark_run1 is not None
+    assert mark_run1["run_id"] == "run-1"
+    assert mark_run1["account_value_usd"] == 100.0
+
+
+def test_fleet_state_float_marks_fallback():
+    """_fleet_state uses float_marks unrealized PnL when account_marks is absent."""
+    cfg = MakerConfig(bankroll_usd=100.0)
+    mock_reg = MagicMock()
+    mock_reg.get_latest_account_mark.return_value = None
+    mock_reg.get_all_float_marks.return_value = [
+        {"ts": 100.0, "unrealized_usd": -10.0, "committed_open_usd": 0.0, "naked_usd": 0.0}
+    ]
+
+    # $100 bankroll - $10 unrealized = $90 portfolio value
+    state = _fleet_state(mock_reg, cfg)
+    assert state["bankroll_usd"] == 90.0
+    assert state["max_naked_usd"] == 5.40
+    assert state["max_order_usd"] == 22.50
+    assert state["max_total_usd"] == 81.00
+
+
 def test_max_pair_cost_enforcement_at_99_cents():
     """risk.hard_block enforces the $0.99 ceiling on pair cost."""
     cfg = MakerConfig(max_pair_cost=0.99)

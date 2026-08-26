@@ -1040,13 +1040,32 @@ def derive_dynamic_caps(cfg: MakerConfig, portfolio_usd: float | None = None) ->
     - max_order_usd = 25% (order_risk_pct) of portfolio value
     - max_total_usd = 90% (bankroll_ceiling_pct) of portfolio value
 
-    If portfolio_usd is None or <= 0, falls back to cfg.bankroll_usd.
+    If portfolio_usd is None, non-finite, or <= 0, falls back to cfg.bankroll_usd.
     """
-    base_val = float(portfolio_usd) if (portfolio_usd is not None and float(portfolio_usd) > 0) else float(cfg.bankroll_usd)
+    base_val = None
+    if portfolio_usd is not None:
+        try:
+            val = float(portfolio_usd)
+            if math.isfinite(val) and val > 0:
+                base_val = val
+        except (TypeError, ValueError):
+            pass
+
+    if base_val is None:
+        try:
+            val = float(getattr(cfg, "bankroll_usd", 100.0))
+            base_val = val if (math.isfinite(val) and val > 0) else 100.0
+        except (TypeError, ValueError):
+            base_val = 100.0
+
+    naked_pct = getattr(cfg, "naked_risk_pct", 0.06)
+    order_pct = getattr(cfg, "order_risk_pct", 0.25)
+    total_pct = getattr(cfg, "bankroll_ceiling_pct", 0.90)
+
     return {
         "bankroll_usd": round(base_val, 2),
-        "max_naked_usd": round(base_val * getattr(cfg, "naked_risk_pct", 0.06), 2),
-        "max_order_usd": round(base_val * getattr(cfg, "order_risk_pct", 0.25), 2),
-        "max_total_usd": round(base_val * getattr(cfg, "bankroll_ceiling_pct", 0.90), 2),
+        "max_naked_usd": round(base_val * naked_pct, 2),
+        "max_order_usd": round(base_val * order_pct, 2),
+        "max_total_usd": round(base_val * total_pct, 2),
     }
 

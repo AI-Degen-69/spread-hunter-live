@@ -176,10 +176,33 @@ def _make_logging_emit(
     lookup must stay total: a `condition_id` it has never seen (no lookup
     wired, or a market this seam never settled) logs the line without a
     position rather than raising or printing zeros nothing measured.
+
+    A rehearsal names its own ring. With a `run_id`, every event goes to
+    `runtime/shadow-<run_id>.jsonl` and rotation is switched off for that
+    file: a 45-minute session emits ~2000 lines against the live ring's
+    500-line cap, and the whole point of the rehearsal record is that its
+    first minute is still on disk when the last one lands. The per-run file
+    has exactly one writer, so it needs none of the live ring's rotation --
+    there, many writers share one small file, which is why rotation exists.
+
+    Without a `run_id` nothing changes: events fall through to the default
+    ring with default rotation, exactly as before this existed.
+
+    `emit` is imported per call, not at wiring time -- the same convention
+    `_default_fetch_books` states below -- so what the wrapper calls is
+    whatever `cycle_stream.emit` names when the event happens.
     """
-    from core_brain.cycle_stream import emit as _emit_cycle_event
+    from core_brain.cycle_stream import LIVE_ROOT
+
+    ring_path = (LIVE_ROOT / "runtime" / f"shadow-{run_id}.jsonl") if run_id else None
 
     def emit_fn(cycle, phase, action, **kw) -> None:
+        from core_brain.cycle_stream import emit as _emit_cycle_event
+
+        if ring_path is not None:
+            kw.setdefault("ring_path", ring_path)
+            # Run-scoped rings do not rotate against themselves: see above.
+            kw.setdefault("can_rotate", False)
         _emit_cycle_event(cycle, phase, action, db_path=db_path,
                           run_id=run_id, **kw)
 
@@ -210,6 +233,10 @@ def _make_logging_emit(
             shares,
             f" -- {reason}" if reason else "",
         )
+
+    # Introspectable for tests and callers: which ring this session writes,
+    # or None when events fall through to the default ring unchanged.
+    emit_fn.ring_path = ring_path
 
     return emit_fn
 

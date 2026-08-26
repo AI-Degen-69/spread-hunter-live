@@ -34,6 +34,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import re
 import sqlite3
 import sys
 import uuid
@@ -148,6 +149,26 @@ class ShadowResult:
     skipped_stages: tuple = ()
 
 
+def _run_ring_name(run_id: str) -> str:
+    """File name for a run-scoped ring: `shadow-<token>.jsonl`.
+
+    The id is not ours to trust. `_resolve_run_id` takes `SH_RUN_ID` from the
+    environment verbatim (order_registry.py:61-74), so anything the operator
+    exports lands here -- including a separator, which would put the ring
+    outside `runtime/`, or a dot pair, which would climb out of it. Every
+    character outside `[A-Za-z0-9_.-]` becomes a dash, leading and trailing
+    dots and dashes go, and the result is capped.
+
+    Ids already carrying the `shadow-` prefix are not prefixed twice:
+    `shadow_run_id()` returns `shadow-<hex>`, which would otherwise name the
+    file `shadow-shadow-<hex>.jsonl`.
+    """
+    token = re.sub(r"[^A-Za-z0-9_.-]", "-", run_id).strip("-.")[:64] or "unnamed"
+    if token.startswith("shadow-"):
+        return f"{token}.jsonl"
+    return f"shadow-{token}.jsonl"
+
+
 def _make_logging_emit(
     db_path,
     inventory_lookup: Optional[Callable[[str], Any]] = None,
@@ -176,10 +197,36 @@ def _make_logging_emit(
     lookup must stay total: a `condition_id` it has never seen (no lookup
     wired, or a market this seam never settled) logs the line without a
     position rather than raising or printing zeros nothing measured.
+
+    A rehearsal names its own ring. With a `run_id`, every event goes to
+    `runtime/shadow-<run_id>.jsonl` and rotation is switched off for that
+    file: a 45-minute session emits ~2000 lines against the live ring's
+    500-line cap, and the whole point of the rehearsal record is that its
+    first minute is still on disk when the last one lands. The per-run file
+    has exactly one writer, so it needs none of the live ring's rotation --
+    there, many writers share one small file, which is why rotation exists.
+
+    Without a `run_id` nothing changes: events fall through to the default
+    ring with default rotation, exactly as before this existed.
+
+    `emit` is imported per call, not at wiring time -- the same convention
+    `_default_fetch_books` states below -- so what the wrapper calls is
+    whatever `cycle_stream.emit` names when the event happens.
     """
-    from core_brain.cycle_stream import emit as _emit_cycle_event
+    from core_brain.cycle_stream import LIVE_ROOT
+
+    ring_path = (LIVE_ROOT / "runtime" / _run_ring_name(run_id)) if run_id else None
 
     def emit_fn(cycle, phase, action, **kw) -> None:
+        from core_brain.cycle_stream import emit as _emit_cycle_event
+
+        if ring_path is not None:
+            # Assigned, not defaulted: a caller that passed its own ring_path
+            # here would put the rehearsal back in someone else's file, and
+            # can_rotate=True would reintroduce the eviction this exists to
+            # stop. With a run_id, the run-scoped ring is not negotiable.
+            kw["ring_path"] = ring_path
+            kw["can_rotate"] = False
         _emit_cycle_event(cycle, phase, action, db_path=db_path,
                           run_id=run_id, **kw)
 
@@ -210,6 +257,10 @@ def _make_logging_emit(
             shares,
             f" -- {reason}" if reason else "",
         )
+
+    # Introspectable for tests and callers: which ring this session writes,
+    # or None when events fall through to the default ring unchanged.
+    emit_fn.ring_path = ring_path
 
     return emit_fn
 

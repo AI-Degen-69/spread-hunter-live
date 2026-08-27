@@ -941,25 +941,40 @@ def _submit_and_log(
                     (condition_id,),
                 ).fetchall()
                 
-                leg_avgs = []
+                tok_map = {}
                 for r in rows:
                     s = float(r["shares"])
                     c = float(r["cost"])
                     if s > 0:
-                        leg_avgs.append(c / s)
-                
-                if len(leg_avgs) >= 2:
-                    avg_pair_cost = sum(leg_avgs[:2])
-                    up_unit_cost = leg_avgs[0]
-                    dn_unit_cost = leg_avgs[1]
-                elif len(leg_avgs) == 1:
-                    avg_pair_cost = leg_avgs[0] + (1.0 - leg_avgs[0] - 0.02)
-                    up_unit_cost = leg_avgs[0]
-                    dn_unit_cost = avg_pair_cost - leg_avgs[0]
-                else:
-                    avg_pair_cost = 0.98
+                        tok_map[r["token_id"]] = c / s
+
+                up_unit_cost = None
+                dn_unit_cost = None
+                for tid, ucost in tok_map.items():
+                    tid_s = str(tid).lower()
+                    if "up" in tid_s or "yes" in tid_s or "long" in tid_s:
+                        up_unit_cost = ucost
+                    elif "dn" in tid_s or "down" in tid_s or "no" in tid_s or "short" in tid_s:
+                        dn_unit_cost = ucost
+
+                tok_keys = list(tok_map.keys())
+                if up_unit_cost is None and tok_keys:
+                    up_unit_cost = tok_map[tok_keys[0]]
+                if dn_unit_cost is None:
+                    if len(tok_keys) > 1 and tok_keys[1] != tok_keys[0]:
+                        dn_unit_cost = tok_map[tok_keys[1]]
+                    elif len(tok_keys) > 0 and up_unit_cost != tok_map[tok_keys[0]]:
+                        dn_unit_cost = tok_map[tok_keys[0]]
+
+                if up_unit_cost is None and dn_unit_cost is None:
                     up_unit_cost = 0.49
                     dn_unit_cost = 0.49
+                elif up_unit_cost is None:
+                    up_unit_cost = max(0.01, 0.98 - dn_unit_cost)
+                elif dn_unit_cost is None:
+                    dn_unit_cost = max(0.01, 0.98 - up_unit_cost)
+
+                avg_pair_cost = up_unit_cost + dn_unit_cost
 
             cost_basis = float(amt) * avg_pair_cost
             proceeds = float(amt) * 1.00

@@ -657,7 +657,7 @@ function renderExpandedOrders(orders, fills, showCancelled) {
 
   html += `<table class="orders-subtable">`;
   html += `<thead><tr>
-    <th>Side</th>
+    <th>Outcome / Leg</th>
     <th>Price</th>
     <th>Size</th>
     <th>Filled</th>
@@ -672,8 +672,11 @@ function renderExpandedOrders(orders, fills, showCancelled) {
     const oFills = fillsByOrder[o.id] || [];
     const fillCount = oFills.length;
     const statusCls = o.status === 'open' ? 'active' : (o.status === 'filled' ? 'active' : (isCancelledStatus(o.status) ? 'stopped' : 'reconnecting'));
+    const isDown = o.token_side === 'DOWN' || (o.outcome && (o.outcome.toLowerCase().includes('no') || o.outcome.toLowerCase().includes('down')));
+    const badgeCls = isDown ? 'badge-down' : 'badge-up';
+    const label = o.outcome ? `${o.outcome} (${fmtSide(o.side)})` : (o.token_side ? `${o.token_side} (${fmtSide(o.side)})` : fmtSide(o.side));
     html += `<tr${isCancelledStatus(o.status) ? ' class="order-cancelled"' : ''}>
-      <td class="mono"><span class="side-${(o.side||'').toLowerCase()}">${fmtSide(o.side)}</span></td>
+      <td class="mono"><span class="${badgeCls} side-${(o.side||'').toLowerCase()}">${esc(label)}</span></td>
       <td class="mono">${esc(o.price !== null && o.price !== undefined ? o.price.toFixed(4) : '--')}</td>
       <td class="mono">${esc(o.original_size !== null && o.original_size !== undefined ? o.original_size : '--')}</td>
       <td class="mono">${esc(o.size_matched !== null && o.size_matched !== undefined ? o.size_matched : '--')}</td>

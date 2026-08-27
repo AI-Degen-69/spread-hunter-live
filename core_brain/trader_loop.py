@@ -378,11 +378,23 @@ def _cancel_dropped_markets(
     dropped = [o for o in active_orders
                if o.condition_id and o.condition_id not in current_cids]
 
+    # Verify if dropped orders are actually resting at the venue
+    venue_resting: Optional[set[str]] = None
+    if seam.resting_order_ids_fn:
+        try:
+            r_ids = seam.resting_order_ids_fn(seam.client)
+            if r_ids is not None:
+                venue_resting = {str(r) for r in r_ids}
+        except Exception:
+            pass
+
     stranded = sorted({o.condition_id for o in dropped
-                       if getattr(o, "status", "") == "partial"})
+                       if getattr(o, "status", "") == "partial"
+                       and (venue_resting is None or (o.order_id and str(o.order_id) in venue_resting))})
     for cid in stranded:
         n = sum(1 for o in dropped
-                if o.condition_id == cid and getattr(o, "status", "") == "partial")
+                if o.condition_id == cid and getattr(o, "status", "") == "partial"
+                and (venue_resting is None or (o.order_id and str(o.order_id) in venue_resting)))
         log.warning("dropped market %s has %d partially filled order(s) left "
                     "resting: cancel would strand the filled shares", cid, n)
         emit_fn(service="decide", cycle=cycle, phase="quoting",
@@ -569,6 +581,17 @@ def _visit_one(
     emit_fn(service="decide", cycle=cycle, phase="quoting", action="submit",
             market_slug=title,
             extra={"submitted": submitted, "cancelled": cancelled})
+
+    if submitted > 0:
+        orders_desc = ", ".join(f"{i.side} {i.size}sh @ ${i.price:.3f}" for i in to_submit)
+        log.info("[QUOTING] %s | Posted %d orders: %s", title, submitted, orders_desc)
+    elif cancelled > 0:
+        log.info("[REQUOTE] %s | Cancelled %d stale order(s)", title, cancelled)
+    elif open_orders:
+        log.info("[RESTING] %s | %d quote(s) resting at target spread", title, len(open_orders))
+    elif why:
+        log.info("[SKIPPED] %s | %s", title, why)
+
     return LiveFleetResult(
         status="QUOTED" if intents else "DECLINED",
         condition_id=cid, title=title, why=why, intents=list(intents),
@@ -577,10 +600,29 @@ def _visit_one(
 
 # --- production wiring ------------------------------------------------------
 
-def _market_specs(max_markets: Optional[int] = None) -> list[dict]:
-    """Graduated markets as per-market dict specs, mirroring fleet.MarketState."""
+def _market_specs(max_markets: Optional[int] = None, registry=None) -> list[dict]:
+    """Graduated markets as per-market dict specs, mirroring fleet.MarketState.
+
+    If max_markets is 1 and a market already has active open orders in the registry,
+    prioritise that active market so we never quote a second market concurrently.
+    """
     from core_brain.market_feed import load_graduated_markets
     gms = load_graduated_markets()
+    if not gms:
+        return []
+
+    if max_markets == 1 and registry is not None:
+        try:
+            active_orders = registry.get_active_orders()
+            active_cids = {o.condition_id for o in active_orders if o.condition_id and o.status in ("open", "partial")}
+            if active_cids:
+                active_cid = next(iter(active_cids))
+                active_gm = next((gm for gm in gms if gm.cid == active_cid), None)
+                if active_gm:
+                    gms = [active_gm]
+        except Exception:
+            pass
+
     if max_markets:
         gms = gms[:max_markets]
     return [{
@@ -960,6 +1002,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         datefmt="%H:%M:%S",
         handlers=[logging.StreamHandler(sys.stderr)],
     )
+    # Suppress verbose HTTP network request noise from CLOB SDK
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
 
     cfg = load()
     try:
@@ -1022,7 +1068,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     results = run(
         seam,
         interval=a.interval, once=a.once, live=a.live, markets=specs,
-        markets_fn=lambda: _market_specs(a.max_markets),
+        markets_fn=lambda: _market_specs(a.max_markets, registry=registry),
     )
     return 0 if results else 1
 

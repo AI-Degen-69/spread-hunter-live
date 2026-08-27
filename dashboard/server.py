@@ -711,15 +711,15 @@ def start_bot() -> dict:
         # Anything but a confirmed STOPPED refuses. UNKNOWN means the process
         # registry could not be read, and a start on that state is exactly the
         # duplicate-stack case this guard exists to prevent.
-        if current["bot_state"] != "STOPPED":
-            message = (
-                "Bot stack is already running; refusing to start a second instance."
-                if current["bot_state"] == "RUNNING"
-                else ("Cannot read the process file at "
-                      f"{current.get('registry_path')}; refusing to start until it is "
-                      "readable, because a second live stack cannot be ruled out.")
-            )
-            return {"ok": False, "message": message, "status": current}
+        svcs = current.get("services", {})
+        filter_alive = svcs.get("filter", {}).get("running", False)
+        query_alive = svcs.get("query", {}).get("running", False)
+        decide_alive = svcs.get("decide", {}).get("running", False)
+
+        if current.get("bot_state") == "RUNNING" or (filter_alive and query_alive and decide_alive):
+            return {"ok": False, "message": "Bot stack is already running; refusing to start a duplicate instance.", "status": current}
+        if current.get("bot_state") == "UNKNOWN":
+            return {"ok": False, "message": f"Cannot read the process file at {current.get('registry_path')}; refusing to start until it is readable, because a second live stack cannot be ruled out.", "status": current}
 
         procs_file = runtime_file("processes.json", root=LIVE_ROOT)
         procs_file.parent.mkdir(parents=True, exist_ok=True)
@@ -731,46 +731,53 @@ def start_bot() -> dict:
         from core_brain.order_registry import get_run_id
         child_env = {**os.environ, "SH_RUN_ID": get_run_id()}
 
-        # Launch Market Filter (filter_loop)
-        p_scr = subprocess.Popen(
-            [sys.executable, "-m", "scripts.filter_loop"],
-            cwd=str(REPO_ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=child_env,
-        )
-        launched_procs.append(p_scr)
+        # Launch Market Filter (filter_loop) if not running
+        if not filter_alive:
+            p_scr = subprocess.Popen(
+                [sys.executable, "-m", "scripts.filter_loop"],
+                cwd=str(REPO_ROOT),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=child_env,
+            )
+            launched_procs.append(p_scr)
+            filter_entry = {"pid": p_scr.pid, "started_at": time.time()}
+        else:
+            filter_entry = service_entry(saved_procs, "filter")
 
-        # Launch Query Polymarket loop (live_exec poll --interval 0.5). The account sweep
-        # follows LIVE_SWEEP_INTERVAL when set; otherwise it runs every tick. Query
-        # owns reconcile, the account sweep, and the markout sampler, and it keeps
-        # the registry's open orders fresh for the decide loop below.
-        sweep_interval = resolve_sweep_interval()
-        poll_cmd = [sys.executable, "-m", "core_brain.order_manager", "poll", "--interval", "0.5"]
-        if sweep_interval is not None:
-            poll_cmd += ["--sweep-interval", str(sweep_interval)]
-        p_eng = subprocess.Popen(
-            poll_cmd,
-            cwd=str(LIVE_ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=child_env,
-        )
-        launched_procs.append(p_eng)
+        # Launch Query Polymarket loop if not running
+        if not query_alive:
+            sweep_interval = resolve_sweep_interval()
+            poll_cmd = [sys.executable, "-m", "core_brain.order_manager", "poll", "--interval", "0.5"]
+            if sweep_interval is not None:
+                poll_cmd += ["--sweep-interval", str(sweep_interval)]
+            p_eng = subprocess.Popen(
+                poll_cmd,
+                cwd=str(LIVE_ROOT),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=child_env,
+            )
+            launched_procs.append(p_eng)
+            query_entry = {"pid": p_eng.pid, "started_at": time.time(),
+                           "sweep_interval_sec": sweep_interval}
+        else:
+            query_entry = service_entry(saved_procs, "query")
 
-        # Launch the Decide & Execute loop (decide -> submit). It reads open orders from the
-        # registry rather than re-reconciling, so it runs with --no-reconcile and
-        # --no-sweep: a second reconcile loop would contend on the reconcile lock
-        # and double the venue reads poll already makes.
-        p_fleet = subprocess.Popen(
-            [sys.executable, "-m", "core_brain.trader_loop", "--live",
-             "--no-reconcile", "--no-sweep", "--interval", "5", "--max-markets", "1"],
-            cwd=str(LIVE_ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            env=child_env,
-        )
-        launched_procs.append(p_fleet)
+        # Launch Decide & Execute loop if not running
+        if not decide_alive:
+            p_fleet = subprocess.Popen(
+                [sys.executable, "-m", "core_brain.trader_loop", "--live",
+                 "--no-reconcile", "--no-sweep", "--interval", "5", "--max-markets", "1"],
+                cwd=str(LIVE_ROOT),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=child_env,
+            )
+            launched_procs.append(p_fleet)
+            decide_entry = {"pid": p_fleet.pid, "started_at": time.time()}
+        else:
+            decide_entry = service_entry(saved_procs, "decide")
 
         # Load existing procs file to preserve starting_account_value if present
         existing_starting_value = None
@@ -782,10 +789,9 @@ def start_bot() -> dict:
                 pass
 
         saved_procs = {
-            "filter": {"pid": p_scr.pid, "started_at": time.time()},
-            "query": {"pid": p_eng.pid, "started_at": time.time(),
-                      "sweep_interval_sec": sweep_interval},
-            "decide": {"pid": p_fleet.pid, "started_at": time.time()},
+            "filter": filter_entry,
+            "query": query_entry,
+            "decide": decide_entry,
         }
         # Capture starting capital: a real snapshot of account equity at the
         # moment the bot is toggled ON. The kpi.py report uses

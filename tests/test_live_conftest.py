@@ -41,12 +41,12 @@ def test_scrub_credential_env_actively_removes_populated_vars(monkeypatch):
     for var in REQUIRED_CREDENTIAL_VARS:
         monkeypatch.setenv(var, "secret-test-token")
 
-    # Re-apply scrub fixture logic
-    for var in root_conftest.CREDENTIAL_VARS:
-        monkeypatch.delenv(var, raising=False)
+    # Invoke conftest scrub implementation
+    root_conftest.scrub_credentials(monkeypatch)
 
     for var in REQUIRED_CREDENTIAL_VARS:
         assert var not in os.environ, f"{var} was not scrubbed from environment"
+
 
 
 

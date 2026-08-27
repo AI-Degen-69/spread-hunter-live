@@ -41,11 +41,17 @@ def pytest_configure(config):
     )
 
 
-@pytest.fixture(autouse=True)
-def scrub_credential_env(monkeypatch):
+def scrub_credentials(monkeypatch) -> None:
     """Scrub venue credentials and sensitive endpoint configs from os.environ."""
     for var in CREDENTIAL_VARS:
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def scrub_credential_env(monkeypatch):
+    """Scrub venue credentials and sensitive endpoint configs from os.environ."""
+    scrub_credentials(monkeypatch)
+
 
 
 def _is_loopback(address):

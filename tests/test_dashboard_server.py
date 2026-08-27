@@ -1788,14 +1788,24 @@ def test_market_link_generates_safe_hyperlinks():
 
 @pytest.mark.skipif(NODE is None, reason="node not installed")
 def test_market_table_headers_and_cells_alignment():
-    """Assert Market Inspection table has 6 headers and rendered cells align correctly."""
+    """Assert Market Inspection table has 6 headers and rendered cells align correctly.
+
+    How to verify:
+        Prerequisite: Node.js installed and on PATH.
+        PowerShell:
+            python -m pytest tests/test_dashboard_server.py -k test_market_table_headers_and_cells_alignment
+        Expected output: 1 passed.
+    """
     index_html = _read_static("index.html")
-    # Parse table headers from index.html
+    # Parse table headers strictly from the #market-table thead row
     import re
-    th_matches = re.findall(r"<th>(.*?)</th>", index_html)
-    # Market table headers
+    table_match = re.search(r'<table id="market-table">.*?<thead><tr>(.*?)</tr></thead>', index_html, re.DOTALL)
+    assert table_match is not None, "Could not find #market-table thead in index.html"
+    th_matches = re.findall(r"<th>(.*?)</th>", table_match.group(1))
+
+    # Market table headers in exact order
     expected_headers = ["Market", "Commit ($)", "Hedge", "Realized P&L", "Fills", "Status"]
-    assert all(h in th_matches for h in expected_headers), f"Headers missing in index.html: {expected_headers}"
+    assert th_matches == expected_headers, f"Headers mismatch in index.html: expected {expected_headers}, got {th_matches}"
 
     harness = Path(__file__).resolve().parent / "js" / "render_markets_harness.js"
     app_js = Path(__file__).resolve().parent.parent / "dashboard" / "static" / "app.js"
@@ -1810,6 +1820,7 @@ def test_market_table_headers_and_cells_alignment():
     assert out.get("rendered") is True, f"Render failed: {out}"
     assert out.get("cellCount") == 6, f"Expected 6 cells, got {out.get('cellCount')}: {out}"
 
+    # Row 1 with positive Realized P&L
     cells = out["cells"]
     # 0: Market (title, slug, link, badge)
     assert "Will BTC hit 100k by March?" in cells[0]
@@ -1827,3 +1838,9 @@ def test_market_table_headers_and_cells_alignment():
     assert "Hedged" not in cells[4]
     # 5: Status -> QUOTING
     assert "QUOTING" in cells[5]
+
+    # Row 2 with null Realized P&L (cell 3 should render '--')
+    null_cells = out.get("nullPnlCells", [])
+    assert len(null_cells) == 6, f"Expected 6 cells for null PnL market, got {len(null_cells)}"
+    assert null_cells[3] == "--", f"Expected '--' for null realized_pnl, got {null_cells[3]}"
+

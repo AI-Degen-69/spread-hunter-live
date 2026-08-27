@@ -70,7 +70,7 @@ global.localStorage = {
 
 const mod = require(appJsPath);
 
-// Sample test data with distinct values for each metric
+// Sample test data with distinct values for each metric, plus a market with null realized_pnl
 const sampleKpi = {
   by_market: {
     '0xcond1234': {
@@ -81,6 +81,15 @@ const sampleKpi = {
       balance: 1.0, // => Hedged
       fills_count: 7,
       quotes_count: 3, // => QUOTING
+    },
+    '0xcond5678': {
+      title: 'Will ETH hit 4k by April?',
+      slug: 'eth-4k-april',
+      total_cost: 10.00,
+      realized_pnl: null, // => null realized PnL should render '--'
+      balance: 0.5, // => One-Sided
+      fills_count: 2,
+      quotes_count: 0, // => IDLE
     },
   },
 };
@@ -110,20 +119,20 @@ if (typeof mod.renderMarkets === 'function') {
   const marketBody = document.getElementById('market-body');
   const html = marketBody.innerHTML;
 
-  // Extract td cells from the rendered HTML using regex for harness
-  const rowMatch = html.match(/<tr[^>]*class="market-row[^"]*"[^>]*>([\s\S]*?)<\/tr>/i);
-  if (rowMatch) {
-    const rowContent = rowMatch[1];
-    const tdMatches = [...rowContent.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)];
-    const cells = tdMatches.map((m) => {
-      // Strip html tags for plain text inspection
-      return m[1].replace(/<[^>]+>/g, '').trim();
+  // Extract all market-row elements
+  const rowMatches = [...html.matchAll(/<tr[^>]*class="market-row[^"]*"[^>]*>([\s\S]*?)<\/tr>/gi)];
+  if (rowMatches.length > 0) {
+    const rows = rowMatches.map((rm) => {
+      const rowContent = rm[1];
+      const tdMatches = [...rowContent.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi)];
+      return tdMatches.map((m) => m[1].replace(/<[^>]+>/g, '').trim());
     });
     output = {
       rendered: true,
       html: html,
-      cellCount: cells.length,
-      cells: cells,
+      cellCount: rows[0].length,
+      cells: rows[0],
+      nullPnlCells: rows[1] || [],
     };
   } else {
     output = { rendered: false, html: html, error: 'No market-row found' };

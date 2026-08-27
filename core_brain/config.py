@@ -1027,23 +1027,27 @@ def load() -> MakerConfig:
     sbg = os.environ.get("HUNTER_SINGLE_BUY_GRACE_SEC")
     if sbg and sbg.strip():
         val = float(sbg)
-        if math.isfinite(val) and val >= 0:
-            kw["single_buy_grace_sec"] = val
+        if not math.isfinite(val) or val < 0:
+            raise ValueError(f"HUNTER_SINGLE_BUY_GRACE_SEC must be finite and non-negative, got: {val}")
+        kw["single_buy_grace_sec"] = val
     sblp = os.environ.get("HUNTER_SINGLE_BUY_MAX_LOSS_PCT")
     if sblp and sblp.strip():
         val = float(sblp)
-        if math.isfinite(val) and 0.0 <= val <= 1.0:
-            kw["single_buy_max_loss_pct"] = val
+        if not math.isfinite(val) or not (0.0 <= val <= 1.0):
+            raise ValueError(f"HUNTER_SINGLE_BUY_MAX_LOSS_PCT must be between 0.0 and 1.0, got: {val}")
+        kw["single_buy_max_loss_pct"] = val
     sblu = os.environ.get("HUNTER_SINGLE_BUY_MAX_LOSS_USD")
     if sblu and sblu.strip():
         val = float(sblu)
-        if math.isfinite(val) and val >= 0:
-            kw["single_buy_max_loss_usd"] = val
+        if not math.isfinite(val) or val < 0:
+            raise ValueError(f"HUNTER_SINGLE_BUY_MAX_LOSS_USD must be finite and non-negative, got: {val}")
+        kw["single_buy_max_loss_usd"] = val
     mqs = os.environ.get("HUNTER_MAX_SHARES") or os.environ.get("SPREAD_HUNTER_MAX_SHARES")
     if mqs and mqs.strip():
         val = float(mqs)
-        if math.isfinite(val) and val > 0:
-            kw["max_quote_shares"] = val
+        if not math.isfinite(val) or val <= 0:
+            raise ValueError(f"HUNTER_MAX_SHARES must be strictly positive, got: {val}")
+        kw["max_quote_shares"] = val
     return MakerConfig(**kw)
 
 # hook probe

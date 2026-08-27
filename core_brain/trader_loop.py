@@ -631,6 +631,8 @@ def _market_specs(max_markets: Optional[int] = None, registry=None) -> list[dict
                 active_gm = next((gm for gm in gms if gm.cid == active_cid), None)
                 if active_gm:
                     gms = [active_gm]
+                else:
+                    return []
         except Exception as e:
             log.warning("active orders lookup failed in _market_specs: %s", e)
             raise

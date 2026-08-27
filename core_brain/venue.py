@@ -72,8 +72,11 @@ def client(funder: str | None = None):
     address can be balance-checked before it is committed to .env.
     """
     if not (os.environ.get("POLY_PRIVATE_KEY") or os.environ.get("POLY_KEY")):
-        from dotenv import load_dotenv
-        load_dotenv(override=True)
+        from dotenv import dotenv_values
+        vals = dotenv_values()
+        for k in ("POLY_PRIVATE_KEY", "POLY_KEY", "POLY_FUNDER", "POLY_PASSPHRASE", "POLY_API_KEY", "POLY_SECRET"):
+            if k in vals and not os.environ.get(k):
+                os.environ[k] = vals[k]
     from py_clob_client_v2.client import ClobClient
 
     key = os.environ.get("POLY_PRIVATE_KEY") or os.environ.get("POLY_KEY")

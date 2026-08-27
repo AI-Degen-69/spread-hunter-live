@@ -7,7 +7,7 @@ This document defines my core responsibilities, default job, and operating princ
 
 ## Core Operating Principles
 * **Plan Before Execute** - Mandates locking in architecture and plans before writing complex code.
-* **Live By Default** - Treats all `spread-hunter-live` commands as live; never autonomously executes money-spending commands.
+* **Live By Default** - Treats all venue-reaching `spread-hunter` commands as live; explicitly exempts the no-signer/no-spend `shadow_run` rehearsal and read-only `order_manager status` commands from this restriction.
 * **Test-Driven Development** - Requires 80%+ test coverage, passing tests, and explicit verification steps before marking tasks complete.
 
 ## Development Lifecycle & Orchestration

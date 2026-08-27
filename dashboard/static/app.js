@@ -157,11 +157,11 @@ if (syncBtn) {
     try {
       const res = await controlFetch('/api/system/sync');
       const data = await res.json().catch(() => ({}));
-      isWarning = (res.status === 207);
-      syncOk = (data.ok === true) && res.ok;
       const steps = data.steps || {};
       const rec = steps.reconcile || {};
       const vs = steps.venue_sync || {};
+      isWarning = (res.status === 207) || (vs.venue_open_unmeasured === true);
+      syncOk = (data.ok === true) && res.ok;
       const localOpen = data.state?.local_open_orders;
       const venueOpen = (data.state?.venue_open_orders != null ? data.state.venue_open_orders : rec.open_orders_count);
       const venueOpenDisp = (venueOpen != null ? venueOpen : 0);
@@ -178,7 +178,11 @@ if (syncBtn) {
       if (typeof localOpen === 'number' && typeof venueOpen === 'number' && localOpen !== venueOpen) {
         lines.push(`Fixed drift: dashboard had ${localOpen} open → now ${venueOpen} (venue truth)`);
       }
-      if (vs.raw_open_rows === 0 && !vs.venue_open_unmeasured) lines.push('Positions: 0 on venue — dashboard exposure zeroed');
+      if (vs.venue_open_unmeasured) {
+        lines.push('Positions unmeasured: prior exposure retained');
+      } else if (vs.raw_open_rows === 0) {
+        lines.push('Positions: 0 on venue — dashboard exposure zeroed');
+      }
       const msg = lines.join(' · ') || (data.ok ? 'Sync ok — dashboard now matches venue.' : 'Sync finished with warnings');
       // Reuse ticker as a transient banner; also trigger immediate re-poll.
       appendTickerEvent(`[SYNC] ${msg}`, 'Dashboard synced with Polymarket (read-only).', '');

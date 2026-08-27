@@ -31,6 +31,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LOG = ROOT / "runtime" / "rerank.log"
 
+# Capture original OS environment override before any load_dotenv mutation.
+_ORIGINAL_ENV_TOP = os.environ.get("SH_TOP_MARKETS")
+
 # Load .env before any SH_* parsing at import time: values that live only in
 # the file (not the process environment) would otherwise fall back to the
 # hardcoded defaults, and a 600s test default would hide the mis-load.
@@ -60,9 +63,8 @@ def _get_top_markets() -> int:
     try:
         from dotenv import dotenv_values
         file_vals = dotenv_values(ROOT / ".env")
-        env_top = os.environ.get("SH_TOP_MARKETS")
-        if env_top is not None and str(env_top).strip() != "":
-            raw_top = str(env_top).strip()
+        if _ORIGINAL_ENV_TOP is not None and str(_ORIGINAL_ENV_TOP).strip() != "":
+            raw_top = str(_ORIGINAL_ENV_TOP).strip()
         else:
             raw_top = str(file_vals.get("SH_TOP_MARKETS", "2") or "2").strip()
         val = int(raw_top)
@@ -70,7 +72,10 @@ def _get_top_markets() -> int:
     except Exception:
         # Fallback: honour process env, else default.
         try:
-            raw_top = os.environ.get("SH_TOP_MARKETS", "2").strip()
+            if _ORIGINAL_ENV_TOP is not None and str(_ORIGINAL_ENV_TOP).strip() != "":
+                raw_top = str(_ORIGINAL_ENV_TOP).strip()
+            else:
+                raw_top = "2"
             val = int(raw_top)
             return val if val > 0 else 2
         except Exception:

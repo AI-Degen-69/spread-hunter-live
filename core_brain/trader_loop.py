@@ -488,6 +488,7 @@ def _visit_one(
     try:
         market = seam.fetch_market(cid)
     except Exception as e:
+        log.warning("[MARKET LOOKUP ERROR] %s | %s", cid[:16], e)
         emit_fn(service="decide", cycle=cycle, phase="quoting",
                 action="market_error", market_slug="",
                 reason=f"{type(e).__name__}: {e}")
@@ -546,6 +547,13 @@ def _visit_one(
             extra={"intent_count": len(intents), "condition_id": cid})
 
     if not live:
+        if intents:
+            orders_desc = ", ".join(f"{i.side} {i.size}sh @ ${i.price:.3f}" for i in intents)
+            log.info("[DRY RUN QUOTE] %s | Planned %d orders: %s", title, len(intents), orders_desc)
+        elif why:
+            log.info("[DRY RUN SKIPPED] %s | %s", title, why)
+        else:
+            log.info("[DRY RUN IDLE] %s | No quote action needed", title)
         return LiveFleetResult(
             status="DRY_RUN" if intents else "DECLINED",
             condition_id=cid, title=title, why=why, intents=list(intents))

@@ -10,6 +10,9 @@ import pytest
 CREDENTIAL_VARS = (
     "POLY_PRIVATE_KEY",
     "POLY_KEY",
+    "POLY_API_KEY",
+    "POLY_API_SECRET",
+    "POLY_API_PASSPHRASE",
     "POLY_FUNDER",
     "POLY_SIG_TYPE",
     "PRIVATE_KEY",

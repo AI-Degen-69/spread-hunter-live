@@ -258,18 +258,20 @@ def _decide_quotes_from_mid(
             heavy_mid = mid_price(heavy_book.get("best_bid"),
                                   heavy_book.get("best_ask"))
             heavy_avg = inv.avg(heavy)
+            pair_cap = getattr(cfg, "max_pair_cost", 0.99)
             if heavy_mid is not None and heavy_avg > 0 and heavy_mid < heavy_avg:
-                out.append(QuoteIntent(
-                    side=side, token_id=book.get("token_id"),
-                    price=round(ba, 4), size=int(deficit), mid=mid,
-                    edge_vs_mid=mid - ba, crossed=True,
-                    reason=(f"EMERGENCY hedge: {deficit:.0f}sh short of "
-                            f"{heavy} = ${deficit_usd:.0f} vs "
-                            f"${cfg.max_naked_usd:.0f} cap, "
-                            f"{heavy} mid {heavy_mid:.3f} under avg "
-                            f"{heavy_avg:.3f} -- crossing at {ba:.3f}"),
-                ))
-                continue
+                if (heavy_avg + ba) <= pair_cap:
+                    out.append(QuoteIntent(
+                        side=side, token_id=book.get("token_id"),
+                        price=round(ba, 4), size=int(deficit), mid=mid,
+                        edge_vs_mid=mid - ba, crossed=True,
+                        reason=(f"EMERGENCY hedge: {deficit:.0f}sh short of "
+                                f"{heavy} = ${deficit_usd:.0f} vs "
+                                f"${cfg.max_naked_usd:.0f} cap, "
+                                f"{heavy} mid {heavy_mid:.3f} under avg "
+                                f"{heavy_avg:.3f} -- crossing at {ba:.3f}"),
+                    ))
+                    continue
 
         # STRICT PAIRED INVENTORY: Block adding to the heavy side when unhedged inventory exists
         if getattr(cfg, "strict_paired_inventory", True) and imbalance > 0:
@@ -283,22 +285,6 @@ def _decide_quotes_from_mid(
         if price is None or provisional is None or band is None:
             blocked.append(f"{side}: price calculation failed")
             continue
-
-        # If quoting the deficit side, enforce pair ceiling & inversion protection
-        if getattr(cfg, "strict_paired_inventory", True) and imbalance < 0:
-            heavy_side = "DOWN" if side == "UP" else "UP"
-            heavy_cost_avg = inv.avg(heavy_side)
-            if heavy_cost_avg > 0:
-                if ba is not None and (heavy_cost_avg + ba) > 1.00:
-                    blocked.append(
-                        f"{side}: pair inverted (heavy avg {heavy_cost_avg:.3f} + ask {ba:.3f} = "
-                        f"{heavy_cost_avg + ba:.3f} > 1.00)"
-                    )
-                    continue
-                pair_cap = getattr(cfg, "max_pair_cost", 0.99)
-                target_cap = round(pair_cap - heavy_cost_avg, 4)
-                if price > target_cap:
-                    price = target_cap
 
         # THE HARD BLOCK (strategy/risk.py).
         why = risk.hard_block(cfg, inv, side, provisional, book,

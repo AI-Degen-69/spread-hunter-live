@@ -49,21 +49,56 @@ def test_unhedged_heavy_side_strictly_blocked():
     assert intents[0].price <= 0.69
 
 
+def test_deficit_below_min_quote_shares_returns_zero():
+    """Deficits smaller than venue min_quote_shares (e.g. 3 shares < 5) return 0 to prevent overshoot."""
+    cfg = MakerConfig(
+        strict_paired_inventory=True,
+        size_mode="shares",
+        quote_shares=20,
+        min_quote_shares=5,
+    )
+    inv = Inventory(up_shares=3, down_shares=0, up_cost=0.90, down_cost=0.0)
+    assert size_for(cfg, inv, "DOWN", 0.65) == 0
+
+
 def test_pair_inversion_blocks_deficit_quote():
-    """When market moves against unhedged position (heavy_avg + opp_ask > 1.00), quote is blocked."""
+    """When market moves against unhedged position (provisional + heavy_avg >= max_pair_cost), quote is blocked."""
     cfg = MakerConfig(
         strict_paired_inventory=True,
         quote_shares=20,
         min_quote_shares=5,
         max_pair_cost=0.99,
     )
-    inv = Inventory(up_shares=10, down_shares=0, up_cost=4.0, down_cost=0.0)  # avg UP = 0.40
+    inv = Inventory(up_shares=10, down_shares=0, up_cost=6.0, down_cost=0.0)  # avg UP = 0.60
     up = {"best_bid": 0.20, "best_ask": 0.25, "token_id": "asset_id_up"}
-    down = {"best_bid": 0.72, "best_ask": 0.75, "token_id": "asset_id_dn"}  # 0.40 + 0.75 = 1.15 > 1.00
+    down = {"best_bid": 0.42, "best_ask": 0.45, "token_id": "asset_id_dn"}  # mid 0.435 -> prov ~0.415 + 0.60 = 1.015 >= 0.99
 
     intents, why = decide_quotes(cfg, up, down, inv, 1e9, None)
     assert intents == []
-    assert "pair inverted" in why
+    assert "pays exactly $1.00" in why or "cap" in why
+
+
+def test_emergency_hedge_pair_inversion_blocked():
+    """Emergency hedge path rejects crossing when heavy_avg + ask > max_pair_cost, falling through to maker quote."""
+    cfg = MakerConfig(
+        enable_emergency_hedge=True,
+        max_naked_usd=5.0,
+        emergency_hedge_frac=0.5,
+        max_pair_cost=0.99,
+    )
+    # 10 UP shares @ $0.60 ($6.00 deficit usd >= $2.50 threshold)
+    inv = Inventory(up_shares=10, down_shares=0, up_cost=6.0, down_cost=0.0)  # avg UP = 0.60
+    # UP mid falls to 0.40 (under avg 0.60)
+    up = {"best_bid": 0.38, "best_ask": 0.42, "token_id": "asset_id_up"}
+    # DOWN ask has spiked to 0.50 -> 0.60 + 0.50 = 1.10 > 0.99
+    down = {"best_bid": 0.35, "best_ask": 0.50, "token_id": "asset_id_dn"}
+
+    intents, why = decide_quotes(cfg, up, down, inv, 1e9, None)
+    # Emergency crossing at 0.50 must NOT be emitted (crossed=False only)
+    assert not any(i.crossed for i in intents)
+    # Any produced maker intent must respect the pair cap (price <= 0.99 - 0.60 = 0.39)
+    for intent in intents:
+        assert intent.price <= 0.39
 
 
 def test_proportional_merge_cost_basis_math(tmp_path, monkeypatch):

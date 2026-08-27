@@ -1786,5 +1786,61 @@ def test_market_link_generates_safe_hyperlinks():
     assert ".market-link" in styles_css
 
 
+@pytest.mark.skipif(NODE is None, reason="node not installed")
+def test_market_table_headers_and_cells_alignment():
+    """Assert Market Inspection table has 6 headers and rendered cells align correctly.
 
+    How to verify:
+        Prerequisite: Node.js installed and on PATH.
+        PowerShell:
+            python -m pytest tests/test_dashboard_server.py -k test_market_table_headers_and_cells_alignment
+        Expected output: 1 passed.
+    """
+    index_html = _read_static("index.html")
+    # Parse table headers strictly from the #market-table thead row
+    import re
+    table_match = re.search(r'<table id="market-table">.*?<thead><tr>(.*?)</tr></thead>', index_html, re.DOTALL)
+    assert table_match is not None, "Could not find #market-table thead in index.html"
+    th_matches = re.findall(r"<th>(.*?)</th>", table_match.group(1))
+
+    # Market table headers in exact order
+    expected_headers = ["Market", "Commit ($)", "Hedge", "Realized P&L", "Fills", "Status"]
+    assert th_matches == expected_headers, f"Headers mismatch in index.html: expected {expected_headers}, got {th_matches}"
+
+    harness = Path(__file__).resolve().parent / "js" / "render_markets_harness.js"
+    app_js = Path(__file__).resolve().parent.parent / "dashboard" / "static" / "app.js"
+
+    res = subprocess.run(
+        [NODE, str(harness), str(app_js)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout)
+
+    assert out.get("rendered") is True, f"Render failed: {out}"
+    assert out.get("cellCount") == 6, f"Expected 6 cells, got {out.get('cellCount')}: {out}"
+
+    # Row 1 with positive Realized P&L
+    cells = out["cells"]
+    # 0: Market (title, slug, link, badge)
+    assert "Will BTC hit 100k by March?" in cells[0]
+    # 1: Commit ($) -> $42.50
+    assert "$42.50" in cells[1]
+    # 2: Hedge -> Hedged
+    assert "Hedged" in cells[2]
+    assert "$" not in cells[2]
+    # 3: Realized P&L -> $15.75
+    assert "$15.75" in cells[3]
+    assert "$15.75" not in cells[1]
+    assert "$15.75" not in cells[2]
+    # 4: Fills -> plain fill count (7), not hedge text
+    assert cells[4] == "7"
+    assert "Hedged" not in cells[4]
+    # 5: Status -> QUOTING
+    assert "QUOTING" in cells[5]
+
+    # Row 2 with null Realized P&L (cell 3 should render '--')
+    null_cells = out.get("nullPnlCells", [])
+    assert len(null_cells) == 6, f"Expected 6 cells for null PnL market, got {len(null_cells)}"
+    assert null_cells[3] == "--", f"Expected '--' for null realized_pnl, got {null_cells[3]}"
 

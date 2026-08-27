@@ -854,8 +854,9 @@ function renderMarkets(kpi, state) {
         ${badgeHtml}
       </td>
       <td class="mono">${fmtUSD(m.total_cost)}</td>
+      <td><span class="pill ${hedged === 'Hedged' ? 'active' : 'reconnecting'}">${hedged}</span></td>
       <td class="mono">${esc(m.realized_pnl !== null && m.realized_pnl !== undefined ? fmtUSD(m.realized_pnl) : '--')}</td>
-      <td><span class="pill ${hedged === 'Hedged' ? 'active' : 'reconnecting'}">${fills_count} (${hedged})</span></td>
+      <td class="mono">${esc(fills_count)}</td>
       <td><span class="pill ${m.quotes_count > 0 ? 'active' : 'stopped'}">${m.quotes_count > 0 ? 'QUOTING' : 'IDLE'}</span></td>
     </tr>`;
 
@@ -1425,5 +1426,5 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderDbMode, renderServiceCards, fmtLocalTime, connectSSE, marketLink };
+  module.exports = { renderDbMode, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket };
 }

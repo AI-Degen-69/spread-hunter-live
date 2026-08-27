@@ -17,8 +17,10 @@ from pathlib import Path
 
 # Ensure project root is always first on sys.path for any runner (IDE or CLI)
 REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+repo_root_str = str(REPO_ROOT)
+while repo_root_str in sys.path:
+    sys.path.remove(repo_root_str)
+sys.path.insert(0, repo_root_str)
 
 import pytest
 

@@ -87,8 +87,8 @@ def test_every_engine_module_resolves_inside_live():
 
 
 def test_conftest_places_repo_root_on_sys_path():
-    """Conftest must guarantee repo root is on sys.path for standalone and IDE test execution."""
+    """Conftest must guarantee repo root is first on sys.path for standalone and IDE test execution."""
     import sys
     from tests.conftest import REPO_ROOT
-    assert str(REPO_ROOT) in sys.path
+    assert sys.path[0] == str(REPO_ROOT)
 

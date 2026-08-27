@@ -2700,39 +2700,56 @@ def venue_sync(funder=None, db_path=None, quiet=False):
 
     # mark from compose_account_mark has no open_positions key -- we never
     # propagated it. Re-fetch directly so the float_mark reflects venue truth.
-    open_positions = fetch_open_positions(who, timeout=15.0) or []
-    if open_positions:
-        committed = 0.0
-        unrealized = 0.0
-        # Group positions by condition_id to compute unpaired exposure per market.
-        # A balanced pair (YES/NO on same condition) has naked = 0; a single leg
-        # or imbalanced pair contributes the unpaired amount.
-        condition_groups = {}
-        for op in open_positions:
-            if not isinstance(op, dict):
-                continue
-            try:
-                committed += float(op.get("initialValue") or 0.0)
-                unrealized += float(op.get("cashPnl") or 0.0)
-                cid = op.get("conditionId")
-                if cid:
-                    if cid not in condition_groups:
-                        condition_groups[cid] = []
-                    condition_groups[cid].append(float(op.get("currentValue") or 0.0))
-            except (TypeError, ValueError):
-                continue
+    # Always log a mark, even when 0 positions: a missing mark is read as
+    # "unmeasured" (NULL), not "flat", so an account that actually holds
+    # nothing would keep displaying stale exposure from the last non-zero mark
+    # until the next fill. Zero is a measurement.
+    open_positions = fetch_open_positions(who, timeout=15.0)
+    if open_positions is None:
+        open_positions = []
+        venue_open_unmeasured = True
+    else:
+        venue_open_unmeasured = False
 
-        # Naked = sum of unpaired exposure across all markets. For each condition,
-        # the paired amount is min(values), the remainder is unpaired.
-        naked = 0.0
-        try:
-            for cid, values in condition_groups.items():
-                if values:
-                    # Paired = the smaller leg; unpaired = sum - 2*paired
-                    total_in_cond = sum(values)
-                    paired = min(values)
-                    naked += max(0.0, total_in_cond - 2 * paired)
-        except Exception:
+    # Only write a float_mark when the venue actually answered. A failed GET
+    # (None) leaves the previous reading intact rather than fabricating 0.
+    if not venue_open_unmeasured:
+        if open_positions:
+            committed = 0.0
+            unrealized = 0.0
+            # Group positions by condition_id to compute unpaired exposure per market.
+            # A balanced pair (YES/NO on same condition) has naked = 0; a single leg
+            # or imbalanced pair contributes the unpaired amount.
+            condition_groups = {}
+            for op in open_positions:
+                if not isinstance(op, dict):
+                    continue
+                try:
+                    committed += float(op.get("initialValue") or 0.0)
+                    unrealized += float(op.get("cashPnl") or 0.0)
+                    cid = op.get("conditionId")
+                    if cid:
+                        if cid not in condition_groups:
+                            condition_groups[cid] = []
+                        condition_groups[cid].append(float(op.get("currentValue") or 0.0))
+                except (TypeError, ValueError):
+                    continue
+
+            # Naked = sum of unpaired exposure across all markets. For each condition,
+            # the paired amount is min(values), the remainder is unpaired.
+            naked = 0.0
+            try:
+                for cid, values in condition_groups.items():
+                    if values:
+                        # Paired = the smaller leg; unpaired = sum - 2*paired
+                        total_in_cond = sum(values)
+                        paired = min(values)
+                        naked += max(0.0, total_in_cond - 2 * paired)
+            except Exception:
+                naked = 0.0
+        else:
+            committed = 0.0
+            unrealized = 0.0
             naked = 0.0
 
         registry.log_float_mark(

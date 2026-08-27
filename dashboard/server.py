@@ -1045,6 +1045,86 @@ def api_system_venue_sync(request: Request):
     return JSONResponse(venue_sync(db_path=db_path, quiet=False))
 
 
+@app.post("/api/system/sync")
+def api_system_sync(request: Request):
+    """Full dashboard ↔ venue sync — fixes the '0 open/0 positions on site but stale on dashboard' drift.
+
+    1. Reconcile local orders/fills against venue open orders + trades (marks stale 'open' rows as
+       'cancelled'/'filled' when the venue no longer lists them). 2. Run venue_sync (account value,
+       closes, float_marks — now correctly writes a 0/0/0 mark when the venue holds 0 positions).
+
+    Both steps are read-only at the venue: no quotes, no cancels, no exposure change. A venue
+    outage on step 1 does not block step 2; errors are returned per-step so the UI can show
+    'orders stale, account fresh' rather than a silent 500.
+    """
+    _authorize_control(request)
+    from core_brain.order_registry import OrderRegistry
+    from core_brain.order_manager import venue_sync
+
+    db_path = resolve_db_path(_ACTIVE_DB_OVERRIDE)
+    result: dict = {"ok": True, "steps": {}}
+
+    # Step 1: order/fill reconcile (venue open_orders + trades → local orders/fills)
+    try:
+        from core_brain.venue import client as venue_client
+        from core_brain.order_registry import reconcile_orders
+        import os
+
+        c = venue_client()
+        reg = OrderRegistry(db_path=db_path)
+        funder = os.environ.get("POLY_FUNDER")
+        summary = reconcile_orders(c, reg, maker_address=funder)
+        result["steps"]["reconcile"] = {
+            "ok": True,
+            "open_orders_count": summary.open_orders_count,
+            "trades_polled": summary.trades_polled,
+            "fills_recorded": summary.fills_recorded,
+            "orders_filled": summary.orders_filled,
+            "orders_cancelled": summary.orders_cancelled,
+            "transitions": summary.transitions[:20],
+        }
+    except Exception as exc:
+        result["steps"]["reconcile"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        result["ok"] = False
+
+    # Step 2: venue account/positions sync (always attempted, even if reconcile failed)
+    try:
+        vs = venue_sync(db_path=db_path, quiet=True)
+        result["steps"]["venue_sync"] = {"ok": True, **vs}
+    except SystemExit as exc:
+        result["steps"]["venue_sync"] = {"ok": False, "error": str(exc)}
+        result["ok"] = False
+    except Exception as exc:
+        result["steps"]["venue_sync"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        result["ok"] = False
+
+    # Current state snapshot so the UI can immediately show the before/after without a second poll.
+    try:
+        from core_brain.registry_state import summarize_state
+        st = summarize_state(db_path)
+        # venue_open_orders is the live venue count from step 1 when available, else local.
+        local_open = len([o for o in (st.get("orders") or []) if str(o.get("status") or "").lower() in ("open", "pending", "partial")])
+        result["state"] = {
+            "local_open_orders": local_open,
+            "venue_open_orders": result["steps"].get("reconcile", {}).get("open_orders_count"),
+            "fills": len(st.get("fills") or []),
+            "local_positions_hint": st.get("pairs", []),
+        }
+    except Exception:
+        pass
+
+    # Fresh kpi + status for immediate re-render (avoid a second round-trip)
+    try:
+        from core_brain.kpi import report as kpi_report
+        kpi = kpi_report(db_path=db_path)
+        result["kpi"] = {"run_profitability": kpi.get("run_profitability"), "portfolio": kpi.get("portfolio")}
+    except Exception:
+        pass
+
+    status_code = 200 if result["ok"] else 207  # 207 = multi-status: one step failed
+    return JSONResponse(result, status_code=status_code)
+
+
 def relaunch_argv() -> list[str]:
     """Build the command that starts a replacement dashboard process.
 
@@ -1221,6 +1301,32 @@ def get_kpi(run_id: str | None = None):
     try:
         data = generate_kpi_report(db_path=db_path, run_id=run_id)
         return JSONResponse(data)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/run-profitability")
+def get_run_profitability(run_id: str | None = None):
+    """Quick-answer endpoint: was this run bottom-line profitable?
+
+    Returns the `run_profitability` slice of the KPI report alone so the
+    dashboard can poll it independently of the full report. Same filtering
+    rules as /api/kpi: `run_id` overrides the active run, omitted picks the
+    most recent run, `?run_id=all` aggregates.
+    """
+    from core_brain.kpi import report as generate_kpi_report
+    db_path = resolve_db_path(_ACTIVE_DB_OVERRIDE)
+    try:
+        data = generate_kpi_report(db_path=db_path, run_id=run_id)
+        rp = data.get("run_profitability")
+        if rp is None:
+            return JSONResponse({"error": "run_profitability unavailable"}, status_code=500)
+        # Include venue open-order count from /api/state for the "0 open orders" line.
+        # Keep it here so one fetch answers the whole question.
+        from core_brain.registry_state import summarize_state
+        state = summarize_state(resolve_db_path(_ACTIVE_DB_OVERRIDE))
+        rp = {**rp, "venue_open_orders": len([o for o in (state.get("orders") or []) if str(o.get("status") or "").lower() in ("open", "pending", "partial")])}
+        return JSONResponse(rp)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 

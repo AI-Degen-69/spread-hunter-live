@@ -44,13 +44,26 @@ RING_PATH = ROOT / "runtime" / "cycle_events.jsonl"
 # nothing new. 600 (10 min) keeps the venue scoring (a full pass over ~200
 # candidates) from becoming a burden while cutting the worst-case wait from an
 # hour to ten minutes.
-raw_top = os.environ.get("SH_TOP_MARKETS", "1").strip()
+def _get_top_markets() -> int:
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(ROOT / ".env", override=False)
+    except Exception:
+        pass
+    raw_top = os.environ.get("SH_TOP_MARKETS", "2").strip()
+    try:
+        val = int(raw_top)
+        return val if val > 0 else 2
+    except Exception:
+        return 2
+
+raw_interval = os.environ.get("SH_FILTER_INTERVAL_SEC", "600").strip()
 try:
-    TOP = int(raw_top)
-    if TOP <= 0:
-        raise ValueError(f"SH_TOP_MARKETS must be positive, got {TOP}")
+    INTERVAL_SEC = int(raw_interval)
+    if INTERVAL_SEC <= 0:
+        raise ValueError(f"SH_FILTER_INTERVAL_SEC must be positive, got {INTERVAL_SEC}")
 except Exception as e:
-    raise ValueError(f"Invalid SH_TOP_MARKETS {raw_top!r}: {e}") from e
+    raise ValueError(f"Invalid SH_FILTER_INTERVAL_SEC {raw_interval!r}: {e}") from e
 
 
 def _emit_scan_event(record: dict) -> None:
@@ -73,7 +86,7 @@ def _emit_scan_event(record: dict) -> None:
         pass
 
 
-def _rank_cmd(top: int = TOP) -> list[str]:
+def _rank_cmd(top: int = 2) -> list[str]:
     """The ranker invocation, with any staged gate trials from config appended.
 
     The depth trial (U32) and the volume trial (U36) stay opt-in: when
@@ -117,8 +130,9 @@ def main() -> None:
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         t0 = time.time()
         try:
+            top_n = _get_top_markets()
             r = subprocess.run(
-                _rank_cmd(TOP),
+                _rank_cmd(top_n),
                 cwd=str(ROOT), capture_output=True, text=True, timeout=600)
             out = r.stdout or ""
             err = "" if r.returncode == 0 else f"\nEXIT {r.returncode}\n{r.stderr}"

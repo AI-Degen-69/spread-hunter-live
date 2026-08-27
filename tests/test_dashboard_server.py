@@ -1724,14 +1724,21 @@ def test_event_ticker_formats_timestamps_in_local_time():
     assert res.returncode == 0, res.stderr
     out = json.loads(res.stdout)
 
-    # 14:28:00 UTC in UTC+3 is 17:28
+    # Local time matches expected conversion in UTC+3 and differs from raw UTC
     assert out["valid"] is not None
-    assert "17:28" in out["valid"]
+    assert out["valid"] == out["expected"]
+    assert "14:28:00" not in out["valid"]
     assert out["empty"] == ""
     assert out["invalid"] == ""
     assert out["nullVal"] == ""
 
+    # SSE Event Ticker integration renders the local-formatted timestamp
+    assert out["tickerHtml"] is not None
+    assert out["expected"] in out["tickerHtml"]
+    assert "14:28:00" not in out["tickerHtml"]
+
     # Live Event Ticker banner indicates local time
     index_html = _read_static("index.html")
     assert "Times shown in local time" in index_html
+
 

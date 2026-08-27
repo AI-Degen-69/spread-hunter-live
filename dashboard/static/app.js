@@ -54,6 +54,12 @@ function fmtVal(v, cls) {
   return `<span class="kpi-value${cls || ''}${nullCls}">${esc(v)}</span>`;
 }
 
+/**
+ * Format an ISO UTC timestamp into the viewer's local time string.
+ * Returns an empty string if timestamp is missing or invalid.
+ * @param {string|null|undefined} ts - ISO 8601 UTC timestamp string
+ * @returns {string} Localized time string or empty string
+ */
 function fmtLocalTime(ts) {
   if (!ts) return '';
   const d = new Date(ts);
@@ -1402,5 +1408,5 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderDbMode, renderServiceCards, fmtLocalTime };
+  module.exports = { renderDbMode, renderServiceCards, fmtLocalTime, connectSSE };
 }

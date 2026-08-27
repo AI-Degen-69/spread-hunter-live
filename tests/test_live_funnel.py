@@ -242,3 +242,56 @@ def test_report_funnel_allowed_for_shadow_db_resolved_from_cwd(monkeypatch, tmp_
 
     rep = kpi_mod.report(db_path=shadow_db)
     assert rep["funnel"]["source"] == "screener"
+
+
+def test_funnel_from_pipeline_includes_slug_and_url(tmp_path):
+    """Graduated markets receive url & slug; rejected examples and raw candidates receive slug."""
+    pipeline = _write(tmp_path / "pipeline.json", {
+        "counts": {"funded": 10, "spread_universe": 5, "eligible": 1, "picked": 1},
+        "raw": {
+            "rewards": [{"title": "Reward Market", "slug": "slug-rew", "rate": 0.5}],
+            "spread": [{"title": "Spread Market", "slug": "slug-spr", "spread": 0.02}],
+        },
+        "rejections": [
+            {
+                "cause": "volume",
+                "n": 1,
+                "examples": [{"title": "Low Vol Mkt", "slug": "low-vol-slug", "reason": "too low"}],
+            }
+        ],
+        "final": [{"cid": "0x1", "title": "Winner Mkt", "slug": "winner-slug", "source": "spread"}],
+    })
+    markets = _write(tmp_path / "markets.json", [
+        {"cid": "0x1", "slug": "winner-slug", "title": "Winner Mkt"},
+        {"cid": "0x2", "title": "No Slug Mkt"},
+    ])
+    by_mkt = {
+        "0x1": {"url": "https://polymarket.com/market/winner-slug-override"},
+        "0x2": {},
+    }
+
+    f = _funnel_from_pipeline(by_mkt, pipeline_path=pipeline, markets_path=markets)
+    assert f is not None
+
+    # Graduated entries
+    grad = f["graduated"]
+    assert len(grad) == 2
+    assert grad[0]["slug"] == "winner-slug"
+    assert grad[0]["url"] == "https://polymarket.com/market/winner-slug-override"
+
+    # Fallback url generation when by_mkt has no custom url
+    assert grad[1]["slug"] == ""
+    assert grad[1]["url"] == ""
+
+    # Rejections carry slug
+    rej = f["filters"][0]
+    assert rej["examples"][0]["slug"] == "low-vol-slug"
+
+    # Raw candidates carry slug
+    assert f["raw"]["rewards"][0]["slug"] == "slug-rew"
+    assert f["raw"]["spread"][0]["slug"] == "slug-spr"
+
+    # Final candidates carry slug
+    assert f["final"][0]["slug"] == "winner-slug"
+
+

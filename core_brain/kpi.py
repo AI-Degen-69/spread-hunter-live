@@ -348,7 +348,11 @@ def _funnel_from_pipeline(
             "would_fund": int(r.get("would_fund") or 0),
             "traps": int(r.get("traps") or 0),
             "examples": [
-                {"title": e.get("title") or "", "reason": e.get("reason") or ""}
+                {
+                    "title": e.get("title") or "",
+                    "slug": e.get("slug") or "",
+                    "reason": e.get("reason") or "",
+                }
                 for e in (r.get("examples") or [])
             ],
         }
@@ -377,9 +381,12 @@ def _funnel_from_pipeline(
             continue
         cid = s.get("cid") or s.get("condition_id") or ""
         m = by_mkt.get(cid, {})
+        slug = s.get("slug") or s.get("market_slug") or ""
+        url = m.get("url") or (f"https://polymarket.com/market/{slug}" if slug else "")
         graduated.append({
             "condition_id": cid,
-            "slug": s.get("slug") or s.get("market_slug") or "",
+            "slug": slug,
+            "url": url,
             "title": s.get("title") or s.get("question") or "",
             "volume": s.get("volume_24h") or s.get("volume"),
             "spread": s.get("spread"),

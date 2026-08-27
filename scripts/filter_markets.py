@@ -935,6 +935,7 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
     for rate, m in cands[:24]:
         raw_rewards.append({
             "title": (m.get("question") or "")[:80],
+            "slug": m.get("market_slug") or m.get("slug") or "",
             "rate": round(rate, 2),
             "days": _days(m),
         })
@@ -942,6 +943,7 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
     for m in spread_cands[:24]:
         raw_spread.append({
             "title": (m.get("question") or "")[:80],
+            "slug": m.get("market_slug") or m.get("slug") or "",
             "volume": round(float(m.get("_volume_24h") or 0.0), 0),
             "spread": m.get("_spread"),
             "days": _days(m),
@@ -963,6 +965,7 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
             v = verdicts.get(id(r))
             examples.append({
                 "title": r["title"],
+                "slug": r.get("slug", ""),
                 "reason": r["reject_reason"],
                 "volume": r.get("volume_24h"),
                 "days": r.get("days_to_resolve"),
@@ -989,7 +992,7 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
             # shown as quoting, and it matches on this id. Without it every
             # picked market rendered twice in the passed column.
             "cid": r.get("cid") or "",
-            "title": r["title"], "source": r["source"],
+            "title": r["title"], "slug": r.get("slug", ""), "source": r["source"],
             "income": r.get("est_income"), "capital": r.get("est_capital"),
             "ret_day_pct": r.get("return_pct_day"),
             "volume": r.get("volume_24h"), "days": r.get("days_to_resolve"),

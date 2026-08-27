@@ -67,6 +67,21 @@ function fmtLocalTime(ts) {
   return d.toLocaleTimeString();
 }
 
+/**
+ * Render a safe external anchor tag or escaped text for a market object.
+ * @param {Object|null|undefined} m - Market object with title, slug, or url
+ * @returns {string} Safe HTML anchor tag or escaped text
+ */
+function marketLink(m) {
+  if (!m) return '--';
+  const name = m.title || m.name || m.slug || '--';
+  const url = m.url || (m.slug ? `https://polymarket.com/market/${m.slug}` : '');
+  if (url) {
+    return `<a href="${esc(url)}" class="market-link" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">${esc(name)}</a>`;
+  }
+  return esc(name);
+}
+
 /* ── controlFetch: CSRF-protected POST ── */
 function controlFetch(path) {
   return fetch(path, { method: 'POST', headers: { 'X-Control-Token': CONTROL_TOKEN } });
@@ -835,7 +850,7 @@ function renderMarkets(kpi, state) {
     body.innerHTML += `<tr class="market-row${isExpanded ? ' expanded' : ''}" data-cid="${esc(cid)}" tabindex="0" role="button" aria-expanded="${isExpanded}" aria-label="${isExpanded ? 'Collapse' : 'Expand'} market orders for ${esc(m.title || m.slug || cid.slice(0,10))}">
       <td>
         <span class="expand-chevron${isExpanded ? ' expanded' : ''}" aria-hidden="true">${hasOrders ? '▶' : ''}</span>
-        ${esc(m.title || m.slug || cid.slice(0,10))}
+        ${marketLink(m)}
         ${badgeHtml}
       </td>
       <td class="mono">${fmtUSD(m.total_cost)}</td>
@@ -861,7 +876,8 @@ function renderMarkets(kpi, state) {
     const cid = row.dataset.cid;
     if (!cid || !groupOrdersByMarket(state?.orders)[cid]) return;
 
-    row.addEventListener('click', () => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('a')) return;
       if (expandedMarkets.has(cid)) {
         expandedMarkets.delete(cid);
       } else {
@@ -1117,7 +1133,7 @@ function renderScreener(kpi, scanState) {
               <span class="card-tag tag-reward">REWARD</span>
               <span class="card-metric">$${esc(r.rate)}/d</span>
             </div>
-            <div class="card-title">${esc(r.title || '--')}</div>
+            <div class="card-title">${marketLink(r)}</div>
             <div class="card-metric">Resolves: ${r.days !== null && r.days !== undefined ? esc(r.days) + 'd' : '--'}</div>
           </div>`;
         }
@@ -1127,7 +1143,7 @@ function renderScreener(kpi, scanState) {
               <span class="card-tag tag-spread">SPREAD</span>
               <span class="card-metric">Vol: ${fmtUSD(s.volume || 0)}</span>
             </div>
-            <div class="card-title">${esc(s.title || '--')}</div>
+            <div class="card-title">${marketLink(s)}</div>
             <div class="card-metric">Spread: ${s.spread !== null && s.spread !== undefined ? (Number(s.spread) * 100).toFixed(1) + '%' : '--'} | ${s.days !== null && s.days !== undefined ? esc(s.days) + 'd' : '--'}</div>
           </div>`;
         }
@@ -1166,7 +1182,7 @@ function renderScreener(kpi, scanState) {
               <span class="card-tag tag-quoting">QUOTING</span>
               <span class="mono" style="font-size:9.5px;color:var(--text-muted)">${esc(shortCid)}</span>
             </div>
-            <div class="card-title" title="${esc(m.title || m.slug || '')}">${esc(m.title || m.slug || '--')}</div>
+            <div class="card-title" title="${esc(m.title || m.slug || '')}">${marketLink(m)}</div>
             <div class="card-metrics-grid">
               <div>Fills: <span class="card-fills">${esc(m.fills || 0)}</span></div>
               <div>P&L: <span class="card-income">${income}</span></div>
@@ -1187,7 +1203,7 @@ function renderScreener(kpi, scanState) {
               <span class="card-tag" style="background:rgba(52,211,153,0.1);color:#34d399">ELIGIBLE</span>
               <span class="card-metric">${esc(el.source || 'spread')}</span>
             </div>
-            <div class="card-title" title="${esc(el.title || '')}">${esc(el.title || '--')}</div>
+            <div class="card-title" title="${esc(el.title || '')}">${marketLink(el)}</div>
             <div class="card-metric">Est Ret: <span class="card-ret">${el.ret_day_pct !== null && el.ret_day_pct !== undefined ? esc(el.ret_day_pct) + '%/d' : '--'}</span> | Vol: ${fmtUSD(el.volume || 0)}</div>
           </div>`;
         }
@@ -1219,7 +1235,7 @@ function renderScreener(kpi, scanState) {
         } else {
           for (const ex of examples) {
             cardsHtml += `<div class="market-card" role="listitem">
-              <div class="card-title" title="${esc(ex.title || '')}">${esc(ex.title || '--')}</div>
+              <div class="card-title" title="${esc(ex.title || '')}">${marketLink(ex)}</div>
               <div class="card-reason">${esc(ex.reason || 'Criteria not met')}</div>
             </div>`;
           }
@@ -1408,5 +1424,5 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderDbMode, renderServiceCards, fmtLocalTime, connectSSE };
+  module.exports = { renderDbMode, renderServiceCards, fmtLocalTime, connectSSE, marketLink };
 }

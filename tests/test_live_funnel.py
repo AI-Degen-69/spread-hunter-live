@@ -263,11 +263,13 @@ def test_funnel_from_pipeline_includes_slug_and_url(tmp_path):
     })
     markets = _write(tmp_path / "markets.json", [
         {"cid": "0x1", "slug": "winner-slug", "title": "Winner Mkt"},
-        {"cid": "0x2", "title": "No Slug Mkt"},
+        {"cid": "0x2", "slug": "fallback-slug", "title": "Fallback Mkt"},
+        {"cid": "0x3", "title": "No Slug Mkt"},
     ])
     by_mkt = {
         "0x1": {"url": "https://polymarket.com/market/winner-slug-override"},
         "0x2": {},
+        "0x3": {},
     }
 
     f = _funnel_from_pipeline(by_mkt, pipeline_path=pipeline, markets_path=markets)
@@ -275,13 +277,18 @@ def test_funnel_from_pipeline_includes_slug_and_url(tmp_path):
 
     # Graduated entries
     grad = f["graduated"]
-    assert len(grad) == 2
+    assert len(grad) == 3
+    # 1. Custom URL override
     assert grad[0]["slug"] == "winner-slug"
     assert grad[0]["url"] == "https://polymarket.com/market/winner-slug-override"
 
-    # Fallback url generation when by_mkt has no custom url
-    assert grad[1]["slug"] == ""
-    assert grad[1]["url"] == ""
+    # 2. Fallback URL generated from slug when by_mkt has no URL
+    assert grad[1]["slug"] == "fallback-slug"
+    assert grad[1]["url"] == "https://polymarket.com/market/fallback-slug"
+
+    # 3. Empty URL when neither URL nor slug exists
+    assert grad[2]["slug"] == ""
+    assert grad[2]["url"] == ""
 
     # Rejections carry slug
     rej = f["filters"][0]
@@ -293,5 +300,70 @@ def test_funnel_from_pipeline_includes_slug_and_url(tmp_path):
 
     # Final candidates carry slug
     assert f["final"][0]["slug"] == "winner-slug"
+
+
+def test_write_pipeline_snapshot_slug_serialization(monkeypatch, tmp_path):
+    """_write_pipeline_snapshot serializes slug in raw, rejections, final, and picked."""
+    import scripts.filter_markets as fm
+
+    rt = tmp_path / "runtime"
+    monkeypatch.setattr(fm, "RUN", rt)
+
+    cands = [(0.85, {"question": "Rew Q", "market_slug": "rew-slug"})]
+    spread_cands = [{"question": "Spr Q", "slug": "spr-slug", "_volume_24h": 1000, "_spread": 0.01}]
+    out_row = {
+        "eligible": False,
+        "title": "Rej Title",
+        "slug": "rej-slug",
+        "reject_reason": "volume: too low",
+        "volume_24h": 500,
+        "days_to_resolve": 3,
+    }
+    elig_row = {
+        "cid": "0xelig",
+        "title": "Elig Title",
+        "slug": "elig-slug",
+        "source": "spread",
+        "est_income": 1.2,
+        "est_capital": 50.0,
+        "return_pct_day": 2.4,
+        "volume_24h": 10000,
+        "days_to_resolve": 5,
+    }
+    pick_row = {
+        "cid": "0xpick",
+        "title": "Pick Title",
+        "slug": "pick-slug",
+        "source": "reward",
+        "est_income": 2.0,
+        "est_capital": 40.0,
+        "return_pct_day": 5.0,
+        "volume_24h": 20000,
+        "days_to_resolve": 2,
+    }
+
+    fm._write_pipeline_snapshot(
+        cands=cands,
+        spread_cands=spread_cands,
+        out=[out_row],
+        eligible=[elig_row],
+        picked=[pick_row],
+        causes={"volume": 1},
+        census="",
+        gates="",
+        attempted=1,
+        rejected=1,
+    )
+
+    snap_file = rt / "pipeline.json"
+    assert snap_file.is_file()
+    snap = json.loads(snap_file.read_text(encoding="utf-8"))
+
+    assert snap["raw"]["rewards"][0]["slug"] == "rew-slug"
+    assert snap["raw"]["spread"][0]["slug"] == "spr-slug"
+    assert snap["rejections"][0]["examples"][0]["slug"] == "rej-slug"
+    assert snap["final"][0]["slug"] == "elig-slug"
+    assert snap["picked"][0]["slug"] == "pick-slug"
+
 
 

@@ -1759,10 +1759,14 @@ def test_market_link_generates_safe_hyperlinks():
     assert '<a href="https://polymarket.com/market/btc-up"' in out["withSlug"]
     assert 'class="market-link"' in out["withSlug"]
     assert 'target="_blank"' in out["withSlug"]
+    assert 'rel="noopener noreferrer"' in out["withSlug"]
     assert "BTC UP" in out["withSlug"]
 
     # With direct URL
     assert '<a href="https://polymarket.com/market/eth-down"' in out["withUrl"]
+    assert 'class="market-link"' in out["withUrl"]
+    assert 'target="_blank"' in out["withUrl"]
+    assert 'rel="noopener noreferrer"' in out["withUrl"]
     assert "ETH DOWN" in out["withUrl"]
 
     # Without slug or URL: plain text, no anchor
@@ -1780,6 +1784,7 @@ def test_market_link_generates_safe_hyperlinks():
     # CSS class present in styles.css
     styles_css = _read_static("styles.css")
     assert ".market-link" in styles_css
+
 
 
 

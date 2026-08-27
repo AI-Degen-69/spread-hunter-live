@@ -887,6 +887,7 @@ function renderMarkets(kpi, state) {
     });
 
     row.addEventListener('keydown', (e) => {
+      if (e.target.closest('a')) return;
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
         row.click();

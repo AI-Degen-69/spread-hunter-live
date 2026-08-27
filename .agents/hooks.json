@@ -1,0 +1,10 @@
+{
+  "workflow-reminder": {
+    "PreInvocation": [
+      {
+        "type": "command",
+        "command": "python ./scripts/hooks/workflow_reminder.py"
+      }
+    ]
+  }
+}

@@ -1027,10 +1027,102 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         float_marks=float_marks,
     )
 
+    # ── Run profitability verdict (dashboard quick-answer) ─────────────────
+    # Single card that answers "was this run bottom-line profitable?" without
+    # requiring the operator to reconcile portfolio vs venue tiles. Filters to
+    # the active run (or all when active_run_id == "all"), counts open orders
+    # from the run-filtered `orders`, and surfaces the venue account delta that
+    # ran alongside it for context. NULLS stay NULL: a zero-fill run has no
+    # win_rate / expectancy to invent.
+    # Venue delta is computed from account_marks that share the run_id, so it
+    # is scoped to the same wall-clock window as the trading PnL rather than
+    # to the whole wallet history.
+    run_profitability = None
+    try:
+        _run_marks = [am for am in all_account_marks if am.get("run_id") == active_run_id] if active_run_id and active_run_id != "all" else []
+        _venue_delta = None
+        _venue_start = None
+        _venue_end = None
+        if _run_marks:
+            _sorted_rm = sorted([m for m in _run_marks if m.get("ts") is not None], key=lambda m: float(m["ts"]))
+            if _sorted_rm:
+                _first = _sorted_rm[0]
+                _last = _sorted_rm[-1]
+                if _first.get("account_value_usd") is not None and _last.get("account_value_usd") is not None:
+                    _venue_delta = float(_last["account_value_usd"]) - float(_first["account_value_usd"])
+                    _venue_start = float(_first["account_value_usd"])
+                    _venue_end = float(_last["account_value_usd"])
+        _open_orders = sum(1 for o in orders if str(o.get("status") or "").lower() in ("open", "pending", "partial"))
+        # Profit classification uses total P&L when the unrealized leg is measured,
+        # falling back to realized only when float is unmeasured (NULL). A run can
+        # be +$1 realized but -$2 unrealized → net loss; classifying on realized
+        # alone would read as PROFITABLE.
+        _profit_basis = total_pnl if unrealized_usd is not None else realized_pnl
+        _is_profitable = (_profit_basis > 0) if (closes or fills) else None
+        # One-line verdict for the banner. No new numbers beyond what is already
+        # computed above — just a pre-formatted string so the dashboard never
+        # has to re-derive the same conditional.
+        if not closes and not fills:
+            _verdict = "NO TRADES — no fills, no closes, nothing to mark."
+            _verdict_level = "neutral"
+        elif _profit_basis > 0:
+            _verdict = f"PROFITABLE: +${abs(realized_pnl):.2f} realized"
+            if unrealized_usd is not None and unrealized_usd != 0:
+                _verdict += f" ({total_pnl:+.2f} inc. unrealized)"
+            _verdict += f" · {len(wins)}W/{len(losses)}L"
+            _verdict_level = "profit"
+        elif _profit_basis < 0:
+            _verdict = f"LOSS: -${abs(realized_pnl):.2f} realized"
+            if unrealized_usd is not None and unrealized_usd != 0:
+                _verdict += f" ({total_pnl:+.2f} inc. unrealized)"
+            _verdict += f" · {len(wins)}W/{len(losses)}L"
+            _verdict_level = "loss"
+        else:
+            _verdict = f"FLAT: ${realized_pnl:.2f} realized · {len(wins)}W/{len(losses)}L"
+            _verdict_level = "neutral"
+        # Append open-order warning when relevant
+        if _open_orders > 0:
+            _verdict += f" · {_open_orders} open order(s) still resting"
+        # Surface whether the loss was all single-buy dumps vs real pair work
+        _merge_closes = sum(1 for c in closes if c.get("method") == "merge")
+        _single_exits = sum(1 for c in closes if c.get("method") in ("single_buy_exit", "naked_exit"))
+        if closes and _merge_closes == 0 and _single_exits == len(closes):
+            _verdict += " — no hedged pairs, all exits were naked"
+        elif _merge_closes > 0:
+            _verdict += f" — {_merge_closes} merge(s) captured"
+
+        run_profitability = {
+            "run_id": active_run_id,
+            "realized_pnl": realized_pnl,
+            "unrealized_usd": unrealized_usd,
+            "total_pnl": total_pnl,
+            "pnl_pct": (100.0 * total_pnl / starting_capital) if starting_capital else None,
+            "wins": len(wins),
+            "losses": len(losses),
+            "win_rate": (len(wins) / len(closes)) if closes else None,
+            "expectancy_usd": trade_analytics.get("expectancy_usd"),
+            "fills": len(fills),
+            "quotes": len(quotes),
+            "closes_count": len(closes),
+            "open_orders": _open_orders,
+            "venue_start_value": _venue_start,
+            "venue_end_value": _venue_end,
+            "venue_delta_usd": _venue_delta,
+            "venue_measured": _venue_delta is not None,
+            "is_profitable": _is_profitable,
+            "verdict": _verdict,
+            "verdict_level": _verdict_level,
+            "merge_closes": _merge_closes,
+            "single_buy_exits": _single_exits,
+        }
+    except Exception:
+        run_profitability = None
+
     return {
         # Multi-run metadata
         "runs": runs,
         "active_run_id": active_run_id,
+        "run_profitability": run_profitability,
 
         # Portfolio overview (run-level, all markets)
         "portfolio": portfolio,

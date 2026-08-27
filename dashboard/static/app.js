@@ -141,6 +141,65 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+/* ── Sync button (read-only venue refresh) ── */
+const syncBtn = document.getElementById('btn-sync');
+if (syncBtn) {
+  syncBtn.addEventListener('click', async () => {
+    if (syncBtn.disabled) return;
+    const prevText = syncBtn.textContent;
+    syncBtn.disabled = true;
+    syncBtn.classList.add('syncing');
+    syncBtn.textContent = 'SYNCING…';
+    // Optional: show a one-line ticker notice so the operator sees it worked even before the poll.
+    const empty = tickerEl.querySelector('.empty-state');
+    let syncOk = false;
+    let isWarning = false;
+    try {
+      const res = await controlFetch('/api/system/sync');
+      const data = await res.json().catch(() => ({}));
+      const steps = data.steps || {};
+      const rec = steps.reconcile || {};
+      const vs = steps.venue_sync || {};
+      isWarning = (res.status === 207) || (vs.venue_open_unmeasured === true);
+      syncOk = (data.ok === true) && res.ok;
+      const localOpen = data.state?.local_open_orders;
+      const venueOpen = (data.state?.venue_open_orders != null ? data.state.venue_open_orders : rec.open_orders_count);
+      const venueOpenDisp = (venueOpen != null ? venueOpen : 0);
+      const fillsDisp = (rec.fills_recorded != null ? rec.fills_recorded : 0);
+      const cancelledDisp = (rec.orders_cancelled != null ? rec.orders_cancelled : 0);
+      const posDisp = (vs.open_positions_count != null ? vs.open_positions_count : 0);
+      const closesDisp = (vs.closes_written != null ? vs.closes_written : 0);
+      const lines = [];
+      if (rec.ok) lines.push(`Orders: venue ${venueOpenDisp} open, ${fillsDisp} new fills, ${cancelledDisp} marked cancelled`);
+      else if (rec.error) lines.push(`Orders sync: ${rec.error}`);
+      if (vs.ok) lines.push(`Venue: ${fmtUSD(vs.account_value_usd)} · ${posDisp} positions · ${closesDisp} closes synced`);
+      else if (vs.error) lines.push(`Account sync: ${vs.error}`);
+      // Human-readable verdict when dashboard was stale
+      if (typeof localOpen === 'number' && typeof venueOpen === 'number' && localOpen !== venueOpen) {
+        lines.push(`Fixed drift: dashboard had ${localOpen} open → now ${venueOpen} (venue truth)`);
+      }
+      if (vs.venue_open_unmeasured) {
+        lines.push('Positions unmeasured: prior exposure retained');
+      } else if (vs.raw_open_rows === 0) {
+        lines.push('Positions: 0 on venue — dashboard exposure zeroed');
+      }
+      const msg = lines.join(' · ') || (data.ok ? 'Sync ok — dashboard now matches venue.' : 'Sync finished with warnings');
+      // Reuse ticker as a transient banner; also trigger immediate re-poll.
+      appendTickerEvent(`[SYNC] ${msg}`, 'Dashboard synced with Polymarket (read-only).', '');
+    } catch (e) {
+      syncOk = false;
+      appendTickerEvent(`[SYNC ERROR] ${e.message || String(e)}`, 'Sync failed — venue may be unreachable. Retrying on next poll.', '');
+    } finally {
+      if (syncOk) syncBtn.textContent = 'SYNCED';
+      else if (isWarning) syncBtn.textContent = 'SYNC WARNING';
+      else syncBtn.textContent = 'SYNC FAILED';
+      setTimeout(() => { syncBtn.textContent = prevText; syncBtn.disabled = false; syncBtn.classList.remove('syncing'); }, 1800);
+      // Immediately refresh all tiles without waiting for the 2s poll.
+      pollStatus();
+    }
+  });
+}
+
 /* ── Reset modal (typed confirm) ── */
 const resetModal = document.getElementById('reset-modal');
 const resetInput = document.getElementById('reset-input');
@@ -516,8 +575,45 @@ function renderExposure(kpi) {
   }
 }
 
-/* ── Render: KPI Tiles (DT2: empty states) ── */
+/* ── Render: Run Profitability Banner ── */
+function renderRunProfitability(kpi) {
+  const card = document.getElementById('run-profitability');
+  const runEl = document.getElementById('rp-run-id');
+  const verdictEl = document.getElementById('rp-verdict');
+  const detailsEl = document.getElementById('rp-details');
+  const venueEl = document.getElementById('rp-venue');
+  if (!card || !kpi || !kpi.run_profitability) {
+    if (card) card.style.display = 'none';
+    return;
+  }
+  const rp = kpi.run_profitability;
+  card.style.display = 'block';
+  card.className = 'card run-profitability ' + (rp.verdict_level || 'neutral');
+  runEl.textContent = rp.run_id || '--';
+  verdictEl.className = 'rp-verdict ' + (rp.verdict_level || 'neutral');
+  verdictEl.textContent = rp.verdict || '--';
+  // Details line: fills/quotes/closes + expectancy
+  const detParts = [];
+  detParts.push(`${rp.fills} fills / ${rp.quotes} quotes / ${rp.closes_count} closes`);
+  if (rp.win_rate !== null && rp.win_rate !== undefined) detParts.push(`win rate ${(rp.win_rate*100).toFixed(1)}%`);
+  if (rp.expectancy_usd !== null && rp.expectancy_usd !== undefined) detParts.push(`expectancy ${fmtUSD(rp.expectancy_usd)}`);
+  if (rp.merge_closes !== undefined) detParts.push(`${rp.merge_closes} merges`);
+  detailsEl.textContent = detParts.join(' · ');
+  // Venue line: scoped to same run window, plus open-order flat check
+  const venueParts = [];
+  if (rp.venue_measured) {
+    venueParts.push(`Venue account ${fmtUSD(rp.venue_start_value)} → ${fmtUSD(rp.venue_end_value)} (${rp.venue_delta_usd >= 0 ? '+' : ''}${fmtUSD(rp.venue_delta_usd)} during run)`);
+  } else {
+    venueParts.push('Venue delta: unmeasured (no sweep in run window)');
+  }
+  venueParts.push(`${rp.open_orders} open order(s) — ${rp.open_orders === 0 ? 'flat' : 'still resting'}`);
+  if (rp.venue_open_orders !== undefined) venueParts[venueParts.length-1] += ` (venue: ${rp.venue_open_orders})`;
+  venueEl.textContent = venueParts.join(' · ');
+}
+
+ /* ── Render: KPI Tiles (DT2: empty states) ── */
 function renderKPIs(kpi, status) {
+  renderRunProfitability(kpi);
   const grid = document.getElementById('kpi-grid');
   if (!kpi || !kpi.portfolio) {
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">

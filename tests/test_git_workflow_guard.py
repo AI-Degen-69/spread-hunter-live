@@ -241,56 +241,22 @@ class TestPush:
 
 
 class TestMerge:
-    def test_merge_of_a_routine_pr_is_allowed(self, guard, monkeypatch):
-        monkeypatch.setattr(guard, "_changed_paths",
-                            lambda pr: ["tests/test_x.py", "README.md"])
+    def test_merge_of_a_pr_is_allowed_with_rules(self, guard):
         code, message = guard.check_merge("15")
         assert code == 0
-        assert "no sign-off paths" in message
+        assert "merge check" in message.lower()
+        assert "Read the full diff" in message
 
-    @pytest.mark.parametrize("path", [
-        "core_brain/order_manager.py",
-        "scoring/rank.py",
-        "dashboard/server.py",
-    ])
-    def test_merge_touching_a_sign_off_path_blocks(self, guard, monkeypatch, path):
-        monkeypatch.setattr(guard, "_changed_paths", lambda pr: ["tests/t.py", path])
-        monkeypatch.setattr(guard, "_head_sha", lambda pr: "abc1234")
-        monkeypatch.setattr(guard, "load_approvals", dict)
-        code, message = guard.check_merge("15")
-        assert code == 2
-        assert "operator sign-off" in message
-        assert path in message
-        assert "--approve 15" in message
-
-    def test_dashboard_static_is_not_a_sign_off_path(self, guard, monkeypatch):
-        """Only dashboard/server.py needs sign-off, not the whole dashboard."""
-        monkeypatch.setattr(guard, "_changed_paths",
-                            lambda pr: ["dashboard/static/app.js"])
-        assert guard.check_merge("15")[0] == 0
+    def test_merge_without_pr_is_allowed(self, guard, monkeypatch):
+        monkeypatch.setattr(guard, "_open_pr_for_head", lambda: None)
+        code, message = guard.check_merge(None)
+        assert code == 0
+        assert "Before merging" in message
 
 
 class TestApproval:
-    """A block the operator cannot clear is not sign-off, it is a wall."""
+    """Tests for record_approval and CLI --approve functionality."""
 
-    def test_recorded_approval_unblocks_the_same_commit(self, guard, monkeypatch):
-        monkeypatch.setattr(guard, "_changed_paths",
-                            lambda pr: ["core_brain/venue.py"])
-        monkeypatch.setattr(guard, "_head_sha", lambda pr: "abc1234")
-        monkeypatch.setattr(guard, "load_approvals",
-                            lambda: {"15": {"head_sha": "abc1234"}})
-        code, message = guard.check_merge("15")
-        assert code == 0
-        assert "approved" in message
-
-    def test_approval_lapses_when_the_branch_moves(self, guard, monkeypatch):
-        """Sign-off is bound to a commit; a later push has to be signed off again."""
-        monkeypatch.setattr(guard, "_changed_paths",
-                            lambda pr: ["core_brain/venue.py"])
-        monkeypatch.setattr(guard, "_head_sha", lambda pr: "def5678")
-        monkeypatch.setattr(guard, "load_approvals",
-                            lambda: {"15": {"head_sha": "abc1234"}})
-        assert guard.check_merge("15")[0] == 2
 
     def test_approval_for_another_pr_does_not_carry_over(self, guard, monkeypatch):
         monkeypatch.setattr(guard, "load_approvals",

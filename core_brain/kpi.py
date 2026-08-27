@@ -944,12 +944,6 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         [am for am in all_account_marks if am.get("ts") is not None],
         key=lambda am: float(am["ts"]),
     )
-    # Prefer the newest sweep that actually obtained an account value. A sweep
-    # whose collateral read failed records NULL, and letting that NULL win would
-    # blank the headline while a good reading from minutes earlier sits in the
-    # table. The whole mark is taken from one row -- never assembled field by
-    # field across rows -- and `ts` reports how old that row is, so the page can
-    # say the reading is stale rather than pretend it is current.
     latest_account = next(
         (am for am in reversed(sorted_account_marks)
          if am.get("account_value_usd") is not None),

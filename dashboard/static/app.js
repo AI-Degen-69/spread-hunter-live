@@ -491,8 +491,9 @@ function renderExposure(kpi) {
   const text = document.getElementById('exposure-text');
   const fill = document.getElementById('exposure-fill');
 
-  const committed = kpi?.portfolio?.open_committed_usd;
-  const cap = kpi?.bankroll || 100;
+  const committed = kpi?.portfolio?.open_committed_usd || 0;
+  const accountVal = kpi?.portfolio?.account?.account_value_usd || kpi?.portfolio?.starting_capital;
+  const cap = accountVal ? (accountVal * 0.90) : (kpi?.bankroll || 100);
   if (committed === null || committed === undefined) {
     bar.style.display = 'none';
     return;
@@ -516,7 +517,7 @@ function renderExposure(kpi) {
 }
 
 /* ── Render: KPI Tiles (DT2: empty states) ── */
-function renderKPIs(kpi) {
+function renderKPIs(kpi, status) {
   const grid = document.getElementById('kpi-grid');
   if (!kpi || !kpi.portfolio) {
     grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
@@ -528,15 +529,18 @@ function renderKPIs(kpi) {
 
   const p = kpi.portfolio;
   const ta = kpi.trade_analytics || {};
-  const startCap = p.starting_capital;
+  const startCap = status?.starting_capital ?? p.starting_capital;
   const realized = p.realized_pnl;
   const unrealized = p.unrealized_usd;
   const total = p.total_pnl;
+  const netValue = (p.account?.account_value_usd !== null && p.account?.account_value_usd !== undefined)
+    ? p.account.account_value_usd
+    : p.total_value;
 
   grid.innerHTML = `
     <div class="kpi-tile">
       <div class="kpi-label">Net Portfolio Value</div>
-      ${fmtVal(p.total_value !== null && p.total_value !== undefined ? fmtUSD(p.total_value) : null)}
+      ${fmtVal(netValue !== null && netValue !== undefined ? fmtUSD(netValue) : null)}
     </div>
     <div class="kpi-tile">
       <div class="kpi-label">Starting Capital</div>
@@ -653,7 +657,7 @@ function renderExpandedOrders(orders, fills, showCancelled) {
 
   html += `<table class="orders-subtable">`;
   html += `<thead><tr>
-    <th>Side</th>
+    <th>Outcome / Leg</th>
     <th>Price</th>
     <th>Size</th>
     <th>Filled</th>
@@ -668,8 +672,11 @@ function renderExpandedOrders(orders, fills, showCancelled) {
     const oFills = fillsByOrder[o.id] || [];
     const fillCount = oFills.length;
     const statusCls = o.status === 'open' ? 'active' : (o.status === 'filled' ? 'active' : (isCancelledStatus(o.status) ? 'stopped' : 'reconnecting'));
+    const isDown = o.token_side === 'DOWN' || (o.outcome && (o.outcome.toLowerCase().includes('no') || o.outcome.toLowerCase().includes('down')));
+    const badgeCls = isDown ? 'badge-down' : 'badge-up';
+    const label = o.outcome ? `${o.outcome} (${fmtSide(o.side)})` : (o.token_side ? `${o.token_side} (${fmtSide(o.side)})` : fmtSide(o.side));
     html += `<tr${isCancelledStatus(o.status) ? ' class="order-cancelled"' : ''}>
-      <td class="mono"><span class="side-${(o.side||'').toLowerCase()}">${fmtSide(o.side)}</span></td>
+      <td class="mono"><span class="${badgeCls} side-${(o.side||'').toLowerCase()}">${esc(label)}</span></td>
       <td class="mono">${esc(o.price !== null && o.price !== undefined ? o.price.toFixed(4) : '--')}</td>
       <td class="mono">${esc(o.original_size !== null && o.original_size !== undefined ? o.original_size : '--')}</td>
       <td class="mono">${esc(o.size_matched !== null && o.size_matched !== undefined ? o.size_matched : '--')}</td>
@@ -1252,8 +1259,15 @@ async function pollStatus() {
     // Render exposure bar (DT3)
     renderExposure(kpi);
 
+    // USDC Balance in top nav bar
+    const collateral = kpi?.portfolio?.account?.collateral_usd ?? kpi?.portfolio?.account?.account_value_usd;
+    const usdcEl = document.getElementById('usdc-balance');
+    if (usdcEl) {
+      usdcEl.textContent = (collateral !== null && collateral !== undefined) ? `USDC: ${fmtUSD(collateral)}` : 'USDC: --';
+    }
+
     // Render KPIs (Tab 2)
-    renderKPIs(kpi);
+    renderKPIs(kpi, status);
     renderMarkets(kpi, lastState);
 
     // Render screener kanban (Tab 3)

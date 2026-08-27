@@ -138,6 +138,10 @@ def size_for(cfg, inv, side: str, price: float, pair_price: float | None = None)
     else:
         base = max(cfg.quote_shares, cfg.min_quote_shares)
 
+    max_shares = getattr(cfg, "max_quote_shares", None)
+    if max_shares is not None and max_shares > 0:
+        base = min(base, int(max_shares))
+
     # The venue floor applies to the derived size exactly as it applies to the
     # fixed one: an order below it cannot be posted, so the honest answer is
     # no order rather than a token one.

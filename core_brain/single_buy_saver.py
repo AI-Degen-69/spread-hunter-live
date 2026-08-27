@@ -1029,7 +1029,8 @@ def auto_manage_pairs(
             if pair["naked"] <= SIZE_EPS:
                 continue
             out.append(_route_pair(
-                client, registry, pair, max_pair_cost, live, venue_positions))
+                client, registry, pair, max_pair_cost, live, venue_positions,
+                cfg=cfg, last_ms=last_ms, now_s=now_s))
         except (PairExitRefused, PairCompletionRefused) as e:
             out.append({"pair_id": pid, "action": "error", "error": str(e)})
         except Exception as e:
@@ -1039,29 +1040,71 @@ def auto_manage_pairs(
 
 
 def _route_pair(client, registry, pair, max_pair_cost, live,
-                venue_positions) -> dict:
-    """Complete when the pair stays under the cap, else exit the naked leg.
+                venue_positions, cfg=None, last_ms: int = 0, now_s: float = 0.0) -> dict:
+    """Route a single-buy pair under the Dual-Trigger Stop-Loss rules:
 
-    The paper run's sweep decides the same way: cross the missing leg at ask when
-    `fill_cost + ask < max_pair_cost`, otherwise sell the naked leg at the
-    best bid. `should_exit` is the ported trigger; the light ask is read once
-    to route, and the action functions re-read what they need. If the ask
-    moves above the cap between our read and the completion's re-check, the
-    completion refuses and the exit owns the case.
+    1. TAKER FINISH: If fill_cost + light_ask < max_pair_cost, cross to complete immediately.
+    2. ADVERSE DRIFT TRIGGER: If heavy leg's best bid dropped by >= single_buy_max_loss_usd
+       or >= single_buy_max_loss_pct, exit immediately to stop fast runaway bleed.
+    3. GRACE WINDOW: If age < single_buy_grace_sec (default 45s) and price is stable,
+       hold and let the resting maker quote fill.
+    4. GRACE EXPIRY: If age >= single_buy_grace_sec, exit at best bid to prevent holding
+       an unhedged leg into settlement.
     """
     light_token = pair["light"]["token_id"]
     ask = best_ask(client.get_order_book(light_token)) if light_token else None
 
-    if should_exit(pair["fill_cost"], ask, max_pair_cost):
-        return exit_single_buy(client, registry, pair["pair_id"], max_pair_cost,
-                               live=live, venue_positions=venue_positions)
+    # Check 1: Can we complete the pair profitably as taker right now?
+    if not should_exit(pair["fill_cost"], ask, max_pair_cost):
+        try:
+            max_order = getattr(cfg, "max_order_usd", None) if cfg else None
+            return complete_pair(client, registry, pair["pair_id"], max_pair_cost,
+                                 live=live, max_order_usd=max_order)
+        except PairCompletionRefused:
+            pass  # Fall through to dual-trigger check
 
-    try:
-        return complete_pair(client, registry, pair["pair_id"], max_pair_cost,
-                             live=live)
-    except PairCompletionRefused:
-        return exit_single_buy(client, registry, pair["pair_id"], max_pair_cost,
-                               live=live, venue_positions=venue_positions)
+    # Check 2: Evaluate adverse price drift on the heavy leg
+    heavy_token = pair["heavy"]["token_id"]
+    heavy_fill_price = float(pair["fill_cost"])
+    heavy_book = client.get_order_book(heavy_token) if heavy_token else None
+    heavy_bid = best_bid(heavy_book) if heavy_book else None
+
+    window_sec = float(getattr(cfg, "pairs_exit_window_sec", 900.0) if cfg else 900.0)
+    raw_grace = float(getattr(cfg, "single_buy_grace_sec", 45.0) if cfg else 45.0)
+    grace_sec = min(raw_grace, window_sec)
+    max_loss_pct = float(getattr(cfg, "single_buy_max_loss_pct", 0.10) if cfg else 0.10)
+    max_loss_usd = float(getattr(cfg, "single_buy_max_loss_usd", 0.045) if cfg else 0.045)
+
+    age_s = max(0.0, now_s - (last_ms / 1000.0)) if (last_ms > 0 and now_s > 0) else 0.0
+
+    is_adverse = False
+    if heavy_bid is not None and heavy_fill_price > 0:
+        loss = heavy_fill_price - heavy_bid
+        loss_pct = loss / heavy_fill_price
+        if loss >= max_loss_usd or loss_pct >= max_loss_pct:
+            is_adverse = True
+
+    if is_adverse:
+        res = exit_single_buy(client, registry, pair["pair_id"], max_pair_cost,
+                              live=live, venue_positions=venue_positions)
+        if isinstance(res, dict):
+            res["reason"] = "adverse_drift"
+        return res
+
+    if age_s < grace_sec:
+        return {
+            "pair_id": pair["pair_id"],
+            "action": "holding_grace",
+            "reason": f"grace_active ({age_s:.1f}s < {grace_sec:.0f}s)",
+            "fill_price": heavy_fill_price,
+            "current_bid": heavy_bid,
+        }
+
+    res = exit_single_buy(client, registry, pair["pair_id"], max_pair_cost,
+                          live=live, venue_positions=venue_positions)
+    if isinstance(res, dict):
+        res["reason"] = "grace_expired"
+    return res
 
 
 # Backward-compatible alias

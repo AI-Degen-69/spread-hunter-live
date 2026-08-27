@@ -813,10 +813,17 @@ class MakerConfig:
     # The original +16.3c was a 302.5-share sample (7 pairs) from the
     # pre-spread era and overstates the current instrument's capture ~4.4x;
     # the KPI would have read +15.78c instead of +3.48c per one-sided fill.
-    # The RATES still come from the rule's own decisions; the dashboard KPI
-    # is completion_rate x gain - exit_rate x cost.
     pairs_complete_gain_cents: float = 3.68
     pairs_exit_cost_cents: float = 3.67
+
+    # --- dual-trigger single-buy stop-loss ---------------------------------
+    # Grace period (seconds) to allow the missing maker leg to fill naturally (0.0 default for test baseline; 45.0 in .env for live)
+    single_buy_grace_sec: float = 0.0
+    # Max adverse price move from fill price before triggering immediate stop-loss exit
+    single_buy_max_loss_pct: float = 0.10
+    single_buy_max_loss_usd: float = 0.045
+    # Optional sizing ceiling per quote (None for standard mode; set via .env / CLI)
+    max_quote_shares: float | None = None
 
     # --- experiment end criteria (decisive test of the maker mechanism) -----
     # Phase A (census): observe this many DISTINCT live markets and measure how
@@ -1017,6 +1024,30 @@ def load() -> MakerConfig:
         kw["bankroll_usd"] = val
         kw["allocation_budget"] = val * 0.9
         kw["max_committed_usd"] = val
+    sbg = os.environ.get("HUNTER_SINGLE_BUY_GRACE_SEC")
+    if sbg and sbg.strip():
+        val = float(sbg)
+        if not math.isfinite(val) or val < 0:
+            raise ValueError(f"HUNTER_SINGLE_BUY_GRACE_SEC must be finite and non-negative, got: {val}")
+        kw["single_buy_grace_sec"] = val
+    sblp = os.environ.get("HUNTER_SINGLE_BUY_MAX_LOSS_PCT")
+    if sblp and sblp.strip():
+        val = float(sblp)
+        if not math.isfinite(val) or not (0.0 <= val <= 1.0):
+            raise ValueError(f"HUNTER_SINGLE_BUY_MAX_LOSS_PCT must be between 0.0 and 1.0, got: {val}")
+        kw["single_buy_max_loss_pct"] = val
+    sblu = os.environ.get("HUNTER_SINGLE_BUY_MAX_LOSS_USD")
+    if sblu and sblu.strip():
+        val = float(sblu)
+        if not math.isfinite(val) or val < 0:
+            raise ValueError(f"HUNTER_SINGLE_BUY_MAX_LOSS_USD must be finite and non-negative, got: {val}")
+        kw["single_buy_max_loss_usd"] = val
+    mqs = os.environ.get("HUNTER_MAX_SHARES") or os.environ.get("SPREAD_HUNTER_MAX_SHARES")
+    if mqs and mqs.strip():
+        val = float(mqs)
+        if not math.isfinite(val) or val <= 0:
+            raise ValueError(f"HUNTER_MAX_SHARES must be strictly positive, got: {val}")
+        kw["max_quote_shares"] = val
     return MakerConfig(**kw)
 
 # hook probe

@@ -1506,6 +1506,28 @@ def test_reset_endpoint_exists():
     assert '/api/system/reset' in routes
 
 
+def test_reset_clears_screener_files(client, temp_db, tmp_path, monkeypatch):
+    """POST /api/system/reset clears markets.json, pipeline.json, and rerank.log."""
+    import dashboard.server as dash_mod
+    monkeypatch.setattr(dash_mod, "LIVE_ROOT", tmp_path)
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    m_file = runtime_dir / "markets.json"
+    p_file = runtime_dir / "pipeline.json"
+    r_file = runtime_dir / "rerank.log"
+    m_file.write_text("[]", encoding="utf-8")
+    p_file.write_text("{}", encoding="utf-8")
+    r_file.write_text("log", encoding="utf-8")
+
+    res = client.post("/api/system/reset", headers=_control(client))
+    assert res.status_code == 200
+    data = res.json()
+    assert data.get("ok") is True
+    assert not m_file.exists()
+    assert not p_file.exists()
+    assert not r_file.exists()
+
+
 def test_app_js_translates_a_failed_market_scan():
     """A failed scan leaves the Trader on a stale universe -- say so in words.
 

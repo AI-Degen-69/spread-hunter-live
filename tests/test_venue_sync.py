@@ -316,6 +316,49 @@ def test_venue_sync_distinguishes_none_vs_empty(tmp_path, monkeypatch):
     assert marks_after_empty[-1]["naked_usd"] == pytest.approx(0.0)
 
 
+def test_venue_sync_malformed_currentvalue_is_all_or_nothing(tmp_path, monkeypatch):
+    """Malformed currentValue must exclude the whole position (committed/unrealized/naked stay 0) — fails on old partial-total code."""
+    from core_brain import order_manager as exec_mod
+    from core_brain import order_registry as reg_mod
+    from core_brain.order_registry import OrderRegistry
+
+    lock_dir = tmp_path / "run"
+    lock_dir.mkdir(parents=True)
+    monkeypatch.setattr(reg_mod, "LIVE_ROOT", tmp_path)
+
+    def mock_read_account(funder, collateral_usd):
+        return {
+            "collateral_usd": 100.0, "positions_value_usd": 0.0, "account_value_usd": 100.0,
+            "pnl_usd": 0.0, "pnl_pct": 0.0, "pnl_closed_usd": 0.0, "pnl_series_usd": 0.0,
+            "pnl_source_gap": 0.0, "unrealized_usd": 0.0, "committed_usd": 0.0,
+            "open_positions_count": 1, "closed_positions_count": 0,
+            "open_positions": [], "closed_positions": [], "source": "venue",
+        }
+
+    monkeypatch.setattr("core_brain.account.read_account", mock_read_account)
+    monkeypatch.setattr("core_brain.account.fetch_closed_positions", lambda *a, **kw: [])
+    monkeypatch.setattr(exec_mod, "fetch_live_balance", lambda *a, **kw: 100.0)
+    # One position with valid initialValue/cashPnl but malformed currentValue
+    monkeypatch.setattr("core_brain.account.fetch_open_positions", lambda *a, **kw: [
+        {"conditionId": "0xbad", "initialValue": 10.0, "cashPnl": 1.0, "currentValue": "not-a-number"},
+    ])
+
+    db_path = str(tmp_path / "test.db")
+    summary = exec_mod.venue_sync(funder="0xfunder", db_path=db_path, quiet=True)
+    assert summary["raw_open_rows"] == 1
+    assert summary["venue_open_unmeasured"] is False  # venue answered, just malformed field
+
+    reg = OrderRegistry(db_path=db_path)
+    with reg._conn() as conn:
+        row = conn.execute("SELECT * FROM float_marks ORDER BY id DESC LIMIT 1").fetchone()
+    assert row is not None
+    # With all-or-nothing staging, the bad position contributes nothing: 0/0/0.
+    # Old code would have written committed=10, unrealized=1, naked=0 (partial).
+    assert dict(row)["committed_open_usd"] == pytest.approx(0.0)
+    assert dict(row)["unrealized_usd"] == pytest.approx(0.0)
+    assert dict(row)["naked_usd"] == pytest.approx(0.0)
+
+
 def test_venue_sync_endpoint_exists():
     """Dashboard endpoint /api/system/venue-sync is registered."""
     from dashboard.server import app

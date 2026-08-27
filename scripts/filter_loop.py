@@ -55,18 +55,26 @@ RING_PATH = ROOT / "runtime" / "cycle_events.jsonl"
 # hour to ten minutes.
 def _get_top_markets() -> int:
     # Re-read each cycle so an operator can change .env without restarting the
-    # loop; the same dotenv load pattern as the module-level one above.
+    # loop. Parse the file directly with dotenv_values() so the current .env
+    # is always observed, while an explicitly supplied process env var wins.
     try:
-        from dotenv import load_dotenv
-        load_dotenv(ROOT / ".env", override=False)
-    except Exception:
-        pass
-    raw_top = os.environ.get("SH_TOP_MARKETS", "2").strip()
-    try:
+        from dotenv import dotenv_values
+        file_vals = dotenv_values(ROOT / ".env")
+        env_top = os.environ.get("SH_TOP_MARKETS")
+        if env_top is not None and str(env_top).strip() != "":
+            raw_top = str(env_top).strip()
+        else:
+            raw_top = str(file_vals.get("SH_TOP_MARKETS", "2") or "2").strip()
         val = int(raw_top)
         return val if val > 0 else 2
     except Exception:
-        return 2
+        # Fallback: honour process env, else default.
+        try:
+            raw_top = os.environ.get("SH_TOP_MARKETS", "2").strip()
+            val = int(raw_top)
+            return val if val > 0 else 2
+        except Exception:
+            return 2
 
 raw_interval = os.environ.get("SH_FILTER_INTERVAL_SEC", "600").strip()
 try:

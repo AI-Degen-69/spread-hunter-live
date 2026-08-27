@@ -1058,7 +1058,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         # be +$1 realized but -$2 unrealized → net loss; classifying on realized
         # alone would read as PROFITABLE.
         _profit_basis = total_pnl if unrealized_usd is not None else realized_pnl
-        _is_profitable = (_profit_basis > 0) if closes else None
+        _is_profitable = (_profit_basis > 0) if (closes or fills) else None
         # One-line verdict for the banner. No new numbers beyond what is already
         # computed above — just a pre-formatted string so the dashboard never
         # has to re-derive the same conditional.
@@ -1066,13 +1066,13 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
             _verdict = "NO TRADES — no fills, no closes, nothing to mark."
             _verdict_level = "neutral"
         elif _profit_basis > 0:
-            _verdict = f"PROFITABLE: +${realized_pnl:.2f} realized"
+            _verdict = f"PROFITABLE: +${abs(realized_pnl):.2f} realized"
             if unrealized_usd is not None and unrealized_usd != 0:
                 _verdict += f" ({total_pnl:+.2f} inc. unrealized)"
             _verdict += f" · {len(wins)}W/{len(losses)}L"
             _verdict_level = "profit"
         elif _profit_basis < 0:
-            _verdict = f"LOSS: ${realized_pnl:.2f} realized"
+            _verdict = f"LOSS: -${abs(realized_pnl):.2f} realized"
             if unrealized_usd is not None and unrealized_usd != 0:
                 _verdict += f" ({total_pnl:+.2f} inc. unrealized)"
             _verdict += f" · {len(wins)}W/{len(losses)}L"

@@ -71,9 +71,9 @@ def client(funder: str | None = None):
     `funder` overrides POLY_FUNDER for one call. That exists so a candidate
     address can be balance-checked before it is committed to .env.
     """
-    if "POLY_PRIVATE_KEY" not in os.environ and "POLY_KEY" not in os.environ:
+    if not (os.environ.get("POLY_PRIVATE_KEY") or os.environ.get("POLY_KEY")):
         from dotenv import load_dotenv
-        load_dotenv()
+        load_dotenv(override=True)
     from py_clob_client_v2.client import ClobClient
 
     key = os.environ.get("POLY_PRIVATE_KEY") or os.environ.get("POLY_KEY")

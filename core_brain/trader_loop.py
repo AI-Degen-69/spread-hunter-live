@@ -622,14 +622,18 @@ def _market_specs(max_markets: Optional[int] = None, registry=None) -> list[dict
     if max_markets == 1 and registry is not None:
         try:
             active_orders = registry.get_active_orders()
-            active_cids = {o.condition_id for o in active_orders if o.condition_id and o.status in ("open", "partial")}
+            active_cids = {
+                o.condition_id for o in active_orders
+                if o.condition_id and getattr(o, "status", "") in ("open", "partial", "pending")
+            }
             if active_cids:
                 active_cid = next(iter(active_cids))
                 active_gm = next((gm for gm in gms if gm.cid == active_cid), None)
                 if active_gm:
                     gms = [active_gm]
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("active orders lookup failed in _market_specs: %s", e)
+            raise
 
     if max_markets:
         gms = gms[:max_markets]

@@ -155,3 +155,19 @@ def test_profitable_ask_within_grace_completes_pair(registry):
     assert len(results) == 1
     assert results[0]["action"] == "completed"
     assert any(c.startswith("buy:") for c in client.calls)
+
+
+def test_completion_refusal_falls_through_to_grace(registry):
+    """If taker completion exceeds max order cap (refused), it falls through to holding grace."""
+    # 100 shares at 0.38 = $38.00 > $25 cap
+    _one_sided_pair(registry, filled_size=100.0, fill_price=0.60)
+    now_s = (FILL_TS_MS / 1000.0) + 15.0
+    client = FakeClient(best_ask=0.38, best_bid=0.58)
+    # max_order_usd is $25.0
+    cfg = _cfg(max_order_usd=25.0)
+    results = auto_manage_pairs(client, registry, cfg, now=now_s)
+    
+    assert len(results) == 1
+    assert results[0]["action"] == "holding_grace"
+    assert not any(c.startswith("sell:") for c in client.calls)
+

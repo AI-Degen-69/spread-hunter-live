@@ -1057,8 +1057,9 @@ def _route_pair(client, registry, pair, max_pair_cost, live,
     # Check 1: Can we complete the pair profitably as taker right now?
     if not should_exit(pair["fill_cost"], ask, max_pair_cost):
         try:
+            max_order = getattr(cfg, "max_order_usd", None) if cfg else None
             return complete_pair(client, registry, pair["pair_id"], max_pair_cost,
-                                 live=live)
+                                 live=live, max_order_usd=max_order)
         except PairCompletionRefused:
             pass  # Fall through to dual-trigger check
 
@@ -1068,7 +1069,9 @@ def _route_pair(client, registry, pair, max_pair_cost, live,
     heavy_book = client.get_order_book(heavy_token) if heavy_token else None
     heavy_bid = best_bid(heavy_book) if heavy_book else None
 
-    grace_sec = float(getattr(cfg, "single_buy_grace_sec", 45.0) if cfg else 45.0)
+    window_sec = float(getattr(cfg, "pairs_exit_window_sec", 900.0) if cfg else 900.0)
+    raw_grace = float(getattr(cfg, "single_buy_grace_sec", 45.0) if cfg else 45.0)
+    grace_sec = min(raw_grace, window_sec)
     max_loss_pct = float(getattr(cfg, "single_buy_max_loss_pct", 0.10) if cfg else 0.10)
     max_loss_usd = float(getattr(cfg, "single_buy_max_loss_usd", 0.045) if cfg else 0.045)
 

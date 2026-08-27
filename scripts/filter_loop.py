@@ -44,8 +44,13 @@ RING_PATH = ROOT / "runtime" / "cycle_events.jsonl"
 # nothing new. 600 (10 min) keeps the venue scoring (a full pass over ~200
 # candidates) from becoming a burden while cutting the worst-case wait from an
 # hour to ten minutes.
-INTERVAL_SEC = 600.0
-TOP = int(os.environ.get("SH_TOP_MARKETS", "1"))
+raw_top = os.environ.get("SH_TOP_MARKETS", "1").strip()
+try:
+    TOP = int(raw_top)
+    if TOP <= 0:
+        raise ValueError(f"SH_TOP_MARKETS must be positive, got {TOP}")
+except Exception as e:
+    raise ValueError(f"Invalid SH_TOP_MARKETS {raw_top!r}: {e}") from e
 
 
 def _emit_scan_event(record: dict) -> None:

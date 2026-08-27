@@ -1026,16 +1026,24 @@ def load() -> MakerConfig:
         kw["max_committed_usd"] = val
     sbg = os.environ.get("HUNTER_SINGLE_BUY_GRACE_SEC")
     if sbg and sbg.strip():
-        kw["single_buy_grace_sec"] = float(sbg)
+        val = float(sbg)
+        if math.isfinite(val) and val >= 0:
+            kw["single_buy_grace_sec"] = val
     sblp = os.environ.get("HUNTER_SINGLE_BUY_MAX_LOSS_PCT")
     if sblp and sblp.strip():
-        kw["single_buy_max_loss_pct"] = float(sblp)
+        val = float(sblp)
+        if math.isfinite(val) and 0.0 <= val <= 1.0:
+            kw["single_buy_max_loss_pct"] = val
     sblu = os.environ.get("HUNTER_SINGLE_BUY_MAX_LOSS_USD")
     if sblu and sblu.strip():
-        kw["single_buy_max_loss_usd"] = float(sblu)
+        val = float(sblu)
+        if math.isfinite(val) and val >= 0:
+            kw["single_buy_max_loss_usd"] = val
     mqs = os.environ.get("HUNTER_MAX_SHARES") or os.environ.get("SPREAD_HUNTER_MAX_SHARES")
     if mqs and mqs.strip():
-        kw["max_quote_shares"] = float(mqs)
+        val = float(mqs)
+        if math.isfinite(val) and val > 0:
+            kw["max_quote_shares"] = val
     return MakerConfig(**kw)
 
 # hook probe

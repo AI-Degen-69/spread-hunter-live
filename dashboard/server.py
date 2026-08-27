@@ -716,7 +716,7 @@ def start_bot() -> dict:
         query_alive = svcs.get("query", {}).get("running", False)
         decide_alive = svcs.get("decide", {}).get("running", False)
 
-        if current.get("bot_state") == "RUNNING" or (filter_alive and query_alive and decide_alive):
+        if filter_alive and query_alive and decide_alive:
             return {"ok": False, "message": "Bot stack is already running; refusing to start a duplicate instance.", "status": current}
         if current.get("bot_state") == "UNKNOWN":
             return {"ok": False, "message": f"Cannot read the process file at {current.get('registry_path')}; refusing to start until it is readable, because a second live stack cannot be ruled out.", "status": current}

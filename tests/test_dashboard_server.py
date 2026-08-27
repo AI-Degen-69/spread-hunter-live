@@ -1742,3 +1742,49 @@ def test_event_ticker_formats_timestamps_in_local_time():
     assert "Times shown in local time" in index_html
 
 
+@pytest.mark.skipif(NODE is None, reason="node not installed")
+def test_market_link_generates_safe_hyperlinks():
+    """marketLink generates safe anchor tags for markets with slug/url, escaping XSS."""
+    harness = Path(__file__).resolve().parent / "js" / "market_link_harness.js"
+    app_js = Path(__file__).resolve().parent.parent / "dashboard" / "static" / "app.js"
+
+    res = subprocess.run(
+        [NODE, str(harness), str(app_js)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout)
+
+    # With slug: generates anchor pointing to Polymarket
+    assert '<a href="https://polymarket.com/market/btc-up"' in out["withSlug"]
+    assert 'class="market-link"' in out["withSlug"]
+    assert 'target="_blank"' in out["withSlug"]
+    assert 'rel="noopener noreferrer"' in out["withSlug"]
+    assert "BTC UP" in out["withSlug"]
+
+    # With direct URL
+    assert '<a href="https://polymarket.com/market/eth-down"' in out["withUrl"]
+    assert 'class="market-link"' in out["withUrl"]
+    assert 'target="_blank"' in out["withUrl"]
+    assert 'rel="noopener noreferrer"' in out["withUrl"]
+    assert "ETH DOWN" in out["withUrl"]
+
+    # Without slug or URL: plain text, no anchor
+    assert "<a" not in out["noUrlOrSlug"]
+    assert "Plain Market" in out["noUrlOrSlug"]
+
+    # Null value fallback
+    assert out["nullVal"] == "--"
+
+    # XSS escaping
+    assert "<script>" not in out["xss"]
+    assert '&lt;script&gt;alert(1)&lt;/script&gt;' in out["xss"]
+    assert 'onclick="alert(1)' not in out["xss"]
+
+    # CSS class present in styles.css
+    styles_css = _read_static("styles.css")
+    assert ".market-link" in styles_css
+
+
+
+

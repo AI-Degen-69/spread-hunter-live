@@ -983,3 +983,15 @@ td { font-size: 13px; }
   white-space: nowrap;
   border: 0;
 }
+
+/* ── Market Links ── */
+.market-link {
+  color: var(--open, #58a6ff);
+  text-decoration: none;
+  transition: color 0.15s ease;
+}
+.market-link:hover {
+  text-decoration: underline;
+  color: var(--text-primary, #ffffff);
+}
+

@@ -514,7 +514,7 @@ def run_shadow(
     # `shadow-...`. See `shadow_run_id` and `OrderRegistry._run_id`.
     run_id = shadow_run_id()
 
-    cfg = load()
+    cfg = dc_replace(load(), single_buy_grace_sec=0.0)
 
     # One line that retires "what did this rehearsal actually run under?".
     # The two offset knobs are env-overridable per run, and recovering what a

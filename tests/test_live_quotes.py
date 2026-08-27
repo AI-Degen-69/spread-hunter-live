@@ -209,7 +209,7 @@ def test_flat_inventory_refuses_a_lone_leg():
 
     # Unbalanced is the opposite case: the single intent is the LIGHT side and
     # it flattens the position, so it must still be allowed through.
-    naked = Inventory(up_shares=40, down_shares=0, up_cost=6.0, down_cost=0.0)
+    naked = Inventory(up_shares=40, down_shares=0, up_cost=4.0, down_cost=0.0)
     intents, why = decide_quotes(cfg, up, down, naked, 1e9, None)
     assert [i.side for i in intents] == ["DOWN"]
     assert why == ""

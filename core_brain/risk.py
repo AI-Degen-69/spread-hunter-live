@@ -127,7 +127,13 @@ def size_for(cfg, inv, side: str, price: float, pair_price: float | None = None)
         # N = max(N, venue_min_size)
         if price <= 0:
             return 0
-        eff_pair = pair_price if (pair_price is not None and pair_price > 0) else (2.0 * price)
+        opp_avg = inv.avg("DOWN" if side == "UP" else "UP") if inv is not None else 0.0
+        if pair_price is not None and pair_price > 0:
+            eff_pair = pair_price
+        elif opp_avg > 0:
+            eff_pair = price + opp_avg
+        else:
+            eff_pair = min(1.0, 2.0 * price if price <= 0.5 else 1.0)
         if eff_pair <= 0:
             return 0
         couple_alloc = config.couple_allocation_usd(cfg)
@@ -149,7 +155,17 @@ def size_for(cfg, inv, side: str, price: float, pair_price: float | None = None)
         return 0
 
     if naked_side(inv) != side:
+        if getattr(cfg, "strict_paired_inventory", True) and naked_side(inv) is not None:
+            excess = abs(inv.up_shares - inv.down_shares)
+            if excess > 0:
+                deficit_sz = int(excess)
+                if deficit_sz < cfg.min_quote_shares:
+                    return 0
+                return min(base, deficit_sz)
         return base
+
+    if getattr(cfg, "strict_paired_inventory", True):
+        return 0
 
     size = base * (1.0 - risk_utilization(cfg, inv, side)) ** 2
 

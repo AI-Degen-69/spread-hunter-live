@@ -258,18 +258,28 @@ def _decide_quotes_from_mid(
             heavy_mid = mid_price(heavy_book.get("best_bid"),
                                   heavy_book.get("best_ask"))
             heavy_avg = inv.avg(heavy)
+            pair_cap = getattr(cfg, "max_pair_cost", 0.99)
             if heavy_mid is not None and heavy_avg > 0 and heavy_mid < heavy_avg:
-                out.append(QuoteIntent(
-                    side=side, token_id=book.get("token_id"),
-                    price=round(ba, 4), size=int(deficit), mid=mid,
-                    edge_vs_mid=mid - ba, crossed=True,
-                    reason=(f"EMERGENCY hedge: {deficit:.0f}sh short of "
-                            f"{heavy} = ${deficit_usd:.0f} vs "
-                            f"${cfg.max_naked_usd:.0f} cap, "
-                            f"{heavy} mid {heavy_mid:.3f} under avg "
-                            f"{heavy_avg:.3f} -- crossing at {ba:.3f}"),
-                ))
-                continue
+                if (heavy_avg + ba) <= pair_cap:
+                    out.append(QuoteIntent(
+                        side=side, token_id=book.get("token_id"),
+                        price=round(ba, 4), size=int(deficit), mid=mid,
+                        edge_vs_mid=mid - ba, crossed=True,
+                        reason=(f"EMERGENCY hedge: {deficit:.0f}sh short of "
+                                f"{heavy} = ${deficit_usd:.0f} vs "
+                                f"${cfg.max_naked_usd:.0f} cap, "
+                                f"{heavy} mid {heavy_mid:.3f} under avg "
+                                f"{heavy_avg:.3f} -- crossing at {ba:.3f}"),
+                    ))
+                    continue
+
+        # STRICT PAIRED INVENTORY: Block adding to the heavy side when unhedged inventory exists
+        if getattr(cfg, "strict_paired_inventory", True) and imbalance > 0:
+            blocked.append(
+                f"{side}: unhedged inventory exists ({imbalance:.1f} excess {side} shares) -- "
+                f"strict paired inventory blocks heavy quote"
+            )
+            continue
 
         price, provisional, band, truncated = quote_resting_price(cfg, inv, side, book)
         if price is None or provisional is None or band is None:
@@ -347,7 +357,10 @@ def _decide_quotes_from_mid(
 
         # THE SIZE LADDER (strategy/risk.py). Sized in couple shares.
         ladder = risk.size_for(cfg, inv, side, price, pair_price=calc_pair_price)
-        size = int(ladder * band.size_mult * truncated)
+        if getattr(cfg, "strict_paired_inventory", True) and imbalance < 0:
+            size = ladder
+        else:
+            size = int(ladder * band.size_mult * truncated)
         waived = ""
         if size < cfg.min_quote_shares:
             if (cfg.waive_attenuation_below_floor

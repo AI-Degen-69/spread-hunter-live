@@ -436,14 +436,14 @@ def test_unbalanced_lone_heavy_side_is_refused():
 
     intents, why = decide_quotes(cfg, up, down, naked, 1e9, None)
     assert intents == []
-    assert "deepens the imbalance" in why
+    assert "strict paired inventory" in why
 
 
 def test_unbalanced_lone_light_side_is_allowed():
     """The light side alone still rests: it flattens the position."""
     cfg = MakerConfig(require_two_sided_when_flat=True)
     naked = Inventory(up_shares=40, down_shares=0,
-                      up_cost=6.0, down_cost=0.0)
+                      up_cost=4.0, down_cost=0.0)
     up = {"best_bid": 0.11, "best_ask": 0.12,
           "bids": {0.11: 9999.0}, "asks": {0.12: 9999.0}}
     down = {"best_bid": 0.87, "best_ask": 0.88,

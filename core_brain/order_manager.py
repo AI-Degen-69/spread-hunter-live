@@ -922,17 +922,61 @@ def _submit_and_log(
         try:
             from core_brain.order_registry import OrderRegistry, CloseRecord, get_run_id
             registry = OrderRegistry()
-            cost_basis = 0.0
-            with registry._conn() as conn:
-                r = conn.execute(
-                    "SELECT COALESCE(SUM(f.size * f.price), 0.0) AS c FROM fills f JOIN orders o ON f.order_uuid = o.id WHERE o.condition_id = ?",
-                    (condition_id,),
-                ).fetchone()
-                cost_basis = float(r["c"]) if r else 0.0
             amt = 0.0
             if call_data and len(call_data) >= 10 + 64 * 5:
                 amount_hex = call_data[10 + 64 * 4 : 10 + 64 * 5]
                 amt = int(amount_hex, 16) / 10**6
+            
+            with registry._conn() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT o.token_id,
+                           COALESCE(SUM(f.size * f.price), 0.0) AS cost,
+                           COALESCE(SUM(f.size), 0.0) AS shares
+                    FROM fills f
+                    JOIN orders o ON f.order_uuid = o.id
+                    WHERE o.condition_id = ?
+                    GROUP BY o.token_id
+                    """,
+                    (condition_id,),
+                ).fetchall()
+                
+                tok_map = {}
+                for r in rows:
+                    s = float(r["shares"])
+                    c = float(r["cost"])
+                    if s > 0:
+                        tok_map[r["token_id"]] = c / s
+
+                up_unit_cost = None
+                dn_unit_cost = None
+                for tid, ucost in tok_map.items():
+                    tid_s = str(tid).lower()
+                    if "up" in tid_s or "yes" in tid_s or "long" in tid_s:
+                        up_unit_cost = ucost
+                    elif "dn" in tid_s or "down" in tid_s or "no" in tid_s or "short" in tid_s:
+                        dn_unit_cost = ucost
+
+                tok_keys = list(tok_map.keys())
+                if up_unit_cost is None and tok_keys:
+                    up_unit_cost = tok_map[tok_keys[0]]
+                if dn_unit_cost is None:
+                    if len(tok_keys) > 1 and tok_keys[1] != tok_keys[0]:
+                        dn_unit_cost = tok_map[tok_keys[1]]
+                    elif len(tok_keys) > 0 and up_unit_cost != tok_map[tok_keys[0]]:
+                        dn_unit_cost = tok_map[tok_keys[0]]
+
+                if up_unit_cost is None and dn_unit_cost is None:
+                    up_unit_cost = 0.49
+                    dn_unit_cost = 0.49
+                elif up_unit_cost is None:
+                    up_unit_cost = max(0.01, 0.98 - dn_unit_cost)
+                elif dn_unit_cost is None:
+                    dn_unit_cost = max(0.01, 0.98 - up_unit_cost)
+
+                avg_pair_cost = up_unit_cost + dn_unit_cost
+
+            cost_basis = float(amt) * avg_pair_cost
             proceeds = float(amt) * 1.00
             realized_pnl = proceeds - cost_basis
             registry.log_close(CloseRecord(
@@ -946,8 +990,8 @@ def _submit_and_log(
                 fee=0.0,
                 realized_pnl=realized_pnl,
                 forgone_vs_settlement=0.0,
-                up_cost_removed=cost_basis / 2.0 if cost_basis else 0.0,
-                dn_cost_removed=cost_basis / 2.0 if cost_basis else 0.0,
+                up_cost_removed=float(amt) * up_unit_cost,
+                dn_cost_removed=float(amt) * dn_unit_cost,
                 tx_hash=tx_hash,
                 run_id=get_run_id(),
             ))

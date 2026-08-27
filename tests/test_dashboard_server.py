@@ -1786,5 +1786,44 @@ def test_market_link_generates_safe_hyperlinks():
     assert ".market-link" in styles_css
 
 
+@pytest.mark.skipif(NODE is None, reason="node not installed")
+def test_market_table_headers_and_cells_alignment():
+    """Assert Market Inspection table has 6 headers and rendered cells align correctly."""
+    index_html = _read_static("index.html")
+    # Parse table headers from index.html
+    import re
+    th_matches = re.findall(r"<th>(.*?)</th>", index_html)
+    # Market table headers
+    expected_headers = ["Market", "Commit ($)", "Hedge", "Realized P&L", "Fills", "Status"]
+    assert all(h in th_matches for h in expected_headers), f"Headers missing in index.html: {expected_headers}"
 
+    harness = Path(__file__).resolve().parent / "js" / "render_markets_harness.js"
+    app_js = Path(__file__).resolve().parent.parent / "dashboard" / "static" / "app.js"
 
+    res = subprocess.run(
+        [NODE, str(harness), str(app_js)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout)
+
+    assert out.get("rendered") is True, f"Render failed: {out}"
+    assert out.get("cellCount") == 6, f"Expected 6 cells, got {out.get('cellCount')}: {out}"
+
+    cells = out["cells"]
+    # 0: Market (title, slug, link, badge)
+    assert "Will BTC hit 100k by March?" in cells[0]
+    # 1: Commit ($) -> $42.50
+    assert "$42.50" in cells[1]
+    # 2: Hedge -> Hedged
+    assert "Hedged" in cells[2]
+    assert "$" not in cells[2]
+    # 3: Realized P&L -> $15.75
+    assert "$15.75" in cells[3]
+    assert "$15.75" not in cells[1]
+    assert "$15.75" not in cells[2]
+    # 4: Fills -> plain fill count (7), not hedge text
+    assert cells[4] == "7"
+    assert "Hedged" not in cells[4]
+    # 5: Status -> QUOTING
+    assert "QUOTING" in cells[5]

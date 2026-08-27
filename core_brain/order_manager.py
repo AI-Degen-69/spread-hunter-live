@@ -2724,16 +2724,22 @@ def venue_sync(funder=None, db_path=None, quiet=False):
             for op in open_positions:
                 if not isinstance(op, dict):
                     continue
+                # Stage all per-position values before mutating any totals: a
+                # malformed currentValue must not leave committed/unrealized
+                # counting a position that naked then drops.
                 try:
-                    committed += float(op.get("initialValue") or 0.0)
-                    unrealized += float(op.get("cashPnl") or 0.0)
-                    cid = op.get("conditionId")
-                    if cid:
-                        if cid not in condition_groups:
-                            condition_groups[cid] = []
-                        condition_groups[cid].append(float(op.get("currentValue") or 0.0))
+                    iv = float(op.get("initialValue") or 0.0)
+                    cp = float(op.get("cashPnl") or 0.0)
+                    cv = float(op.get("currentValue") or 0.0)
                 except (TypeError, ValueError):
                     continue
+                committed += iv
+                unrealized += cp
+                cid = op.get("conditionId")
+                if cid:
+                    if cid not in condition_groups:
+                        condition_groups[cid] = []
+                    condition_groups[cid].append(cv)
 
             # Naked = sum of unpaired exposure across all markets. For each condition,
             # the paired amount is min(values), the remainder is unpaired.
@@ -2769,6 +2775,7 @@ def venue_sync(funder=None, db_path=None, quiet=False):
         "closes_skipped_existing": closes_skipped_existing,
         "raw_closed_rows": len(raw_closed),
         "raw_open_rows": len(open_positions),
+        "venue_open_unmeasured": venue_open_unmeasured,
     }
     if not quiet:
         av = mark.get("account_value_usd")

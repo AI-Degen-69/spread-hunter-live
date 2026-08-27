@@ -1083,7 +1083,7 @@ def api_system_sync(request: Request):
             "orders_cancelled": summary.orders_cancelled,
             "transitions": summary.transitions[:20],
         }
-    except Exception as exc:
+    except (Exception, SystemExit) as exc:
         result["steps"]["reconcile"] = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         result["ok"] = False
 
@@ -1321,11 +1321,10 @@ def get_run_profitability(run_id: str | None = None):
         rp = data.get("run_profitability")
         if rp is None:
             return JSONResponse({"error": "run_profitability unavailable"}, status_code=500)
-        # Include venue open-order count from /api/state for the "0 open orders" line.
-        # Keep it here so one fetch answers the whole question.
-        from core_brain.registry_state import summarize_state
-        state = summarize_state(resolve_db_path(_ACTIVE_DB_OVERRIDE))
-        rp = {**rp, "venue_open_orders": len([o for o in (state.get("orders") or []) if str(o.get("status") or "").lower() in ("open", "pending", "partial")])}
+        # venue_open_orders must come from venue reconciliation, not local SQLite.
+        # The profitability endpoint is read-only and must not invent a venue
+        # count from stale rows; omit the field when venue reconciliation has
+        # not run (call /api/system/sync for that).
         return JSONResponse(rp)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)

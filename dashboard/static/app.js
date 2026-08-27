@@ -152,9 +152,13 @@ if (syncBtn) {
     syncBtn.textContent = 'SYNCING…';
     // Optional: show a one-line ticker notice so the operator sees it worked even before the poll.
     const empty = tickerEl.querySelector('.empty-state');
+    let syncOk = false;
+    let isWarning = false;
     try {
       const res = await controlFetch('/api/system/sync');
       const data = await res.json().catch(() => ({}));
+      isWarning = (res.status === 207);
+      syncOk = (data.ok === true) && res.ok;
       const steps = data.steps || {};
       const rec = steps.reconcile || {};
       const vs = steps.venue_sync || {};
@@ -174,14 +178,17 @@ if (syncBtn) {
       if (typeof localOpen === 'number' && typeof venueOpen === 'number' && localOpen !== venueOpen) {
         lines.push(`Fixed drift: dashboard had ${localOpen} open → now ${venueOpen} (venue truth)`);
       }
-      if (vs.raw_open_rows === 0) lines.push('Positions: 0 on venue — dashboard exposure zeroed');
+      if (vs.raw_open_rows === 0 && !vs.venue_open_unmeasured) lines.push('Positions: 0 on venue — dashboard exposure zeroed');
       const msg = lines.join(' · ') || (data.ok ? 'Sync ok — dashboard now matches venue.' : 'Sync finished with warnings');
       // Reuse ticker as a transient banner; also trigger immediate re-poll.
       appendTickerEvent(`[SYNC] ${msg}`, 'Dashboard synced with Polymarket (read-only).', '');
     } catch (e) {
+      syncOk = false;
       appendTickerEvent(`[SYNC ERROR] ${e.message || String(e)}`, 'Sync failed — venue may be unreachable. Retrying on next poll.', '');
     } finally {
-      syncBtn.textContent = 'SYNCED';
+      if (syncOk) syncBtn.textContent = 'SYNCED';
+      else if (isWarning) syncBtn.textContent = 'SYNC WARNING';
+      else syncBtn.textContent = 'SYNC FAILED';
       setTimeout(() => { syncBtn.textContent = prevText; syncBtn.disabled = false; syncBtn.classList.remove('syncing'); }, 1800);
       // Immediately refresh all tiles without waiting for the 2s poll.
       pollStatus();

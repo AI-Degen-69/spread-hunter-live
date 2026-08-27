@@ -1053,20 +1053,25 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
                     _venue_start = float(_first["account_value_usd"])
                     _venue_end = float(_last["account_value_usd"])
         _open_orders = sum(1 for o in orders if str(o.get("status") or "").lower() in ("open", "pending", "partial"))
-        _is_profitable = (realized_pnl > 0) if closes else None
+        # Profit classification uses total P&L when the unrealized leg is measured,
+        # falling back to realized only when float is unmeasured (NULL). A run can
+        # be +$1 realized but -$2 unrealized → net loss; classifying on realized
+        # alone would read as PROFITABLE.
+        _profit_basis = total_pnl if unrealized_usd is not None else realized_pnl
+        _is_profitable = (_profit_basis > 0) if closes else None
         # One-line verdict for the banner. No new numbers beyond what is already
         # computed above — just a pre-formatted string so the dashboard never
         # has to re-derive the same conditional.
         if not closes and not fills:
             _verdict = "NO TRADES — no fills, no closes, nothing to mark."
             _verdict_level = "neutral"
-        elif realized_pnl > 0:
+        elif _profit_basis > 0:
             _verdict = f"PROFITABLE: +${realized_pnl:.2f} realized"
             if unrealized_usd is not None and unrealized_usd != 0:
                 _verdict += f" ({total_pnl:+.2f} inc. unrealized)"
             _verdict += f" · {len(wins)}W/{len(losses)}L"
             _verdict_level = "profit"
-        elif realized_pnl < 0:
+        elif _profit_basis < 0:
             _verdict = f"LOSS: ${realized_pnl:.2f} realized"
             if unrealized_usd is not None and unrealized_usd != 0:
                 _verdict += f" ({total_pnl:+.2f} inc. unrealized)"

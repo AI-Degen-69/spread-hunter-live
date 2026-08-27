@@ -31,6 +31,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LOG = ROOT / "runtime" / "rerank.log"
 
+# Load .env before any SH_* parsing at import time: values that live only in
+# the file (not the process environment) would otherwise fall back to the
+# hardcoded defaults, and a 600s test default would hide the mis-load.
+try:
+    from dotenv import load_dotenv
+    load_dotenv(ROOT / ".env", override=False)
+except Exception:
+    pass
+
 # The live cycle-telemetry ring (core_brain/cycle_stream.py). This script
 # APPENDS only, deliberately without importing core_brain.cycle_stream: it runs
 # from the repo root and must stay decoupled from the execution package.
@@ -45,6 +54,8 @@ RING_PATH = ROOT / "runtime" / "cycle_events.jsonl"
 # candidates) from becoming a burden while cutting the worst-case wait from an
 # hour to ten minutes.
 def _get_top_markets() -> int:
+    # Re-read each cycle so an operator can change .env without restarting the
+    # loop; the same dotenv load pattern as the module-level one above.
     try:
         from dotenv import load_dotenv
         load_dotenv(ROOT / ".env", override=False)

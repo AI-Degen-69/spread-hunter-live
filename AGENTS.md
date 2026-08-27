@@ -64,7 +64,7 @@ A `PreToolUse` hook (`scripts/hooks/git_workflow_guard.py`) puts these rules at 
 
 | Read this | When |
 | --- | --- |
-| [docs/agents/workflow_cheatsheet.md](docs/agents/workflow_cheatsheet.md) | **Core Agent Responsibilities & Default Workflows** — Read for how I proactively manage PRs, UI/UX, and TDD loops |
+| [docs/agents/workflow-cheatsheet.md](docs/agents/workflow-cheatsheet.md) | **Core Agent Responsibilities & Default Workflows** — Read for how I proactively manage PRs, UI/UX, and TDD loops |
 | [docs/agents/safety.md](docs/agents/safety.md) | Before running any command that could reach the venue |
 | [docs/agents/verifying.md](docs/agents/verifying.md) | Before reporting any change done |
 | [docs/agents/architecture.md](docs/agents/architecture.md) | Finding the module that owns a behaviour; runtime state files |

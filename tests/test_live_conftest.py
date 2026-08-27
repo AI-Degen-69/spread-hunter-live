@@ -84,3 +84,11 @@ def test_every_engine_module_resolves_inside_live():
     for mod in (live_exec, order_reg, markets, config):
         path = Path(mod.__file__).resolve()
         assert path.parent == live_dir / "core_brain", f"{mod.__name__} resolved to {path}"
+
+
+def test_conftest_places_repo_root_on_sys_path():
+    """Conftest must guarantee repo root is first on sys.path for standalone and IDE test execution."""
+    import sys
+    from tests.conftest import REPO_ROOT
+    assert sys.path[0] == str(REPO_ROOT)
+

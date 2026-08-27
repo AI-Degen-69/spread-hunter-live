@@ -11,8 +11,14 @@ import os
 import re
 import socket
 import sqlite3
+import sys
 import urllib.parse
 from pathlib import Path
+
+# Ensure project root is always first on sys.path for any runner (IDE or CLI)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import pytest
 

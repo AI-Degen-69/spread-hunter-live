@@ -4,6 +4,7 @@ This document defines my core responsibilities, default job, and operating princ
 
 ## Issue & Task Management
 * `/issue-create` - Takes a raw, unstructured idea and turns it into a ready-to-work GitHub issue to capture thoughts immediately and revisit later.
+* `/work-issue` - The end-to-end flow for picking up an open issue, brainstorming/planning it, routing it to execution orchestration, and shipping the final PR.
 
 ## Core Operating Principles
 * **Plan Before Execute** - Mandates locking in architecture and plans before writing complex code.

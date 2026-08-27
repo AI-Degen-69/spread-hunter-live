@@ -1705,3 +1705,33 @@ def test_page_surfaces_the_active_database_mode():
     app_js = _read_static("app.js")
     assert "db_mode" in app_js
     assert "db_is_production" in app_js
+
+
+@pytest.mark.skipif(NODE is None, reason="node not installed")
+def test_event_ticker_formats_timestamps_in_local_time():
+    """Event ticker renders timestamps in viewer's local time, while storage stays UTC."""
+    harness = Path(__file__).resolve().parent / "js" / "format_local_time_harness.js"
+    app_js = Path(__file__).resolve().parent.parent / "dashboard" / "static" / "app.js"
+
+    # Run in UTC+3 (Etc/GMT-3 in POSIX format)
+    env = dict(os.environ)
+    env["TZ"] = "Etc/GMT-3"
+
+    res = subprocess.run(
+        [NODE, str(harness), str(app_js)],
+        capture_output=True, text=True, timeout=60, env=env,
+    )
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout)
+
+    # 14:28:00 UTC in UTC+3 is 17:28
+    assert out["valid"] is not None
+    assert "17:28" in out["valid"]
+    assert out["empty"] == ""
+    assert out["invalid"] == ""
+    assert out["nullVal"] == ""
+
+    # Live Event Ticker banner indicates local time
+    index_html = _read_static("index.html")
+    assert "Times shown in local time" in index_html
+

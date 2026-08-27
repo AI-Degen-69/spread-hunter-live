@@ -54,6 +54,13 @@ function fmtVal(v, cls) {
   return `<span class="kpi-value${cls || ''}${nullCls}">${esc(v)}</span>`;
 }
 
+function fmtLocalTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return '';
+  return d.toLocaleTimeString();
+}
+
 /* ── controlFetch: CSRF-protected POST ── */
 function controlFetch(path) {
   return fetch(path, { method: 'POST', headers: { 'X-Control-Token': CONTROL_TOKEN } });
@@ -369,7 +376,7 @@ function connectSSE() {
   sseSource.onmessage = (e) => {
     try {
       const ev = JSON.parse(e.data);
-      const ts = ev.ts ? ev.ts.split('T')[1]?.replace('Z','') : '';
+      const ts = fmtLocalTime(ev.ts);
       const svc = (ev.service || '').toUpperCase().slice(0,6);
       const action = ev.action || '';
       const slug = ev.market_slug || '';
@@ -1395,5 +1402,5 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderDbMode, renderServiceCards };
+  module.exports = { renderDbMode, renderServiceCards, fmtLocalTime };
 }

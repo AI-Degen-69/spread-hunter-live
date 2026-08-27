@@ -149,7 +149,15 @@ def size_for(cfg, inv, side: str, price: float, pair_price: float | None = None)
         return 0
 
     if naked_side(inv) != side:
+        if getattr(cfg, "strict_paired_inventory", True) and naked_side(inv) is not None:
+            excess = abs(inv.up_shares - inv.down_shares)
+            if excess > 0:
+                deficit_sz = int(excess)
+                return max(cfg.min_quote_shares, min(base, deficit_sz))
         return base
+
+    if getattr(cfg, "strict_paired_inventory", True):
+        return 0
 
     size = base * (1.0 - risk_utilization(cfg, inv, side)) ** 2
 

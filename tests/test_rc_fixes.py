@@ -436,7 +436,7 @@ def test_unbalanced_lone_heavy_side_is_refused():
 
     intents, why = decide_quotes(cfg, up, down, naked, 1e9, None)
     assert intents == []
-    assert "deepens the imbalance" in why
+    assert "strict paired inventory" in why or "deepens the imbalance" in why
 
 
 def test_unbalanced_lone_light_side_is_allowed():

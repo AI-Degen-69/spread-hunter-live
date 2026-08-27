@@ -135,6 +135,9 @@ class MakerConfig:
     # enforce_price_band and enable_emergency_hedge. False makes `hard_block`
     # return None for every side, and nothing else changes.
     enable_hard_blocks: bool = True
+    # Strict Paired Inventory Accounting: block quoting the heavy leg when an
+    # unhedged imbalance exists and size the light leg strictly to balance the pair.
+    strict_paired_inventory: bool = True
 
     # HARD CEILINGS on order and total notional, mirrored here so the
     # dashboard's /api/parameters endpoint reads one config object, not two.

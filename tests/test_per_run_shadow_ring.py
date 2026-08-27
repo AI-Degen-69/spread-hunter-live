@@ -90,9 +90,9 @@ class TestPerRunRing:
         from core_brain.order_registry import init_db
         from core_brain.shadow_run import _make_logging_emit
 
-        before = require_production_ring_present
         db = tmp_path / "shadow.db"
         init_db(db)
+        before = _sha(DEFAULT_RING_PATH)
         emit = _make_logging_emit(db, run_id="testrun3")
         emit(7, "quoting", "decide", market_slug="dota-2026",
              reason="pair cost 0.985", extra={"intent_count": 1})

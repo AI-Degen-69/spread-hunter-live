@@ -31,5 +31,8 @@ This document defines my core responsibilities, default job, and operating princ
 * `frontend-ui-engineering` - The core skill that enforces accessibility (WCAG), responsive layouts, and production-quality HTML/CSS.
 * `browse` / `browser-testing-with-devtools` - Uses headless browsers and real Chrome DevTools to navigate the UI, check visual states, and debug layouts directly in the DOM.
 
+## Housekeeping & Cleanliness
+* `/repo-sweep` - Performs a repository-wide cleanliness audit to remove junk, enforce naming conventions, and verify folder structure harmony.
+
 ## Knowledge Management
 * `/learn` - Extracts reusable patterns and solutions from our live chat session and saves them as permanent skills for future use.

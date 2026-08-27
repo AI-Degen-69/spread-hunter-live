@@ -7,22 +7,47 @@ import socket
 from pathlib import Path
 import pytest
 
-CREDENTIAL_VARS = (
+REQUIRED_CREDENTIAL_VARS = frozenset({
     "POLY_PRIVATE_KEY",
     "POLY_KEY",
+    "POLY_API_KEY",
+    "POLY_API_SECRET",
+    "POLY_API_PASSPHRASE",
     "POLY_FUNDER",
     "POLY_SIG_TYPE",
     "PRIVATE_KEY",
     "RELAYER_API_KEY",
     "RELAYER_API_KEY_ADDRESS",
     "POLYGON_RPC",
-)
+})
+
+
+from tests.conftest import CREDENTIAL_VARS
 
 
 def test_live_env_scrub_removes_credentials():
     """Default test environment in live/ must have zero venue credentials in os.environ."""
-    for var in CREDENTIAL_VARS:
+    assert REQUIRED_CREDENTIAL_VARS.issubset(set(CREDENTIAL_VARS)), (
+        f"Missing credentials in CREDENTIAL_VARS: {REQUIRED_CREDENTIAL_VARS - set(CREDENTIAL_VARS)}"
+    )
+    for var in REQUIRED_CREDENTIAL_VARS:
         assert var not in os.environ, f"{var} leaked into test environment"
+
+
+def test_scrub_credential_env_actively_removes_populated_vars(monkeypatch):
+    """If environment variables are preset, the scrub logic removes all required venue credentials."""
+    import tests.conftest as root_conftest
+
+    for var in REQUIRED_CREDENTIAL_VARS:
+        monkeypatch.setenv(var, "secret-test-token")
+
+    # Invoke conftest scrub implementation
+    root_conftest.scrub_credentials(monkeypatch)
+
+    for var in REQUIRED_CREDENTIAL_VARS:
+        assert var not in os.environ, f"{var} was not scrubbed from environment"
+
+
 
 
 def test_live_network_block_raises_on_outbound_socket():

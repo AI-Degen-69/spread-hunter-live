@@ -21,6 +21,9 @@ from core_brain.order_registry import DEFAULT_DB_PATH
 CREDENTIAL_VARS = (
     "POLY_PRIVATE_KEY",
     "POLY_KEY",
+    "POLY_API_KEY",
+    "POLY_API_SECRET",
+    "POLY_API_PASSPHRASE",
     "POLY_FUNDER",
     "POLY_SIG_TYPE",
     "PRIVATE_KEY",
@@ -38,11 +41,17 @@ def pytest_configure(config):
     )
 
 
-@pytest.fixture(autouse=True)
-def scrub_credential_env(monkeypatch):
+def scrub_credentials(monkeypatch) -> None:
     """Scrub venue credentials and sensitive endpoint configs from os.environ."""
     for var in CREDENTIAL_VARS:
         monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def scrub_credential_env(monkeypatch):
+    """Scrub venue credentials and sensitive endpoint configs from os.environ."""
+    scrub_credentials(monkeypatch)
+
 
 
 def _is_loopback(address):

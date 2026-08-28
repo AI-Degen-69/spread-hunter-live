@@ -237,6 +237,18 @@ def _decide_quotes_from_mid(
             blocked.append(f"{side}: no two-sided book")
             continue
 
+        # DECIDED MARKET — no room to work. The filter's [0.05,0.95] was
+        # 5c from the edge, tightened 2026-08-28 to [0.20,0.80] per operator
+        # directive: a finished Darja/Nikola at 100.0%/0.1% was still
+        # quotable with no spread to capture. Mirrors
+        # scripts/filter_markets.py:462. When both sides block here,
+        # plan_orders() sees empty intents and cancels all OPEN orders for
+        # this market — the safe path for a settled book (Polymarket also
+        # cancels at settlement, but we don't wait for it).
+        if mid <= 0.20 or mid >= 0.80:
+            blocked.append(f"{side}: mid {mid:.3f} outside [0.20,0.80] -- decided market")
+            continue
+
         # INVENTORY SKEW. Push the heavy side away from mid and pull the light
         # side toward it, proportional to how lopsided we are. The light side
         # then fills first, which flattens the position using resting orders

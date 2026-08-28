@@ -396,12 +396,16 @@ def test_flat_inventory_refuses_a_lone_leg():
     """Unchanged behavior: flat book + lone intent = no quote (existing rule)."""
     from core_brain.quotes import _require_two_sided
 
-    cfg = MakerConfig(require_two_sided_when_flat=True)
+    # Price band 0.30-0.70 makes UP at 0.24 blocked by band while DOWN at
+    # 0.65 passes — both mids inside [0.20,0.80] so the 2026-08-28 tighten
+    # does not mask the lone-leg case.
+    cfg = MakerConfig(require_two_sided_when_flat=True,
+                      price_band_low=0.30, price_band_high=0.70)
     flat = Inventory(up_shares=0, down_shares=0, up_cost=0.0, down_cost=0.0)
-    up = {"best_bid": 0.11, "best_ask": 0.12,
-          "bids": {0.11: 9999.0}, "asks": {0.12: 9999.0}}
-    down = {"best_bid": 0.87, "best_ask": 0.88,
-            "bids": {0.87: 9999.0}, "asks": {0.88: 9999.0}}
+    up = {"best_bid": 0.24, "best_ask": 0.26,
+          "bids": {0.24: 9999.0}, "asks": {0.26: 9999.0}}
+    down = {"best_bid": 0.64, "best_ask": 0.66,
+            "bids": {0.64: 9999.0}, "asks": {0.66: 9999.0}}
 
     intents, why = decide_quotes(cfg, up, down, flat, 1e9, None)
     assert intents == []
@@ -444,10 +448,12 @@ def test_unbalanced_lone_light_side_is_allowed():
     cfg = MakerConfig(require_two_sided_when_flat=True)
     naked = Inventory(up_shares=40, down_shares=0,
                       up_cost=4.0, down_cost=0.0)
-    up = {"best_bid": 0.11, "best_ask": 0.12,
-          "bids": {0.11: 9999.0}, "asks": {0.12: 9999.0}}
-    down = {"best_bid": 0.87, "best_ask": 0.88,
-            "bids": {0.87: 9999.0}, "asks": {0.88: 9999.0}}
+    # Both mids inside [0.20,0.80]; naked UP-heavy blocks UP, DOWN (light)
+    # is still allowed to flatten — the 2026-08-28 gate does not interfere.
+    up = {"best_bid": 0.30, "best_ask": 0.32,
+          "bids": {0.30: 9999.0}, "asks": {0.32: 9999.0}}
+    down = {"best_bid": 0.60, "best_ask": 0.62,
+            "bids": {0.60: 9999.0}, "asks": {0.62: 9999.0}}
 
     intents, why = decide_quotes(cfg, up, down, naked, 1e9, None)
     assert [i.side for i in intents] == ["DOWN"]

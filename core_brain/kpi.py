@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
-from core_brain.config import load as load_cfg
+from core_brain.config import MakerConfig, load as load_cfg
 from core_brain.runtime_paths import resolve_runtime_file
 
 _CFG = load_cfg()
@@ -45,6 +45,160 @@ def _wilson_ci(successes: int, n: int, z: float = 1.96) -> Optional[dict[str, fl
         "lower": max(0.0, center - half),
         "upper": min(1.0, center + half),
     }
+
+
+# --------------------------------------------------------------------------
+# Statistical Validation Gate constants and functions (Issue #51)
+# --------------------------------------------------------------------------
+
+# Pre-computed z-scores so callers do not need scipy.
+Z_ALPHA_90_ONE_SIDED = 1.645   # one-sided 90% confidence (alpha=0.05)
+Z_BETA_80_POWER = 0.8416       # 80% power (beta=0.20)
+Z_95_TWO_SIDED = 1.96          # 95% two-sided (used by _wilson_ci default)
+
+
+def required_sample_size(
+    sigma: float | None,
+    delta: float | None,
+    z_alpha: float = Z_ALPHA_90_ONE_SIDED,
+    z_beta: float = Z_BETA_80_POWER,
+) -> int | None:
+    """Minimum sample size to detect *delta* mean shift with 80% power.
+
+    Formula: ``n = ceil(((z_alpha + z_beta) * sigma / delta) ** 2)``
+
+    Returns ``None`` when any input is non-positive, missing, NaN or Inf.
+    Both *sigma* and *delta* MUST share the same units (e.g. both in price
+    or both in return-%).
+    """
+    if sigma is None or delta is None:
+        return None
+    if not math.isfinite(sigma) or not math.isfinite(delta):
+        return None
+    if sigma <= 0.0 or delta <= 0.0:
+        return None
+    if not math.isfinite(z_alpha) or z_alpha <= 0.0:
+        return None
+    if not math.isfinite(z_beta) or z_beta <= 0.0:
+        return None
+    return math.ceil(((z_alpha + z_beta) * sigma / delta) ** 2)
+
+
+def power_table(
+    sigma: float,
+    deltas: tuple[float, ...] = (0.01, 0.02, 0.04),
+    z_alpha: float = Z_ALPHA_90_ONE_SIDED,
+    z_beta: float = Z_BETA_80_POWER,
+) -> list[dict]:
+    """Return sample-size and Wilson half-width rows for each effect size *delta*.
+
+    Each row contains:
+      - ``delta``: the effect size tested
+      - ``n_required``: sample size from :func:`required_sample_size`
+      - ``wilson_half_width``: 95% Wilson CI half-width at a 50% win rate for
+        that sample size (worst-case width)
+    """
+    rows: list[dict] = []
+    for d in deltas:
+        n = required_sample_size(sigma, d, z_alpha, z_beta)
+        hw: float | None = None
+        if n is not None and n > 0:
+            ci = _wilson_ci(n // 2, n)  # 50% win rate = worst-case width
+            if ci is not None:
+                hw = (ci["upper"] - ci["lower"]) / 2.0
+        rows.append({"delta": d, "n_required": n, "wilson_half_width": hw})
+    return rows
+
+
+def gate_definition(cfg: MakerConfig | None = None) -> dict[str, Any]:
+    """Return the stat gate specification, thresholds, and tautology disclaimer.
+
+    Pure function — no network, no database.
+    """
+    if cfg is None:
+        cfg = load_cfg()
+    return {
+        "primary_gate": "ci90_lower_pct >= threshold_pct",
+        "threshold_pct": cfg.stat_gate_threshold_pct,
+        "bankroll_fraction": cfg.stat_gate_bankroll_fraction,
+        "dollar_twin_gate": "ci90_lower_usd >= bankroll * bankroll_fraction",
+        "tautology_disclaimer": (
+            "TAUTOLOGY DISCLAIMER: E[PnL | method=merge] > 0 is trivially true "
+            "by construction — merged pairs always pay exactly $1.00 for less "
+            "than $1.00. The statistical gate therefore evaluates ALL exit "
+            "methods (merge, single_buy_exit, naked_exit, gas) inclusive. "
+            "Filtering to merge-only would produce a tautological pass."
+        ),
+    }
+
+
+def evaluate_stat_gate(
+    closes: list[dict],
+    starting_capital: float,
+    threshold_pct: float = 1.0,
+    bankroll_fraction: float = 0.01,
+) -> dict[str, Any]:
+    """Evaluate whether *closes* pass the inclusive 90% CI gate.
+
+    Returns a dict with:
+      - ``passed`` (bool): whether the primary gate is met
+      - ``ci90_lower_pct``: one-sided 90% CI lower bound on mean return %
+      - ``ci90_lower_usd``: the same bound in dollar terms
+      - ``mean_return_pct``: sample mean return %
+      - ``n_closes``: number of closes evaluated
+      - ``methods_present``: set of exit methods in the sample
+
+    Pure function — no network, no database.
+    """
+    n = len(closes)
+    result: dict[str, Any] = {
+        "passed": False,
+        "ci90_lower_pct": None,
+        "ci90_lower_usd": None,
+        "mean_return_pct": None,
+        "stdev_return_pct": None,
+        "n_closes": n,
+        "methods_present": set(),
+    }
+    if n < 2:
+        return result
+
+    return_pcts: list[float] = []
+    methods: set[str] = set()
+    for c in closes:
+        pnl = float(c.get("realized_pnl") or 0.0)
+        cost = c.get("cost_basis")
+        cost_f = float(cost) if cost is not None else None
+        method = c.get("method") or "unknown"
+        methods.add(method)
+        if cost_f is not None and cost_f > 0:
+            return_pcts.append(100.0 * pnl / cost_f)
+
+    result["methods_present"] = methods
+
+    if len(return_pcts) < 2:
+        return result
+
+    mean_r = statistics.mean(return_pcts)
+    std_r = statistics.stdev(return_pcts)
+    se = std_r / math.sqrt(len(return_pcts))
+    ci90_lower = mean_r - Z_ALPHA_90_ONE_SIDED * se
+
+    result["mean_return_pct"] = mean_r
+    result["stdev_return_pct"] = std_r
+    result["ci90_lower_pct"] = ci90_lower
+
+    # Dollar twin: translate % gate into absolute dollars
+    ci90_lower_usd = (ci90_lower / 100.0) * starting_capital
+    result["ci90_lower_usd"] = ci90_lower_usd
+
+    # Primary gate: 90% CI lower bound exceeds threshold
+    pct_pass = ci90_lower >= threshold_pct
+    # Dollar twin: lower bound in dollars meets or exceeds bankroll fraction
+    dollar_pass = ci90_lower_usd >= (starting_capital * bankroll_fraction)
+    result["passed"] = pct_pass and dollar_pass
+
+    return result
 
 
 def compute_trade_analytics(

@@ -1,0 +1,220 @@
+"""Tests for the statistical validation harness (Issue #52).
+
+Verifies safe read-only execution, hybrid stopping rules, SQLite closes counting,
+environment snapshotting, and banner logging without touching the live venue.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import sqlite3
+import time
+from pathlib import Path
+import pytest
+
+from core_brain.config import load as load_cfg
+from core_brain.order_registry import DEFAULT_DB_PATH, OrderRegistry, init_db
+from core_brain.quotes import QuoteIntent
+from core_brain.shadow_guard import ShadowSafetyViolation
+from core_brain.shadow_run import _Deadline
+from statistical_validation_run.run import (
+    count_closes,
+    main,
+    make_hybrid_deadline_sleep,
+    snapshot_stat_validation_env,
+)
+
+
+class FakeMarket:
+    def __init__(self, cid="0xabc"):
+        self.condition_id = cid
+        self.up_token = "tok-up"
+        self.down_token = "tok-dn"
+        self.market_slug = "fake-market"
+        self.tick_size = 0.01
+        self.neg_risk = False
+
+
+def _books(clob_host, token):
+    return {
+        "token_id": token,
+        "best_bid": 0.47,
+        "best_ask": 0.49,
+        "bids": {0.47: 100},
+        "asks": {0.49: 100},
+    }
+
+
+class TestSafety:
+    """AGENTS.md: data/orders.db is production registry; refuse it outright."""
+
+    def test_production_registry_is_refused(self):
+        with pytest.raises(ShadowSafetyViolation, match="production registry"):
+            main(["--db", str(DEFAULT_DB_PATH), "--max-hours", "0.0"])
+
+
+class TestCountCloses:
+    """Helper count_closes queries SQLite closes table safely."""
+
+    def test_returns_zero_when_file_missing(self, tmp_path):
+        assert count_closes(tmp_path / "nonexistent.db") == 0
+
+    def test_returns_zero_when_table_missing(self, tmp_path):
+        db = tmp_path / "empty.db"
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE foo (id INT)")
+        con.commit()
+        con.close()
+        assert count_closes(db) == 0
+
+    def test_returns_count_scoped_by_run_id(self, tmp_path):
+        db = tmp_path / "test.db"
+        con = sqlite3.connect(str(db))
+        con.execute(
+            "CREATE TABLE closes (id TEXT PRIMARY KEY, run_id TEXT, realized_pnl REAL)"
+        )
+        con.execute("INSERT INTO closes VALUES ('1', 'shadow-aaa', 0.5)")
+        con.execute("INSERT INTO closes VALUES ('2', 'shadow-aaa', -0.2)")
+        con.execute("INSERT INTO closes VALUES ('3', 'shadow-bbb', 0.1)")
+        con.commit()
+        con.close()
+
+        assert count_closes(db, run_id="shadow-aaa") == 2
+        assert count_closes(db, run_id="shadow-bbb") == 1
+        assert count_closes(db, run_id="shadow-ccc") == 0
+        assert count_closes(db) == 3
+
+    def test_returns_zero_when_run_id_column_missing_for_scoped_query(self, tmp_path):
+        db = tmp_path / "test_no_col.db"
+        con = sqlite3.connect(str(db))
+        con.execute(
+            "CREATE TABLE closes (id TEXT PRIMARY KEY, realized_pnl REAL)"
+        )
+        con.execute("INSERT INTO closes VALUES ('1', 0.5)")
+        con.commit()
+        con.close()
+
+        assert count_closes(db, run_id="shadow-aaa") == 0
+        assert count_closes(db) == 1
+
+
+class TestHybridDeadlineSleep:
+    """Stops when target closes reached or wall clock deadline expires."""
+
+    def test_stops_when_target_closes_reached(self):
+        closes_box = [0]
+        slept = []
+
+        sleep_fn = make_hybrid_deadline_sleep(
+            deadline_ts=1000.0 + 100.0,
+            count_closes_fn=lambda: closes_box[0],
+            target_closes=5,
+            clock=lambda: 1000.0,
+            sleep=slept.append,
+        )
+
+        sleep_fn(5.0)
+        assert slept == [5.0]
+
+        closes_box[0] = 5
+        with pytest.raises(_Deadline):
+            sleep_fn(5.0)
+
+    def test_stops_when_deadline_passes(self):
+        slept = []
+        sleep_fn = make_hybrid_deadline_sleep(
+            deadline_ts=1010.0,
+            count_closes_fn=lambda: 0,
+            target_closes=10,
+            clock=lambda: 1015.0,
+            sleep=slept.append,
+        )
+
+        with pytest.raises(_Deadline):
+            sleep_fn(5.0)
+
+    def test_sleep_is_clamped_to_remaining_time(self):
+        slept = []
+        sleep_fn = make_hybrid_deadline_sleep(
+            deadline_ts=1003.0,
+            count_closes_fn=lambda: 0,
+            target_closes=10,
+            clock=lambda: 1000.0,
+            sleep=slept.append,
+        )
+
+        sleep_fn(5.0)
+        assert slept == [3.0]
+
+
+class TestSnapshot:
+    """Snapshots runtime environment and writes MakerConfig as JSON."""
+
+    def test_snapshot_creates_directory_and_writes_config(self, tmp_path, caplog):
+        art_dir = tmp_path / "shadow_stat_test"
+        cfg = load_cfg()
+
+        with caplog.at_level(logging.INFO, logger="statistical_validation_run"):
+            snapshot_stat_validation_env(art_dir, cfg)
+
+        assert art_dir.is_dir()
+        cfg_file = art_dir / "config.json"
+        assert cfg_file.is_file()
+
+        data = json.loads(cfg_file.read_text(encoding="utf-8"))
+        assert "bankroll_usd" in data
+        assert "stat_gate_threshold_pct" in data
+        assert "STAT HARNESS config" in caplog.text
+
+
+class TestEndToEndHarness:
+    """Full execution test with injected client and market dependencies."""
+
+    def test_e2e_run_records_banners_telemetry_and_orders(self, tmp_path, caplog, monkeypatch):
+        db = tmp_path / "shadow_stat_e2e.db"
+        intent = QuoteIntent(
+            side="UP",
+            token_id="tok-up",
+            price=0.48,
+            size=2,
+            mid=0.49,
+            edge_vs_mid=0.01,
+        )
+
+        now = [1000.0]
+
+        def clock():
+            return now[0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        with caplog.at_level(logging.INFO):
+            rc = main(
+                ["--target-closes", "2", "--max-hours", "0.001", "--db", str(db)],
+                markets_fn=lambda max_markets=None: [FakeMarket("0xabc")],
+                client_fn=lambda: object(),
+                decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([intent], ""),
+                fetch_books=_books,
+                clock=clock,
+                sleep=sleep,
+            )
+
+        assert rc == 0
+        text = caplog.text.lower()
+        assert "shadow run" in text
+        assert "no signer loaded" in text
+        assert str(db).lower() in text
+
+        # Verify DB rows
+        reg = OrderRegistry(db_path=db)
+        orders = reg.get_all_orders()
+        assert len(orders) >= 1
+        assert orders[0]["run_id"].startswith("shadow-")
+
+        # Verify ring telemetry file was created
+        from core_brain.cycle_stream import LIVE_ROOT
+        ring_file = LIVE_ROOT / "runtime" / f"{orders[0]['run_id']}.jsonl"
+        assert ring_file.is_file()
+        content = ring_file.read_text(encoding="utf-8")
+        assert "quoting" in content

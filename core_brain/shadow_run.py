@@ -482,6 +482,9 @@ def run_shadow(
     fetch_books: Optional[Callable] = None,
     interval: float = 5.0,
     funder: Optional[str] = None,
+    run_id: Optional[str] = None,
+    sleep_fn: Optional[Callable[[float], None]] = None,
+    cfg: Optional[MakerConfig] = None,
 ) -> ShadowResult:
     """One shadow session: rotate until `minutes` elapse, record, spend nothing.
 
@@ -512,9 +515,23 @@ def run_shadow(
     # is alive re-tags this one's later rows, and the id survives the return, so
     # a live order created afterwards in the same process is stamped
     # `shadow-...`. See `shadow_run_id` and `OrderRegistry._run_id`.
-    run_id = shadow_run_id()
+    run_id = run_id if run_id is not None else shadow_run_id()
 
-    cfg = dc_replace(load(), single_buy_grace_sec=0.0)
+    if cfg is None:
+        cfg = dc_replace(load(), single_buy_grace_sec=0.0)
+
+        # Same open question, same answer as the live loop: attempt the real
+        # balance read (it needs only the public funder address), fall back to the
+        # configured bankroll on any failure.
+        maker = funder or os.environ.get("POLY_FUNDER")
+        if maker:
+            try:
+                from core_brain.account import fetch_live_balance
+                live_bal = fetch_live_balance(maker)
+                if live_bal is not None and live_bal > 0:
+                    cfg = dc_replace(cfg, bankroll_usd=live_bal)
+            except Exception as e:  # noqa: BLE001 - degrade, do not stop
+                log.warning("live balance read failed, using config bankroll: %s", e)
 
     # One line that retires "what did this rehearsal actually run under?".
     # The two offset knobs are env-overridable per run, and recovering what a
@@ -527,19 +544,6 @@ def run_shadow(
         cfg.reward_offset, cfg.price_risk_widen,
         cfg.min_reward_offset, cfg.max_completable_pair_cost,
     )
-
-    # Same open question, same answer as the live loop: attempt the real
-    # balance read (it needs only the public funder address), fall back to the
-    # configured bankroll on any failure.
-    maker = funder or os.environ.get("POLY_FUNDER")
-    if maker:
-        try:
-            from core_brain.account import fetch_live_balance
-            live_bal = fetch_live_balance(maker)
-            if live_bal is not None and live_bal > 0:
-                cfg = dc_replace(cfg, bankroll_usd=live_bal)
-        except Exception as e:  # noqa: BLE001 - degrade, do not stop
-            log.warning("live balance read failed, using config bankroll: %s", e)
 
     resolved_markets_fn = markets_fn or _default_markets_fn()
     markets = resolved_markets_fn()
@@ -611,6 +615,7 @@ def run_shadow(
     seam.sweep_fn = shadow_sweep
 
     deadline_ts = time.time() + max(0.0, minutes * 60.0)
+    resolved_sleep_fn = sleep_fn if sleep_fn is not None else make_deadline_sleep(deadline_ts)
     results = loop_run(
         seam,
         interval=interval,
@@ -618,7 +623,7 @@ def run_shadow(
         live=True,  # safe: submit/cancel are recorders, the client cannot sign
         markets=markets,
         markets_fn=dynamic_markets_fn,
-        sleep_fn=make_deadline_sleep(deadline_ts),
+        sleep_fn=resolved_sleep_fn,
     )
     return ShadowResult(
         results=results,

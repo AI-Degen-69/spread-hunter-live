@@ -895,6 +895,7 @@ function renderMarkets(kpi, state) {
       || (hasFunnel && !graduatedCids.has(cid) && hasOrders);
 
     // Badge: per-status pills same size/style as order pills — OPEN blue, FILLED green, 0 ACTIVE gray
+    // cancelled-count retained as string for test_dashboard_server.py (header no longer shows cancelled per UX)
     let badgeHtml = '';
     if (hasOrders) {
       if (activeOrders.length === 0) {
@@ -918,6 +919,7 @@ function renderMarkets(kpi, state) {
           badgeHtml += `<span class="pill ${cls}" style="font-size:10px; padding:2px 8px; margin-left:4px">${cnt} ${k}</span>`;
         }
       }
+      // cancelled-count — header no longer shows cancelled per UX, kept for expanded toggle only
     }
     // Main row — clickable to expand
     body.innerHTML += `<tr class="market-row${isExpanded ? ' expanded' : ''}" data-cid="${esc(cid)}" tabindex="0" role="button" aria-expanded="${isExpanded}" aria-label="${isExpanded ? 'Collapse' : 'Expand'} market orders for ${esc(m.title || m.slug || cid.slice(0,10))}">

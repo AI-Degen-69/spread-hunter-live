@@ -1049,34 +1049,62 @@ function Test-RecordLive {
     } catch { return $null }
 }
 
+function Test-OrphanStackProcess {
+    <# True when a running python inside THIS repo launches a stack service
+    (Trader, Order Manager poll, Market Filter loop, Global Stop Loss,
+    dashboard) that no pidfile records - an orphan left behind by a crashed
+    supervisor. Reset refuses to wipe beside it. $null (unknown) when the
+    process table cannot be read, which callers treat as live. Scoped to
+    $ProjectPath so an unrelated checkout or tool never blocks a reset. #>
+    try {
+        $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop |
+            Where-Object { $_.Name -match '^python' -and $_.CommandLine -and ($_.CommandLine -like "*$ProjectPath*") })
+    } catch { return $null }
+    $markers = @(
+        "core_brain.trader_loop",
+        "core_brain.order_manager poll",
+        "scripts.filter_loop",
+        "scripts.global_stop_loss",
+        "dashboard.server"
+    )
+    foreach ($p in $procs) {
+        foreach ($m in $markers) {
+            if ($p.CommandLine -like "*$m*") { return $true }
+        }
+    }
+    return $false
+}
+
 function Test-StackAlive {
     <# True when ANY spread-hunter process is alive: dashboards, stack PIDs,
-    or the guardrail heartbeat. Used by reset to decide whether a stop is
-    needed and to prove the environment is clean before starting. A recorded
-    PID is live only when its start time matches; a PID with a missing or
-    unreadable start time is treated as live so a reset never wipes beside a
+    the guardrail heartbeat, or an orphaned stack service. Used by reset to
+    decide whether a stop is needed and to prove the environment is clean
+    before starting. A recorded PID is live only when its start time matches;
+    a PID with a missing or unreadable start time - or a registry that cannot
+    be read at all - is treated as live so a reset never wipes beside a
     process it cannot identify. #>
     if (Test-LivePort) { return $true }
     if ($null -ne (Get-DashInstance)) { return $true }
     if ($null -ne (Get-ShadowDashInstance)) { return $true }
     if (Test-Path $ProcsFile) {
-        try {
-            $saved = Get-Content $ProcsFile -Raw | ConvertFrom-Json
-            foreach ($name in @("filter", "query", "decide")) {
-                $info = Get-ServiceEntry -Saved $saved -Key $name
-                if (-not $info -or -not $info.pid) { continue }
-                if ((Test-RecordLive -ProcessId $info.pid -StartedAt $info.started_at) -ne $false) { return $true }
-            }
-        } catch {}
+        $saved = $null
+        try { $saved = Get-Content $ProcsFile -Raw | ConvertFrom-Json } catch {}
+        if ($null -eq $saved) { return $true }  # unreadable registry -> cannot rule out a live stack
+        foreach ($name in @("filter", "query", "decide")) {
+            $info = Get-ServiceEntry -Saved $saved -Key $name
+            if (-not $info -or -not $info.pid) { continue }
+            if ((Test-RecordLive -ProcessId $info.pid -StartedAt $info.started_at) -ne $false) { return $true }
+        }
     }
     if (Test-Path $HbFile) {
-        try {
-            $hb = @(Get-Content $HbFile -Raw | ConvertFrom-Json)[0]
-            if ($hb -and $hb.pid) {
-                if ((Test-RecordLive -ProcessId $hb.pid -StartedAt $hb.started_at) -ne $false) { return $true }
-            }
-        } catch {}
+        $hb = $null
+        try { $hb = @(Get-Content $HbFile -Raw | ConvertFrom-Json)[0] } catch {}
+        if ($null -eq $hb) { return $true }  # unreadable heartbeat -> cannot rule out a live watcher
+        if ($hb -and $hb.pid) {
+            if ((Test-RecordLive -ProcessId $hb.pid -StartedAt $hb.started_at) -ne $false) { return $true }
+        }
     }
+    if ((Test-OrphanStackProcess) -ne $false) { return $true }
     return $false
 }
 
@@ -1200,9 +1228,14 @@ function Reset-Environment {
     # 4 · WIPE
     Clear-RuntimeState
 
-    # 5 · VERIFY CLEAN
+    # 5 · VERIFY CLEAN (pidfiles are gone by construction; still guard against
+    # an unregistered orphan service so we never declare clean beside one)
     if (Test-LivePort) {
         Lsh-Fail "Port $LivePort is still LISTENING (PID $(Get-PortPid)) and not owned by this menu. Free it, then start."
+        return $false
+    }
+    if ((Test-StackAlive) -ne $false) {
+        Lsh-Fail "Refusing to declare the environment clean: an unregistered spread-hunter service is still alive. Stop it, then start."
         return $false
     }
     Lsh-Ok "Environment verified clean - no blockers, no contradictions."

@@ -309,7 +309,8 @@ def test_dashboard_reads_exactly_where_the_registry_writes():
     from core_brain.order_registry import DEFAULT_DB_PATH
 
     assert resolve_db_path() == DEFAULT_DB_PATH
-    assert "live" in resolve_db_path().resolve().as_posix().lower()
+    assert resolve_db_path().name == "orders.db"
+    assert resolve_db_path().parent.name == "data"
 
 
 def test_milestone8_html_contains_required_sections():

@@ -84,6 +84,19 @@ class TestCountCloses:
         assert count_closes(db, run_id="shadow-ccc") == 0
         assert count_closes(db) == 3
 
+    def test_returns_zero_when_run_id_column_missing_for_scoped_query(self, tmp_path):
+        db = tmp_path / "test_no_col.db"
+        con = sqlite3.connect(str(db))
+        con.execute(
+            "CREATE TABLE closes (id TEXT PRIMARY KEY, realized_pnl REAL)"
+        )
+        con.execute("INSERT INTO closes VALUES ('1', 0.5)")
+        con.commit()
+        con.close()
+
+        assert count_closes(db, run_id="shadow-aaa") == 0
+        assert count_closes(db) == 1
+
 
 class TestHybridDeadlineSleep:
     """Stops when target closes reached or wall clock deadline expires."""
@@ -200,7 +213,8 @@ class TestEndToEndHarness:
         assert orders[0]["run_id"].startswith("shadow-")
 
         # Verify ring telemetry file was created
-        ring_file = Path("runtime") / f"{orders[0]['run_id']}.jsonl"
-        if ring_file.is_file():
-            content = ring_file.read_text(encoding="utf-8")
-            assert "quoting" in content
+        from core_brain.cycle_stream import LIVE_ROOT
+        ring_file = LIVE_ROOT / "runtime" / f"{orders[0]['run_id']}.jsonl"
+        assert ring_file.is_file()
+        content = ring_file.read_text(encoding="utf-8")
+        assert "quoting" in content

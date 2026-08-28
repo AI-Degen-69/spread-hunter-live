@@ -42,7 +42,7 @@ def count_closes(db_path: Path | str, run_id: Optional[str] = None) -> int:
     """Return count of closed trades in the given database, filtered by run_id if provided.
 
     Returns 0 if the database file does not exist, the closes table is missing,
-    or the query encounters an error.
+    the run_id column is missing when run_id is supplied, or the query encounters an error.
     """
     path = Path(db_path)
     if not path.is_file():
@@ -65,12 +65,11 @@ def count_closes(db_path: Path | str, run_id: Optional[str] = None) -> int:
                 return 0
             if run_id:
                 cols = {row[1] for row in cur.execute("PRAGMA table_info(closes)").fetchall()}
-                if "run_id" in cols:
-                    row = cur.execute(
-                        "SELECT COUNT(*) FROM closes WHERE run_id = ?", (run_id,)
-                    ).fetchone()
-                else:
-                    row = cur.execute("SELECT COUNT(*) FROM closes").fetchone()
+                if "run_id" not in cols:
+                    return 0
+                row = cur.execute(
+                    "SELECT COUNT(*) FROM closes WHERE run_id = ?", (run_id,)
+                ).fetchone()
             else:
                 row = cur.execute("SELECT COUNT(*) FROM closes").fetchone()
             return int(row[0]) if row and row[0] is not None else 0
@@ -206,13 +205,12 @@ def main(
 
     a = _parse_args(argv)
 
+    run_id = shadow_run_id()
     ts_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    db_path = Path(a.db) if a.db else Path(f"data/shadow_stat_{ts_str}.db")
+    db_path = Path(a.db) if a.db else Path(f"data/shadow_stat_{ts_str}_{run_id}.db")
 
     # Fail fast if production registry is passed
     assert_not_production_registry(db_path)
-
-    run_id = shadow_run_id()
 
     log.warning(
         "SHADOW RUN starting: mode=stat_validation target_closes=%s max_hours=%s interval=%ss store=%s run_id=%s "
@@ -224,8 +222,20 @@ def main(
         run_id,
     )
 
-    artifact_dir = Path(f"data/shadow_stat_{ts_str}")
-    cfg = load_cfg()
+    artifact_dir = Path(f"data/shadow_stat_{ts_str}_{run_id}")
+
+    from dataclasses import replace as dc_replace
+    cfg = dc_replace(load_cfg(), single_buy_grace_sec=0.0)
+    maker = a.funder or os.environ.get("POLY_FUNDER")
+    if maker:
+        try:
+            from core_brain.account import fetch_live_balance
+            live_bal = fetch_live_balance(maker)
+            if live_bal is not None and live_bal > 0:
+                cfg = dc_replace(cfg, bankroll_usd=live_bal)
+        except Exception as e:  # noqa: BLE001 - degrade, do not stop
+            log.warning("live balance read failed, using config bankroll: %s", e)
+
     snapshot_stat_validation_env(artifact_dir, cfg, root=root)
 
     deadline_ts = clock() + max(0.0, float(a.max_hours) * 3600.0)
@@ -244,6 +254,7 @@ def main(
         sleep_fn=hybrid_sleep,
         interval=a.interval,
         funder=a.funder,
+        cfg=cfg,
         markets_fn=(
             markets_fn
             or (lambda max_markets=None: _default_markets_fn()(a.max_markets))

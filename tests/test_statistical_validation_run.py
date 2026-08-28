@@ -320,7 +320,9 @@ class TestSnapshot:
             snapshot_stat_validation_env(art_dir, cfg)
 
         assert art_dir.is_dir()
-        cfg_file = art_dir / "config.json"
+        # Issue #54: snapshots carry the `_snapshot` suffix so a run's frozen
+        # inputs are never confused with the live files under runtime/.
+        cfg_file = art_dir / "config_snapshot.json"
         assert cfg_file.is_file()
 
         data = json.loads(cfg_file.read_text(encoding="utf-8"))
@@ -384,6 +386,7 @@ class TestEndToEndHarness:
     def test_underpowered_run_exits_inconclusive_without_go_verdict(self, tmp_path, caplog):
         """Acceptance Criteria: run with target-closes 999 exits INCONCLUSIVE with underpowered reason."""
         db = tmp_path / "shadow_stat_underpowered.db"
+        report_dir = tmp_path / "stat_inconclusive"
         now = [1000.0]
 
         def clock():
@@ -394,7 +397,8 @@ class TestEndToEndHarness:
 
         with caplog.at_level(logging.INFO):
             rc = main(
-                ["--target-closes", "999", "--max-hours", "0.001", "--db", str(db)],
+                ["--target-closes", "999", "--max-hours", "0.001",
+                 "--db", str(db), "--report", str(report_dir)],
                 markets_fn=lambda max_markets=None: [FakeMarket("0xabc")],
                 client_fn=lambda: object(),
                 decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([], ""),
@@ -409,3 +413,19 @@ class TestEndToEndHarness:
         assert "underpowered: n < n_min or markouts < 25" in text
         assert "verdict: go" not in text
         assert "verdict: no-go" not in text
+
+        # Issue #54: the full artifact bundle is emitted even for a zero-close
+        # run, and the memo verdict agrees with the harness verdict.
+        assert (report_dir / "report.json").is_file()
+        assert (report_dir / "report.md").is_file()
+        assert (report_dir / "closes.csv").is_file()
+        assert (report_dir / "fills.csv").is_file()
+        assert (report_dir / "quotes.csv").is_file()
+        assert (report_dir / "config_snapshot.json").is_file()
+        data = json.loads((report_dir / "report.json").read_text(encoding="utf-8"))
+        assert "trade_analytics" in data
+        assert data["stat_validation"]["verdict"] == "INCONCLUSIVE"
+        assert "underpowered" in data["stat_validation"]["verdict_reason"]
+        md = (report_dir / "report.md").read_text(encoding="utf-8")
+        assert "**INCONCLUSIVE**" in md
+        assert "Gate table" in md

@@ -48,6 +48,7 @@ data/*.db*
 data/archive/
 data/shadow_stat_*/
 data/shadow_stat_*.db*
+reports/stat_*/
 data/*.json
 data/*.jsonl
 data/*.tmp.*

@@ -1032,10 +1032,30 @@ function Show-CheckoutIdentity {
 }
 
 # ── Reset & fresh start ──
+function Test-RecordLive {
+    <# True when PID is alive and its start time matches the recorded
+    started_at (within 60s). $null when the PID is alive but the record's
+    start time is missing or unreadable - callers treat that as
+    conservatively live so a reset never wipes beside a process it cannot
+    identify. Mirrors the start-time validation in Stop-BotStack and
+    Stop-Guardrail. #>
+    param([int]$ProcessId, $StartedAt)
+    if (-not (Test-PidAlive -ProcessId $ProcessId)) { return $false }
+    $recordedStart = ConvertTo-RecordedStart -StartedAt $StartedAt
+    if ($null -eq $recordedStart) { return $null }
+    try {
+        $proc = Get-Process -Id $ProcessId -ErrorAction Stop
+        return ([math]::Abs(($proc.StartTime - $recordedStart).TotalSeconds) -le 60)
+    } catch { return $null }
+}
+
 function Test-StackAlive {
     <# True when ANY spread-hunter process is alive: dashboards, stack PIDs,
     or the guardrail heartbeat. Used by reset to decide whether a stop is
-    needed and to prove the environment is clean before starting. #>
+    needed and to prove the environment is clean before starting. A recorded
+    PID is live only when its start time matches; a PID with a missing or
+    unreadable start time is treated as live so a reset never wipes beside a
+    process it cannot identify. #>
     if (Test-LivePort) { return $true }
     if ($null -ne (Get-DashInstance)) { return $true }
     if ($null -ne (Get-ShadowDashInstance)) { return $true }
@@ -1044,14 +1064,17 @@ function Test-StackAlive {
             $saved = Get-Content $ProcsFile -Raw | ConvertFrom-Json
             foreach ($name in @("filter", "query", "decide")) {
                 $info = Get-ServiceEntry -Saved $saved -Key $name
-                if ($info -and $info.pid -and (Test-PidAlive -ProcessId $info.pid)) { return $true }
+                if (-not $info -or -not $info.pid) { continue }
+                if ((Test-RecordLive -ProcessId $info.pid -StartedAt $info.started_at) -ne $false) { return $true }
             }
         } catch {}
     }
     if (Test-Path $HbFile) {
         try {
             $hb = @(Get-Content $HbFile -Raw | ConvertFrom-Json)[0]
-            if ($hb -and $hb.pid -and (Test-PidAlive -ProcessId $hb.pid)) { return $true }
+            if ($hb -and $hb.pid) {
+                if ((Test-RecordLive -ProcessId $hb.pid -StartedAt $hb.started_at) -ne $false) { return $true }
+            }
         } catch {}
     }
     return $false
@@ -1107,15 +1130,18 @@ function Clear-RuntimeState {
         Remove-Item $LegacyRunDir -Recurse -Force -ErrorAction SilentlyContinue
         $removed++
     }
-    # Shadow rehearsal artifacts (data/orders.db is never touched)
-    foreach ($p in @("data/shadow.db", "data/shadow.db-wal", "data/shadow.db-shm",
-                     "data/shadow_stat_verify.db", "data/shadow_stat_verify.db-wal", "data/shadow_stat_verify.db-shm",
-                     "data/_preview_seed.db", "data/_preview_seed.db-wal", "data/_preview_seed.db-shm",
-                     "data/_smoke_fleet.db", "data/_smoke_fleet.db-wal", "data/_smoke_fleet.db-shm",
-                     "runtime/.current_run_id", "data/.current_run_id")) {
+    # Shadow rehearsal artifacts, resolved through $ProjectPath so reset always
+    # targets repository state regardless of the caller's working directory
+    # (data/orders.db is never touched)
+    foreach ($relative in @("data/shadow.db", "data/shadow.db-wal", "data/shadow.db-shm",
+                            "data/shadow_stat_verify.db", "data/shadow_stat_verify.db-wal", "data/shadow_stat_verify.db-shm",
+                            "data/_preview_seed.db", "data/_preview_seed.db-wal", "data/_preview_seed.db-shm",
+                            "data/_smoke_fleet.db", "data/_smoke_fleet.db-wal", "data/_smoke_fleet.db-shm",
+                            "runtime/.current_run_id", "data/.current_run_id")) {
+        $p = Join-Path $ProjectPath $relative
         if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue; $removed++ }
     }
-    Get-ChildItem "data" -Directory -Filter "shadow_stat_*" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Get-ChildItem (Join-Path $ProjectPath "data") -Directory -Filter "shadow_stat_*" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
     Lsh-Ok "Runtime state wiped ($removed artifact(s) removed). data/orders.db untouched."
 }

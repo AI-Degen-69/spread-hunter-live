@@ -1,7 +1,7 @@
 ---
+name: work-issue-md
 description: End-to-end workflow to pick up an open issue, plan it, orchestrate the implementation, and ship it.
 ---
-
 # Work Issue
 
 This workflow defines the end-to-end lifecycle for picking up an open issue, designing the solution, orchestrating the implementation, and shipping the PR.

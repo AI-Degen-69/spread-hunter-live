@@ -132,6 +132,11 @@ def build_gate_rows(
         if starting_capital is not None else None
     )
 
+    # Strict `>` on both twins, matching the artifact policy in the issue
+    # (90% CI (1%, inf)) rather than kpi.evaluate_stat_gate's `>=`. Equality at
+    # the boundary must read as FAIL, and the config threshold is env-
+    # overridable (HUNTER_STAT_GATE_THRESHOLD_PCT), so nothing here hard-codes
+    # 1.0.
     rows: list[dict[str, Any]] = [
         {
             "gate": "Primary — total PnL (inclusive)",
@@ -141,7 +146,9 @@ def build_gate_rows(
             # A CI that could not be computed (no cost basis on any close) is
             # unmeasurable, not failed: the memo renders it n/a and the verdict
             # falls to INCONCLUSIVE.
-            "passed": gate.get("passed") if ci90 is not None else None,
+            "passed": (
+                None if ci90 is None else ci90 > cfg.stat_gate_threshold_pct
+            ),
             "rationale": (
                 "one-sided 90% CI lower bound on mean return %, every close "
                 "method and every loss included"
@@ -157,7 +164,7 @@ def build_gate_rows(
             "passed": (
                 None
                 if ci90_usd is None or dollar_threshold is None
-                else ci90_usd >= dollar_threshold
+                else ci90_usd > dollar_threshold
             ),
             "rationale": "same gate in dollars: lower bound must exceed 1% of bankroll",
         },
@@ -233,17 +240,23 @@ def resolve_verdict(
     kpi: dict[str, Any],
     underpowered: bool,
     underpowered_reasons: list[str],
+    threshold_pct: float,
 ) -> dict[str, str]:
     """Decide GO / NO-GO / INCONCLUSIVE from the gate rows.
 
     Order of precedence:
     1. Underpowered (closes below target or markouts below minimum) -> INCONCLUSIVE.
     2. Fewer than 2 closes -> INCONCLUSIVE (a CI needs a variance).
-    3. Primary gate passed -> GO.
+    3. Primary gate passed (strict `> threshold_pct`) -> GO.
     4. Otherwise -> NO-GO.
 
     Secondary gates are reported but never block: a 51% win rate with large
     exits is still a net loss, so the primary gate is the only veto.
+
+    `threshold_pct` is the EFFECTIVE configured threshold
+    (``cfg.stat_gate_threshold_pct``, env-overridable via
+    ``HUNTER_STAT_GATE_THRESHOLD_PCT``) and is used in the verdict text so the
+    memo never hard-codes 1.0.
     """
     ta = kpi.get("trade_analytics") or {}
     n_closes = ta.get("n_closes", 0)
@@ -280,16 +293,16 @@ def resolve_verdict(
             "verdict": "GO",
             "verdict_reason": (
                 f"primary gate passed: 90% CI lower bound {value:.4f}% on mean "
-                "return sits above 1.0%, inclusive of every close method and "
-                "every loss"
+                f"return sits above {threshold_pct}%, inclusive of every close "
+                "method and every loss"
             ),
         }
     return {
         "verdict": "NO-GO",
         "verdict_reason": (
             f"primary gate failed: 90% CI lower bound {value:.4f}% on mean "
-            "return does not sit above 1.0% with adequate sample — extend the "
-            "run or investigate the exit path"
+            f"return does not sit above {threshold_pct}% with adequate sample "
+            "— extend the run or investigate the exit path"
         ),
     }
 

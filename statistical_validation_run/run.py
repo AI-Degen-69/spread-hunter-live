@@ -471,6 +471,7 @@ def main(
             kpi=kpi,
             underpowered=is_underpowered,
             underpowered_reasons=underpowered_reasons,
+            threshold_pct=cfg.stat_gate_threshold_pct,
         )
         write_artifacts(
             artifact_dir,

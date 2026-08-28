@@ -76,6 +76,7 @@ def _write_bundle(tmp_path: Path, closes: list[dict], out_name: str = "stat_bund
     stat = resolve_verdict(
         gate_rows=rows, kpi=kpi,
         underpowered=False, underpowered_reasons=[],
+        threshold_pct=cfg.stat_gate_threshold_pct,
     )
     out = tmp_path / out_name
     write_artifacts(
@@ -130,6 +131,7 @@ class TestGateRowsAndVerdict:
         verdict = resolve_verdict(
             gate_rows=rows, kpi=kpi,
             underpowered=False, underpowered_reasons=[],
+            threshold_pct=cfg.stat_gate_threshold_pct,
         )
         assert verdict["verdict"] == "GO"
         primary = next(r for r in rows if "Primary" in r["gate"])
@@ -150,6 +152,7 @@ class TestGateRowsAndVerdict:
         verdict = resolve_verdict(
             gate_rows=rows, kpi=kpi,
             underpowered=False, underpowered_reasons=[],
+            threshold_pct=cfg.stat_gate_threshold_pct,
         )
         assert verdict["verdict"] == "NO-GO"
         assert "primary gate failed" in verdict["verdict_reason"]
@@ -168,9 +171,40 @@ class TestGateRowsAndVerdict:
             gate_rows=rows, kpi=kpi,
             underpowered=True,
             underpowered_reasons=["closes 1 < 50", "markouts 10 < 25"],
+            threshold_pct=cfg.stat_gate_threshold_pct,
         )
         assert verdict["verdict"] == "INCONCLUSIVE"
         assert "underpowered" in verdict["verdict_reason"]
+
+    def test_primary_gate_is_strict_at_the_threshold_boundary(self):
+        """Equality with the threshold is a FAIL, not a pass (90% CI (1%, inf))."""
+        cfg = load_cfg()
+
+        def rows_for(ci90: float) -> tuple[list[dict], dict]:
+            kpi = {
+                "trade_analytics": {"n_closes": 10, "ci90_lower_pct": ci90},
+                "portfolio": {"starting_capital": 100.0},
+            }
+            return build_gate_rows(
+                closes=[], kpi=kpi, cfg=cfg,
+                target_closes=None, matured_markouts=None, min_markouts=None,
+            ), kpi
+
+        rows, kpi = rows_for(cfg.stat_gate_threshold_pct)  # exactly at the boundary
+        primary = next(r for r in rows if "Primary" in r["gate"])
+        assert primary["passed"] is False
+        assert resolve_verdict(
+            gate_rows=rows, kpi=kpi,
+            underpowered=False, underpowered_reasons=[],
+            threshold_pct=cfg.stat_gate_threshold_pct,
+        )["verdict"] == "NO-GO"
+
+        rows, kpi = rows_for(cfg.stat_gate_threshold_pct + 0.0001)  # just above
+        assert resolve_verdict(
+            gate_rows=rows, kpi=kpi,
+            underpowered=False, underpowered_reasons=[],
+            threshold_pct=cfg.stat_gate_threshold_pct,
+        )["verdict"] == "GO"
 
     def test_single_close_is_inconclusive(self, tmp_path):
         db = _seed_closes(tmp_path / "single.db", [
@@ -185,6 +219,7 @@ class TestGateRowsAndVerdict:
         verdict = resolve_verdict(
             gate_rows=rows, kpi=kpi,
             underpowered=False, underpowered_reasons=[],
+            threshold_pct=cfg.stat_gate_threshold_pct,
         )
         assert verdict["verdict"] == "INCONCLUSIVE"
         assert "fewer than 2 closes" in verdict["verdict_reason"]
@@ -271,6 +306,7 @@ class TestArtifactBundle:
         stat = resolve_verdict(
             gate_rows=rows, kpi=kpi,
             underpowered=False, underpowered_reasons=[],
+            threshold_pct=cfg.stat_gate_threshold_pct,
         )
         out = tmp_path / "stat_csvs"
         write_artifacts(

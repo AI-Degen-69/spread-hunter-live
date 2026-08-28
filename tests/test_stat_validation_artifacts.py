@@ -25,6 +25,7 @@ from core_brain.order_registry import (
 )
 from statistical_validation_run.artifacts import (
     build_gate_rows,
+    render_report_md,
     rescue_stats,
     resolve_verdict,
     rows_to_csv,
@@ -329,3 +330,32 @@ class TestArtifactBundle:
         assert lines[0] == "a,b"
         assert lines[1] == "1,"
         assert lines[2] == "2,x"
+
+    def test_memo_renders_pairs_under_1_as_percent_not_double_scaled(self):
+        """pairs_under_1 is already percent-scaled by kpi (100.0 == 100%);
+        the memo must render it as a percent, never double-scale it to
+        `10000.0%`. Regression for the off-by-100x bug found in a real shadow
+        bundle (report.md rendered `10000.0%`)."""
+        cfg = load_cfg()
+        md = render_report_md(
+            run_id=RUN_ID,
+            db_path="data/shadow.db",
+            artifact_dir="reports/stat_x",
+            kpi={
+                "pairs_under_1": 100.0,
+                "median_pair_cost": 0.95,
+                "trade_analytics": {"n_closes": 2},
+                "portfolio": {"realized_pnl": 0.30},
+            },
+            cfg=cfg,
+            gate_rows=[],
+            verdict="INCONCLUSIVE",
+            verdict_reason="underpowered",
+            run_result={"status": "INCONCLUSIVE", "reason": "underpowered"},
+            closes=[],
+            target_closes=None,
+            min_markouts=None,
+        )
+        line = next(l for l in md.splitlines() if "pairs_under_1" in l)
+        assert "100.00%" in line
+        assert "10000.0%" not in md

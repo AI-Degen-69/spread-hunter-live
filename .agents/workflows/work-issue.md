@@ -6,6 +6,16 @@ description: End-to-end workflow to pick up an open issue, plan it, orchestrate 
 
 This workflow defines the end-to-end lifecycle for picking up an open issue, designing the solution, orchestrating the implementation, and shipping the PR.
 
+## Default Behavior — Invoked Without Arguments
+
+When this workflow is invoked with no issue number or further instructions:
+
+1. **List all open issues first:** Run `gh issue list --state open --limit 50` (and `gh issue view <n> --comments` for detail as needed) and present every open issue plainly — number, title, labels, and a one-line description.
+2. **Categorize/group them:** Group by a criteria the agent chooses and states explicitly (e.g., dependency chain, risk area / strategy / infra / UI, effort/size, or ready-for-agent vs. backlog). Show the grouping.
+3. **Recommend an order of work:** Propose a concrete execution sequence with rationale (dependencies first, unblockers before dependents, quick wins vs. deep work), and call out the single next issue to pick up.
+
+Do not skip the listing step. Do not pick an issue silently — always show the full inventory, the grouping, and the recommended order before asking which to start.
+
 ## Step 1: Discovery & Assignment
 
 1. **Find work:** Run `gh issue list --state open --label ready-for-agent` to find an actionable issue.

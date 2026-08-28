@@ -7,7 +7,9 @@
 #   .\scripts\spread-hunter-menu.ps1 start    # dashboard + bot stack (detached)
 #   .\scripts\spread-hunter-menu.ps1 stop     # bot stack, then dashboard
 #   .\scripts\spread-hunter-menu.ps1 status   # dashboard + every assisting process
-#   .\scripts\spread-hunter-menu.ps1 open     # start dashboard in background (no bot) & open in browser
+#   .\scripts\spread-hunter-menu.ps1 open     # start LIVE dashboard in background (no bot) & open in browser
+#   .\scripts\spread-hunter-menu.ps1 shadow   # start SHADOW dashboard (--db data/shadow.db --port 8799) & open
+#   .\scripts\spread-hunter-menu.ps1 stop-shadow # stop shadow dashboard (close :8799)
 #
 # The bot stack (Market Filter / Query Polymarket / Decide & Execute) is started
 # and stopped through the dashboard's own /api/system/start|stop endpoints --
@@ -57,6 +59,12 @@ function Resolve-RuntimeFile {
 # The dashboard PID file is menu-owned and rewritten on every start, so it is
 # not resolved: a stale pre-rename copy only ever meant "not owned by menu".
 $DashPidFile = Join-Path $RunDir "live-dash.pids.json"
+$ShadowPidFile = Join-Path $RunDir "shadow-dash.pids.json"
+$ShadowDbPath  = Join-Path $ProjectPath "data/shadow.db"
+$ShadowPort    = 8799
+$ShadowDashUrl = "http://127.0.0.1:$ShadowPort"
+$ShadowOutLog  = Join-Path $RunDir "shadow_dash.out.log"
+$ShadowErrLog  = Join-Path $RunDir "shadow_dash.err.log"
 $ProcsFile   = Resolve-RuntimeFile -Name "processes.json" -LegacyName "live_procs.json"
 $OutLog      = Join-Path $RunDir "live_dash.out.log"
 $ErrLog      = Join-Path $RunDir "live_dash.err.log"
@@ -101,6 +109,7 @@ $StackPaths = @{
     decide     = "core_brain/trader_loop.py"
     guardrail  = "scripts/global_stop_loss.py"
     dash       = "dashboard/server.py"
+    shadowDash = "dashboard/server.py"
 }
 
 $StackCmds = @{
@@ -109,6 +118,7 @@ $StackCmds = @{
     decide     = "python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5"
     guardrail  = "python -m scripts.global_stop_loss"
     dash       = "python -m dashboard.server --port 8799"
+    shadowDash = "python -m dashboard.server --db data/shadow.db --port 8799"
 }
 
 # ── Theme system (shared profile templates, self-contained fallback) ──
@@ -160,7 +170,26 @@ if (-not (Get-Command Write-ProfileSuccess -ErrorAction SilentlyContinue)) {
 }
 
 # ── Console helpers (thin wrappers over the theme templates) ──
-function Lsh-Banner { param([string]$Title, [string]$Subtitle) try { Clear-Host } catch {}; Write-ProfileBanner -Title $Title -Subtitle $Subtitle -Style Info }
+function Lsh-Banner {
+    param([string]$Title, [string]$Subtitle)
+    try { Clear-Host } catch {}
+    $cBorder = Get-ProfileColor -Name Border
+    $cTitle  = [ConsoleColor]::Yellow
+    $cSub    = Get-ProfileColor -Name Neutral
+    $w = 78
+    Write-Host ("╔" + ("═" * $w) + "╗") -ForegroundColor $cBorder
+    # Title row — bright yellow, centered-ish left
+    Write-Host "║ " -ForegroundColor $cBorder -NoNewline
+    Write-Host $Title.PadRight($w - 2) -ForegroundColor $cTitle -NoNewline
+    Write-Host " ║" -ForegroundColor $cBorder
+    if ($Subtitle) {
+        Write-Host "║ " -ForegroundColor $cBorder -NoNewline
+        Write-Host $Subtitle.PadRight($w - 2) -ForegroundColor $cSub -NoNewline
+        Write-Host " ║" -ForegroundColor $cBorder
+    }
+    Write-Host ("╚" + ("═" * $w) + "╝") -ForegroundColor $cBorder
+    Write-Host ""
+}
 function Lsh-Step   { param([string]$Msg) Write-ProfileInfo -Message $Msg }
 function Lsh-Ok     { param([string]$Msg) Write-ProfileSuccess -Message $Msg }
 function Lsh-Warn   { param([string]$Msg) Write-ProfileWarning -Message $Msg }
@@ -358,6 +387,153 @@ function Stop-Dashboard {
     Remove-Item $DashPidFile -ErrorAction SilentlyContinue
     if (Test-LivePort) {
         Lsh-Warn "Port $LivePort still LISTENING (PID $(Get-PortPid)) - not owned by this menu, left running."
+        return $false
+    }
+    return $true
+}
+
+# ── Shadow dashboard (data/shadow.db, same port 8799) ──
+function Get-ShadowDashInstance {
+    <# The recorded SHADOW dashboard that is still our process (start-ticks checked). #>
+    if (-not (Test-Path $ShadowPidFile)) { return $null }
+    try { $data = Get-Content $ShadowPidFile -Raw | ConvertFrom-Json } catch { return $null }
+    $d = $data.dash
+    if (-not $d -or -not $d.pid) { return $null }
+    try { $p = Get-Process -Id $d.pid -ErrorAction Stop } catch { return $null }
+    if ($null -ne $d.started_ticks) {
+        $pStart = $null
+        try { $pStart = $p.StartTime } catch {}
+        if ($null -eq $pStart -or $pStart.ToUniversalTime().Ticks -ne [int64]$d.started_ticks) {
+            return $null
+        }
+    }
+    return [pscustomobject]@{ pid = $p.Id; proc = $p; port = $ShadowPort; db = $d.db }
+}
+
+function Save-ShadowDashInstance {
+    param([Parameter(Mandatory)]$DashProcess)
+    $record = $null
+    if ($DashProcess -and -not $DashProcess.HasExited) {
+        $record = [pscustomobject]@{
+            pid           = $DashProcess.Id
+            started_ticks = $DashProcess.StartTime.ToUniversalTime().Ticks
+            started       = $DashProcess.StartTime.ToString("o")
+            port          = $ShadowPort
+            db            = "data/shadow.db"
+        }
+    }
+    New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
+    [pscustomobject]@{
+        strategy = "spread-hunter-live"
+        mode     = "shadow"
+        saved    = (Get-Date).ToString("o")
+        dash     = $record
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path $ShadowPidFile -Encoding UTF8
+}
+
+function Test-ShadowDashboardServer {
+    <# True when whatever is on :ShadowPort answers as dashboard (any db mode). #>
+    try {
+        $r = Invoke-RestMethod -Uri "$ShadowDashUrl/api/system/status" -UseBasicParsing -TimeoutSec 4
+        return ($null -ne $r.services -and $null -ne $r.services.dash)
+    } catch { return $false }
+}
+
+function Adopt-ShadowDashboardInstance {
+    $portPid = Get-PortPid
+    if (-not $portPid) { return $false }
+    try {
+        $proc = Get-Process -Id $portPid -ErrorAction Stop
+        Save-ShadowDashInstance -DashProcess $proc
+    } catch { return $false }
+    return ($null -ne (Get-ShadowDashInstance))
+}
+
+function Start-ShadowDashboard {
+    <# Launch shadow dashboard detached: python -m dashboard.server --db data/shadow.db --port 8799 #>
+    $inst = Get-ShadowDashInstance
+    if ($null -ne $inst) {
+        Lsh-Ok "Shadow dashboard already running (PID $($inst.pid), up $(Format-Uptime $inst.proc.StartTime))."
+        return $true
+    }
+    # Live and shadow share :8799 by request — only one can bind at a time.
+    if (Test-LivePort) {
+        $portPid = Get-PortPid
+        if (Test-ShadowDashboardServer) {
+            # Something dashboard-like is already there — adopt it as shadow if live pidfile says otherwise.
+            $liveInst = Get-DashInstance
+            if ($null -eq $liveInst) {
+                if ($Action -ne "") {
+                    if (Adopt-ShadowDashboardInstance) {
+                        $inst = Get-ShadowDashInstance
+                        Lsh-Ok "Adopted running shadow dashboard on :$ShadowPort (PID $($inst.pid), up $(Format-Uptime $inst.proc.StartTime))."
+                        return $true
+                    }
+                } else {
+                    $resp = Read-Host "  A dashboard is already serving on :$ShadowPort (PID $portPid). Adopt it as shadow? [y/N]"
+                    if ($resp -match '^[yY]' -and (Adopt-ShadowDashboardInstance)) {
+                        $inst = Get-ShadowDashInstance
+                        Lsh-Ok "Adopted running shadow dashboard on :$ShadowPort (PID $($inst.pid))."
+                        return $true
+                    } else {
+                        Lsh-Warn "Not adopting PID $portPid."
+                        return $true
+                    }
+                }
+            }
+        }
+        Lsh-Fail "Port $ShadowPort is occupied by PID $portPid — live dashboard is on :$ShadowPort. Stop live first (menu 2 or 'stop') or free the port, then start shadow."
+        return $false
+    }
+    if (Test-ShadowDashboardServer) {
+        # Edge: port test missed but server answers — adopt
+        if (Adopt-ShadowDashboardInstance) {
+            $inst = Get-ShadowDashInstance
+            Lsh-Ok "Adopted running shadow dashboard (PID $($inst.pid))."
+            return $true
+        }
+    }
+    Lsh-Step "Launching shadow dashboard (python -m dashboard.server --db data/shadow.db --port $ShadowPort)..."
+    $dash = Start-Process -FilePath "python" `
+        -ArgumentList "-m", "dashboard.server", "--db", "data/shadow.db", "--port", "$ShadowPort" `
+        -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput $ShadowOutLog `
+        -RedirectStandardError  $ShadowErrLog
+    Save-ShadowDashInstance -DashProcess $dash
+    $deadline = (Get-Date).AddSeconds(25)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        if (Test-LivePort) { break }
+        $dash.Refresh()
+        if ($dash.HasExited) { break }
+    }
+    if (-not (Test-LivePort)) {
+        Lsh-Fail "Shadow dashboard failed to bind port $ShadowPort. See $ShadowErrLog"
+        Remove-Item $ShadowPidFile -ErrorAction SilentlyContinue
+        return $false
+    }
+    Lsh-Ok "Shadow dashboard serving on $ShadowDashUrl (PID $($dash.Id), db=data/shadow.db)."
+    return $true
+}
+
+function Stop-ShadowDashboard {
+    <# Stop shadow dashboard we own; leaves foreign processes on :8799 alone. #>
+    $inst = Get-ShadowDashInstance
+    if ($null -ne $inst) {
+        Lsh-Step "Stopping shadow dashboard PID $($inst.pid)..."
+        Stop-Process -Id $inst.pid -Force -ErrorAction SilentlyContinue
+        $deadline = (Get-Date).AddSeconds(10)
+        while ((Get-Date) -lt $deadline -and (Test-LivePort)) { Start-Sleep -Milliseconds 300 }
+    }
+    Remove-Item $ShadowPidFile -ErrorAction SilentlyContinue
+    if (Test-LivePort) {
+        # If live still occupies the port, that's expected — shadow is down but port stays LISTENING.
+        $liveInst = Get-DashInstance
+        if ($null -ne $liveInst) {
+            Lsh-Warn "Port $ShadowPort still LISTENING (PID $(Get-PortPid)) — live dashboard still owns it."
+            return $true
+        }
+        Lsh-Warn "Port $ShadowPort still LISTENING (PID $(Get-PortPid)) — not owned by shadow menu, left running."
         return $false
     }
     return $true
@@ -669,6 +845,23 @@ function Show-Status {
         Write-FileRow -Label "PID file" -Status "MISSING" -Path "runtime/live-dash.pids.json" -Dynamic "no PID file"
     }
 
+    # ── 1b · SHADOW DASHBOARD ──
+    $shadowInst = Get-ShadowDashInstance
+    if ($shadowInst) {
+        Write-SectionHeader -Number "1b" -Title "SHADOW DASHBOARD" -Status "ON" -StatusStyle "Success"
+        Write-ProcessRow -Label "Shadow Dashboard" -Running $true -PidVal $shadowInst.pid -Path $StackPaths["shadowDash"] -ExtraInfo "$ShadowDashUrl (db=shadow.db)"
+        Write-FileRow -Label "PID file" -Status "FOUND" -Path "runtime/shadow-dash.pids.json" -Dynamic ("PID {0} recorded" -f $shadowInst.pid)
+    } elseif ($shadowInst -eq $null -and (Test-Path $ShadowPidFile)) {
+        # has pidfile but not alive — stale
+        Write-SectionHeader -Number "1b" -Title "SHADOW DASHBOARD" -Status "STALE" -StatusStyle "Warning"
+        Write-ProcessRow -Label "Shadow Dashboard" -Running $false -Path $StackPaths["shadowDash"] -RunCmd $StackCmds["shadowDash"]
+        Write-FileRow -Label "PID file" -Status "STALE" -Path "runtime/shadow-dash.pids.json" -Dynamic "no active PID"
+    } else {
+        Write-SectionHeader -Number "1b" -Title "SHADOW DASHBOARD" -Status "OFF" -StatusStyle "Error"
+        Write-ProcessRow -Label "Shadow Dashboard" -Running $false -Path $StackPaths["shadowDash"] -RunCmd $StackCmds["shadowDash"]
+        Write-FileRow -Label "PID file" -Status "MISSING" -Path "runtime/shadow-dash.pids.json" -Dynamic "no PID file"
+    }
+
     # ── 2 · BOT STACK (dashboard API when up, processes.json otherwise) ──
     $status = $null
     if ($portUp) {
@@ -836,21 +1029,30 @@ function Show-CheckoutIdentity {
 
 # ── Menu ──
 function Show-MenuGrid {
-    $cInfo   = Get-ProfileColor -Name Info
-    $cStrong = Get-ProfileColor -Name Strong
+    $cInfo    = Get-ProfileColor -Name Info
+    $cStrong  = Get-ProfileColor -Name Strong
     $cNeutral = Get-ProfileColor -Name Neutral
+
     Write-Host "  LIVE EXECUTION ENGINE" -ForegroundColor $cInfo
+    Write-Host ("  " + ("─" * 23)) -ForegroundColor (Get-ProfileColor -Name Border)
     Write-Host ""
+
+    # Each entry gets a colored badge (number on cyan) + icon + label + dim description
     $items = @(
-        @{ K = "1"; V = "Start Live Stack"; D = "Dashboard + screener + engine + fleet (detached)" }
-        @{ K = "2"; V = "Stop Live Stack";  D = "Stop bot stack, then the dashboard" }
-        @{ K = "3"; V = "Status";           D = "All 5 processes + feed + repo identity" }
-        @{ K = "4"; V = "Open Dashboard";   D = "Start dashboard in background (no bot) & open in browser" }
-        @{ K = "q"; V = "Exit";             D = "Return to PowerShell" }
+        @{ K = "1"; Icon = "▶"; IconColor = "Success"; V = "Start Live Stack"; D = "Dashboard + screener + engine + fleet (detached)" }
+        @{ K = "2"; Icon = "■"; IconColor = "Error";   V = "Stop Live Stack";  D = "Stop bot stack, then the dashboard" }
+        @{ K = "3"; Icon = "≡"; IconColor = "Info";    V = "Status";           D = "All 5 processes + feed + repo identity" }
+        @{ K = "4"; Icon = "◉"; IconColor = "Warning"; V = "Open Dashboard";   D = "Start live dashboard in background (no bot) & open in browser" }
+        @{ K = "5"; Icon = "◎"; IconColor = "Info";    V = "Open Shadow Dashboard"; D = "python -m dashboard.server --db data/shadow.db --port 8799 + open" }
+        @{ K = "6"; Icon = "□"; IconColor = "Neutral"; V = "Stop Shadow Dashboard";  D = "Close shadow dash on :8799 (stop port)" }
+        @{ K = "q"; Icon = "×"; IconColor = "Neutral"; V = "Exit";            D = "Return to PowerShell" }
     )
     foreach ($it in $items) {
-        Write-Host ("  [{0}] " -f $it.K) -NoNewline
-        Write-Host ("{0,-27}" -f $it.V) -ForegroundColor $cStrong -NoNewline
+        # Badge:  [ 1 ] with cyan number on subtle background
+        Write-Host "   " -NoNewline
+        Write-Host (" {0} " -f $it.K) -BackgroundColor DarkCyan -ForegroundColor White -NoNewline
+        Write-Host ("  {0} " -f $it.Icon) -ForegroundColor (Get-ProfileColor -Name $it.IconColor) -NoNewline
+        Write-Host ("{0,-22}" -f $it.V) -ForegroundColor $cStrong -NoNewline
         Write-Host $it.D -ForegroundColor $cNeutral
     }
     Write-Host ""
@@ -877,13 +1079,32 @@ function Invoke-LiveAction {
         "3" { Show-Status }
         "4" {
             if (Start-Dashboard) {
+                try {
+                    Lsh-Step "Sweeping Polymarket account balance to sync live starting capital..."
+                    & python -m core_brain.order_manager account-sweep --quiet
+                } catch {
+                    Lsh-Warn "Initial account sweep skipped: $_"
+                }
                 Start-Process $DashUrl
                 Lsh-Ok "Opened $DashUrl in default browser."
             }
         }
+        "5" {
+            if (Start-ShadowDashboard) {
+                Start-Process $ShadowDashUrl
+                Lsh-Ok "Opened $ShadowDashUrl in default browser (shadow db=data/shadow.db)."
+            }
+        }
+        "6" {
+            if (Stop-ShadowDashboard) {
+                Lsh-Ok "Shadow dashboard stopped — port $ShadowPort is free."
+            } else {
+                Lsh-Warn "Shadow dashboard stop finished with port still LISTENING — check PID."
+            }
+        }
         "q" { Write-Host "Exiting Spread Hunter Live menu." -ForegroundColor (Get-ProfileColor -Name Neutral); exit 0 }
         default {
-            Lsh-Warn "Invalid selection: $Key (choose 1-4, or q)."
+            Lsh-Warn "Invalid selection: $Key (choose 1-6, or q)."
             Start-Sleep -Seconds 1
         }
     }
@@ -892,12 +1113,18 @@ function Invoke-LiveAction {
 # ── Dispatch ──
 if ($Action -ne "") {
     $actionMap = @{
-        "start"     = "1"
-        "stop"      = "2"
-        "status"    = "3"
-        "open"      = "4"
-        "dashboard" = "4"
-        "dash"      = "4"
+        "start"        = "1"
+        "stop"         = "2"
+        "status"       = "3"
+        "open"         = "4"
+        "dashboard"    = "4"
+        "dash"         = "4"
+        "shadow"       = "5"
+        "shadow-open"  = "5"
+        "shadow-dash"  = "5"
+        "open-shadow"  = "5"
+        "shadow-stop"  = "6"
+        "stop-shadow"  = "6"
     }
     $key = $Action.Trim().ToLower()
     if ($actionMap.ContainsKey($key)) { $key = $actionMap[$key] }
@@ -913,17 +1140,14 @@ if ($Action -ne "") {
     exit 0
 }
 
-while ($true) {
-    Lsh-Banner -Title "SPREAD HUNTER LIVE - CONTROL CENTER" `
-               -Subtitle "Live execution engine only (separate from the simulation hunter-menu)"
-    Show-MenuGrid
-    $choice = Read-Host "  Select [1-4, q]"
-    if ($null -eq $choice) { break }
-    $choice = $choice.Trim()
-    if ($choice -eq "") { continue }
-    Invoke-LiveAction $choice
-    if ($choice -ne "q") {
-        Write-Host ""
-        try { [void][Console]::ReadLine() } catch { [void](Read-Host "  Press [Enter] to return to the menu...") }
-    }
-}
+Lsh-Banner -Title "SPREAD HUNTER LIVE - CONTROL CENTER"
+Show-MenuGrid
+Write-Host "  Select " -ForegroundColor Gray -NoNewline
+Write-Host "[1-6, q]" -ForegroundColor Cyan -NoNewline
+Write-Host " › " -ForegroundColor Yellow -NoNewline
+$choice = Read-Host
+if ($null -eq $choice) { exit 0 }
+$choice = $choice.Trim().ToLower()
+if ($choice -eq "") { exit 0 }
+Invoke-LiveAction $choice
+exit 0

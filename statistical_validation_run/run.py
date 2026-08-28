@@ -82,24 +82,103 @@ def count_closes(db_path: Path | str, run_id: Optional[str] = None) -> int:
             pass
 
 
+def count_matured_markouts(db_path: Path | str, run_id: Optional[str] = None) -> int:
+    """Return count of clean, matured markout observations in the given database.
+
+    A markout is matured if ref_mid is not null, ref_mid_source != 'contaminated',
+    and at least one horizon mid (mid_h0, mid_h1, mid_h2, or mid_h3) has been measured.
+    """
+    path = Path(db_path)
+    if not path.is_file():
+        return 0
+    try:
+        con = sqlite3.connect(f"file:{path.resolve()}?mode=ro", uri=True)
+    except sqlite3.Error:
+        try:
+            con = sqlite3.connect(str(path))
+        except sqlite3.Error:
+            return 0
+
+    try:
+        with con:
+            cur = con.cursor()
+            table_check = cur.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='markouts'"
+            ).fetchone()
+            if not table_check:
+                return 0
+            cols = {row[1] for row in cur.execute("PRAGMA table_info(markouts)").fetchall()}
+            if run_id and "run_id" not in cols:
+                return 0
+
+            horizon_cols = [f"mid_h{i}" for i in range(4) if f"mid_h{i}" in cols]
+            if not horizon_cols:
+                return 0
+            horizon_clause = " OR ".join(f"{col} IS NOT NULL" for col in horizon_cols)
+
+            query = f"""
+                SELECT COUNT(*) FROM markouts
+                WHERE ref_mid IS NOT NULL
+                  AND (ref_mid_source IS NULL OR ref_mid_source != 'contaminated')
+                  AND ({horizon_clause})
+            """
+            params: list[Any] = []
+            if run_id:
+                query += " AND run_id = ?"
+                params.append(run_id)
+
+            row = cur.execute(query, params).fetchone()
+            return int(row[0]) if row and row[0] is not None else 0
+    except (sqlite3.Error, OSError):
+        return 0
+    finally:
+        try:
+            con.close()
+        except Exception:
+            pass
+
+
 def make_hybrid_deadline_sleep(
     deadline_ts: float,
     count_closes_fn: Callable[[], int],
     target_closes: Optional[int] = None,
+    count_markouts_fn: Optional[Callable[[], int]] = None,
+    min_markouts: Optional[int] = None,
+    start_ts: Optional[float] = None,
+    min_seconds: float = 0.0,
     clock: Callable[[], float] = time.time,
     sleep: Callable[[float], None] = time.sleep,
 ) -> Callable[[float], None]:
-    """A sleep_fn for trader_loop.run that stops on either target closes or deadline_ts.
+    """A sleep_fn for trader_loop.run that stops on target events or wall clock deadline.
 
-    Raises `_Deadline` once the close count reaches target_closes or once the
-    clock reaches or exceeds deadline_ts. Otherwise sleeps, clamped to remaining time.
+    Raises `_Deadline` when:
+    1. The minimum duration has elapsed (elapsed >= min_seconds), target closes is reached
+       (if configured), AND minimum matured markouts is reached (if configured).
+    2. OR the clock reaches or exceeds deadline_ts.
     """
+    _start = start_ts if start_ts is not None else clock()
+
     def sleep_fn(seconds: float) -> None:
+        now = clock()
+        elapsed = now - _start
+
+        closes_met = True
         if target_closes is not None and target_closes > 0:
-            current_closes = count_closes_fn()
-            if current_closes >= target_closes:
-                raise _Deadline()
-        remaining = deadline_ts - clock()
+            closes_met = (count_closes_fn() >= target_closes)
+
+        markouts_met = True
+        if min_markouts is not None and min_markouts > 0:
+            if count_markouts_fn is not None:
+                markouts_met = (count_markouts_fn() >= min_markouts)
+            else:
+                markouts_met = False
+
+        duration_met = (elapsed >= min_seconds)
+
+        if duration_met and closes_met and markouts_met and (target_closes is not None or min_markouts is not None):
+            raise _Deadline()
+
+        remaining = deadline_ts - now
         if remaining <= 0:
             raise _Deadline()
         sleep(max(0.0, min(seconds, remaining)))
@@ -153,10 +232,22 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="target number of completed closes before stopping",
     )
     ap.add_argument(
+        "--min-hours",
+        type=float,
+        default=0.0,
+        help="minimum execution time in hours before event stop can trigger (default: 0.0)",
+    )
+    ap.add_argument(
         "--max-hours",
         type=float,
         default=1.0,
         help="maximum execution time in hours (default: 1.0)",
+    )
+    ap.add_argument(
+        "--min-markouts",
+        type=int,
+        default=25,
+        help="minimum matured markout samples required for fleet posture (default: 25)",
     )
     ap.add_argument(
         "--interval",
@@ -168,7 +259,7 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         "--db",
         type=str,
         default=None,
-        help="isolated shadow database path (default: data/shadow_stat_<ts>.db)",
+        help="isolated shadow database path (default: data/shadow_stat_<ts>_<run_id>.db)",
     )
     ap.add_argument(
         "--max-markets",
@@ -213,10 +304,12 @@ def main(
     assert_not_production_registry(db_path)
 
     log.warning(
-        "SHADOW RUN starting: mode=stat_validation target_closes=%s max_hours=%s interval=%ss store=%s run_id=%s "
+        "SHADOW RUN starting: mode=stat_validation target_closes=%s min_hours=%s max_hours=%s min_markouts=%s interval=%ss store=%s run_id=%s "
         "-- NO SIGNER LOADED: this process cannot place, cancel or merge anything. Numbers below are rehearsal, not results.",
         a.target_closes,
+        a.min_hours,
         a.max_hours,
+        a.min_markouts,
         a.interval,
         db_path,
         run_id,
@@ -238,11 +331,18 @@ def main(
 
     snapshot_stat_validation_env(artifact_dir, cfg, root=root)
 
-    deadline_ts = clock() + max(0.0, float(a.max_hours) * 3600.0)
+    start_now = clock()
+    deadline_ts = start_now + max(0.0, float(a.max_hours) * 3600.0)
+    min_seconds = max(0.0, float(a.min_hours) * 3600.0)
+
     hybrid_sleep = make_hybrid_deadline_sleep(
         deadline_ts=deadline_ts,
         count_closes_fn=lambda: count_closes(db_path, run_id),
         target_closes=a.target_closes,
+        count_markouts_fn=lambda: count_matured_markouts(db_path, run_id),
+        min_markouts=a.min_markouts,
+        start_ts=start_now,
+        min_seconds=min_seconds,
         clock=clock,
         sleep=sleep,
     )
@@ -277,5 +377,48 @@ def main(
         len(result.intents),
         ",".join(result.skipped_stages),
     )
+
+    total_closes = count_closes(db_path, run_id)
+    matured_markouts = count_matured_markouts(db_path, run_id)
+
+    is_underpowered = False
+    underpowered_reasons = []
+    if a.target_closes is not None and total_closes < a.target_closes:
+        is_underpowered = True
+        underpowered_reasons.append(f"closes {total_closes} < {a.target_closes}")
+    if a.min_markouts is not None and matured_markouts < a.min_markouts:
+        is_underpowered = True
+        underpowered_reasons.append(f"markouts {matured_markouts} < {a.min_markouts}")
+
+    if is_underpowered:
+        verdict = "INCONCLUSIVE"
+        verdict_reason = f"underpowered: n < N_min or markouts < {a.min_markouts} ({', '.join(underpowered_reasons)})"
+        log.warning(
+            "VERDICT: %s (%s) -- sample is insufficient to validate spread capture.",
+            verdict,
+            verdict_reason,
+        )
+    else:
+        verdict = "POWERED"
+        verdict_reason = f"sample satisfied: closes={total_closes}, markouts={matured_markouts}"
+        log.info("VERDICT: %s (%s)", verdict, verdict_reason)
+
+    run_result = {
+        "run_id": run_id,
+        "db_path": str(db_path),
+        "total_closes": total_closes,
+        "matured_markouts": matured_markouts,
+        "target_closes": a.target_closes,
+        "min_markouts": a.min_markouts,
+        "min_hours": a.min_hours,
+        "max_hours": a.max_hours,
+        "status": verdict,
+        "reason": verdict_reason,
+    }
+    result_path = artifact_dir / "run_result.json"
+    try:
+        result_path.write_text(json.dumps(run_result, indent=2), encoding="utf-8")
+    except Exception as e:
+        log.warning("failed to write run_result.json: %s", e)
 
     return 0 if result.results else 1

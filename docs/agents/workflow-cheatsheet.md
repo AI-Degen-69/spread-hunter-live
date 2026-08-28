@@ -10,6 +10,7 @@ This document defines my core responsibilities, default job, and operating princ
 * **Plan Before Execute** - Mandates locking in architecture and plans before writing complex code.
 * **Live By Default** - Treats all venue-reaching `spread-hunter` commands as live; explicitly exempts the no-signer/no-spend `shadow_run` rehearsal and read-only `order_manager status` commands from this restriction.
 * **Test-Driven Development** - Requires 80%+ test coverage, passing tests, and explicit verification steps before marking tasks complete.
+* **Step Reporting & Transparency** - At every step, the agent must explicitly state which skill/workflow is active, or explicitly state what was skipped with reason (`**Skipped**: [skill] -> **Reason**: [why]`).
 
 ## Development Lifecycle & Orchestration
 * `/grill-me` - Interviews you one question at a time to extract exact requirements when an ask is vague.

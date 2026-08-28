@@ -146,6 +146,168 @@ class TestHybridDeadlineSleep:
         sleep_fn(5.0)
         assert slept == [3.0]
 
+    def test_hybrid_sleep_requires_all_criteria_to_stop_early(self):
+        closes_box = [0]
+        markouts_box = [0]
+        now_box = [1000.0]
+        slept = []
+
+        sleep_fn = make_hybrid_deadline_sleep(
+            deadline_ts=1000.0 + 3600.0,
+            count_closes_fn=lambda: closes_box[0],
+            target_closes=50,
+            count_markouts_fn=lambda: markouts_box[0],
+            min_markouts=25,
+            start_ts=1000.0,
+            min_seconds=300.0,
+            clock=lambda: now_box[0],
+            sleep=slept.append,
+        )
+
+        # 1. Neither met, min time not reached -> sleeps
+        sleep_fn(5.0)
+        assert slept == [5.0]
+
+        # 2. Closes met (50), but markouts not met (10), min time reached (400s) -> sleeps
+        closes_box[0] = 50
+        markouts_box[0] = 10
+        now_box[0] = 1400.0
+        sleep_fn(5.0)
+        assert slept == [5.0, 5.0]
+
+        # 3. Markouts met (25), but closes not met (40), min time reached -> sleeps
+        closes_box[0] = 40
+        markouts_box[0] = 25
+        sleep_fn(5.0)
+        assert slept == [5.0, 5.0, 5.0]
+
+        # 4. Both closes and markouts met, but min time NOT reached (100s < 300s) -> sleeps
+        closes_box[0] = 50
+        markouts_box[0] = 25
+        now_box[0] = 1100.0
+        sleep_fn(5.0)
+        assert slept == [5.0, 5.0, 5.0, 5.0]
+
+        # 5. Closes met (50), markouts met (25), min time reached (400s >= 300s) -> STOPS!
+        now_box[0] = 1400.0
+        with pytest.raises(_Deadline):
+            sleep_fn(5.0)
+
+
+class TestMaturityGate:
+    """Immature markouts report insufficient_sample rather than 0.0 drift."""
+
+    def test_immature_run_reports_insufficient_sample_not_zero_drift(self, tmp_path):
+        from core_brain.markout import fleet_stats
+        from statistical_validation_run.run import count_matured_markouts
+        db = tmp_path / "fleet_test.db"
+        init_db(db)
+        reg = OrderRegistry(db_path=db)
+
+        # Insert 24 markouts (under the 25 threshold)
+        with reg._conn() as conn:
+            for i in range(24):
+                conn.execute(
+                    """INSERT INTO markouts (ts, ref_mid, ref_mid_source, mid_h0, size, run_id)
+                       VALUES (?, ?, 'clean', ?, 1.0, 'shadow-run')""",
+                    (100.0 + i, 0.50, 0.52),
+                )
+            conn.commit()
+
+        # Direct count check for 24 markouts
+        assert count_matured_markouts(db, run_id="shadow-run") == 24
+
+        stats = fleet_stats(reg, min_sample=25)
+        assert stats["verdict"] == "insufficient_sample"
+        assert stats["mean_per_share"] is None
+
+    def test_mature_run_passes_sample_threshold(self, tmp_path):
+        from core_brain.markout import fleet_stats
+        from statistical_validation_run.run import count_matured_markouts
+        db = tmp_path / "fleet_test_mature.db"
+        init_db(db)
+        reg = OrderRegistry(db_path=db)
+
+        # Insert 25 matured markouts (exact boundary)
+        with reg._conn() as conn:
+            for i in range(25):
+                conn.execute(
+                    """INSERT INTO markouts (ts, ref_mid, ref_mid_source, mid_h0, size, run_id)
+                       VALUES (?, ?, 'clean', ?, 1.0, 'shadow-run')""",
+                    (100.0 + i, 0.50, 0.52),
+                )
+            conn.commit()
+
+        # Direct count check for 25 markouts
+        assert count_matured_markouts(db, run_id="shadow-run") == 25
+
+        stats = fleet_stats(reg, min_sample=25)
+        assert stats["verdict"] in ("earning", "losing")
+        assert stats["mean_per_share"] is not None
+        assert stats["mean_per_share"] == pytest.approx(0.02)
+
+
+class TestCountMaturedMarkouts:
+    """Helper count_matured_markouts queries SQLite markouts table safely."""
+
+    def test_returns_zero_when_file_missing(self, tmp_path):
+        from statistical_validation_run.run import count_matured_markouts
+        assert count_matured_markouts(tmp_path / "nonexistent.db") == 0
+
+    def test_returns_zero_when_table_missing(self, tmp_path):
+        from statistical_validation_run.run import count_matured_markouts
+        db = tmp_path / "empty.db"
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE foo (id INT)")
+        con.commit()
+        con.close()
+        assert count_matured_markouts(db) == 0
+
+    def test_counts_only_clean_matured_markouts(self, tmp_path):
+        from statistical_validation_run.run import count_matured_markouts
+        db = tmp_path / "markouts_test.db"
+        con = sqlite3.connect(str(db))
+        con.execute(
+            """CREATE TABLE markouts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts REAL NOT NULL,
+                ref_mid REAL,
+                ref_mid_source TEXT DEFAULT 'contaminated',
+                mid_h0 REAL,
+                mid_h1 REAL,
+                mid_h2 REAL,
+                mid_h3 REAL,
+                run_id TEXT NOT NULL
+            )"""
+        )
+        # Row 1: clean, mid_h0 measured -> matured
+        con.execute(
+            "INSERT INTO markouts (ts, ref_mid, ref_mid_source, mid_h0, run_id) VALUES (1.0, 0.50, 'clean', 0.51, 'shadow-1')"
+        )
+        # Row 2: clean, mid_h1 measured -> matured
+        con.execute(
+            "INSERT INTO markouts (ts, ref_mid, ref_mid_source, mid_h1, run_id) VALUES (2.0, 0.50, 'clean', 0.49, 'shadow-1')"
+        )
+        # Row 3: contaminated -> NOT counted
+        con.execute(
+            "INSERT INTO markouts (ts, ref_mid, ref_mid_source, mid_h0, run_id) VALUES (3.0, 0.50, 'contaminated', 0.52, 'shadow-1')"
+        )
+        # Row 4: clean, but no mid_h0..h3 measured yet (pending) -> NOT counted
+        con.execute(
+            "INSERT INTO markouts (ts, ref_mid, ref_mid_source, run_id) VALUES (4.0, 0.50, 'clean', 'shadow-1')"
+        )
+        # Row 5: clean, mid_h3 measured for shadow-2
+        con.execute(
+            "INSERT INTO markouts (ts, ref_mid, ref_mid_source, mid_h3, run_id) VALUES (5.0, 0.50, 'clean', 0.50, 'shadow-2')"
+        )
+        con.commit()
+        con.close()
+
+        assert count_matured_markouts(db, run_id="shadow-1") == 2
+        assert count_matured_markouts(db, run_id="shadow-2") == 1
+        assert count_matured_markouts(db, run_id="shadow-3") == 0
+        assert count_matured_markouts(db) == 3
+
 
 class TestSnapshot:
     """Snapshots runtime environment and writes MakerConfig as JSON."""
@@ -218,3 +380,32 @@ class TestEndToEndHarness:
         assert ring_file.is_file()
         content = ring_file.read_text(encoding="utf-8")
         assert "quoting" in content
+
+    def test_underpowered_run_exits_inconclusive_without_go_verdict(self, tmp_path, caplog):
+        """Acceptance Criteria: run with target-closes 999 exits INCONCLUSIVE with underpowered reason."""
+        db = tmp_path / "shadow_stat_underpowered.db"
+        now = [1000.0]
+
+        def clock():
+            return now[0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        with caplog.at_level(logging.INFO):
+            rc = main(
+                ["--target-closes", "999", "--max-hours", "0.001", "--db", str(db)],
+                markets_fn=lambda max_markets=None: [FakeMarket("0xabc")],
+                client_fn=lambda: object(),
+                decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([], ""),
+                fetch_books=_books,
+                clock=clock,
+                sleep=sleep,
+            )
+
+        assert rc == 0
+        text = caplog.text.lower()
+        assert "inconclusive" in text
+        assert "underpowered: n < n_min or markouts < 25" in text
+        assert "verdict: go" not in text
+        assert "verdict: no-go" not in text

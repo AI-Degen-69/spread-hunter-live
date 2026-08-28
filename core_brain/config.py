@@ -828,6 +828,15 @@ class MakerConfig:
     # Optional sizing ceiling per quote (None for standard mode; set via .env / CLI)
     max_quote_shares: float | None = None
 
+    # --- statistical validation gate criteria (Issue #51) -----------------
+    # Effect sizes to evaluate in power table (USD per share / price units).
+    # NOTE: Effect size delta and standard deviation sigma must share the same units.
+    stat_gate_deltas: tuple[float, ...] = (0.01, 0.02, 0.04)
+    stat_gate_alpha: float = 0.05          # one-sided alpha = 0.05 -> 90% one-sided CI lower bound
+    stat_gate_beta: float = 0.20           # beta = 0.20 -> 80% power
+    stat_gate_threshold_pct: float = 1.0   # primary gate threshold on return % (1.0%)
+    stat_gate_bankroll_fraction: float = 0.01  # dollar twin gate (1% of starting bankroll)
+
     # --- experiment end criteria (decisive test of the maker mechanism) -----
     # Phase A (census): observe this many DISTINCT live markets and measure how
     # often a fillable sub-$1.00 hedged pair exists at ask-1tick. Below the
@@ -1051,6 +1060,16 @@ def load() -> MakerConfig:
         if not math.isfinite(val) or val <= 0:
             raise ValueError(f"HUNTER_MAX_SHARES must be strictly positive, got: {val}")
         kw["max_quote_shares"] = val
+    sgt = os.environ.get("HUNTER_STAT_GATE_THRESHOLD_PCT")
+    if sgt and sgt.strip():
+        kw["stat_gate_threshold_pct"] = _bounded_float(
+            "HUNTER_STAT_GATE_THRESHOLD_PCT", sgt, -100.0, 100.0
+        )
+    sgb = os.environ.get("HUNTER_STAT_GATE_BANKROLL_FRACTION")
+    if sgb and sgb.strip():
+        kw["stat_gate_bankroll_fraction"] = _bounded_float(
+            "HUNTER_STAT_GATE_BANKROLL_FRACTION", sgb, 0.0, 1.0
+        )
     return MakerConfig(**kw)
 
 # hook probe

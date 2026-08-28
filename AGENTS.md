@@ -1,5 +1,5 @@
 # AGENTS.md — Spread Hunter Live
-
+@RTK.md
 Real-money execution engine and operations dashboard for the Polymarket **spread hunter**
 strategy: buy one UP share and one DOWN share of the same binary market for less than
 $1.00 combined, then merge the pair back into exactly $1.00 of USDC.

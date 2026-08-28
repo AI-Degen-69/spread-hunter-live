@@ -399,7 +399,13 @@ def render_report_md(
         "- **win_rate**: " + _pct(ta.get("win_rate"))
         + f" (95% CI lower {_pct(win_ci.get('lower'))})",
         "- **expectancy_usd**: " + _fmt(ta.get("expectancy_usd"), 4),
-        "- **pairs_under_1**: " + _pct(kpi.get("pairs_under_1"))
+        # pairs_under_1 arrives already percent-scaled (kpi returns
+        # `100.0 * count / len`, e.g. 100.0 == 100%), so render it with
+        # _fmt + "%" like the other percent-scaled metrics -- _pct would
+        # double the scale (100.0 -> 10000.0%).
+        "- **pairs_under_1**: "
+        + ("n/a" if kpi.get("pairs_under_1") is None
+           else _fmt(kpi.get("pairs_under_1"), 2) + "%")
         + f" (median pair cost {_fmt(kpi.get('median_pair_cost'), 4)})",
         "- **adverse_selection/share**: " + _fmt(kpi.get("adverse_selection"), 6)
         + f" ({kpi.get('markout_samples')} markout samples)",

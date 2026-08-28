@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
-from core_brain.config import load as load_cfg
+from core_brain.config import MakerConfig, load as load_cfg
 from core_brain.runtime_paths import resolve_runtime_file
 
 _CFG = load_cfg()
@@ -77,6 +77,10 @@ def required_sample_size(
         return None
     if sigma <= 0.0 or delta <= 0.0:
         return None
+    if not math.isfinite(z_alpha) or z_alpha <= 0.0:
+        return None
+    if not math.isfinite(z_beta) or z_beta <= 0.0:
+        return None
     return math.ceil(((z_alpha + z_beta) * sigma / delta) ** 2)
 
 
@@ -106,7 +110,7 @@ def power_table(
     return rows
 
 
-def gate_definition(cfg: "MakerConfig | None" = None) -> dict[str, Any]:
+def gate_definition(cfg: MakerConfig | None = None) -> dict[str, Any]:
     """Return the stat gate specification, thresholds, and tautology disclaimer.
 
     Pure function — no network, no database.
@@ -114,10 +118,10 @@ def gate_definition(cfg: "MakerConfig | None" = None) -> dict[str, Any]:
     if cfg is None:
         cfg = load_cfg()
     return {
-        "primary_gate": "ci90_lower_pct > threshold_pct",
+        "primary_gate": "ci90_lower_pct >= threshold_pct",
         "threshold_pct": cfg.stat_gate_threshold_pct,
         "bankroll_fraction": cfg.stat_gate_bankroll_fraction,
-        "dollar_twin_gate": "ci90_lower_usd > bankroll * bankroll_fraction",
+        "dollar_twin_gate": "ci90_lower_usd >= bankroll * bankroll_fraction",
         "tautology_disclaimer": (
             "TAUTOLOGY DISCLAIMER: E[PnL | method=merge] > 0 is trivially true "
             "by construction — merged pairs always pay exactly $1.00 for less "
@@ -189,9 +193,9 @@ def evaluate_stat_gate(
     result["ci90_lower_usd"] = ci90_lower_usd
 
     # Primary gate: 90% CI lower bound exceeds threshold
-    pct_pass = ci90_lower > threshold_pct
-    # Dollar twin: lower bound in dollars exceeds bankroll fraction
-    dollar_pass = ci90_lower_usd > (starting_capital * bankroll_fraction)
+    pct_pass = ci90_lower >= threshold_pct
+    # Dollar twin: lower bound in dollars meets or exceeds bankroll fraction
+    dollar_pass = ci90_lower_usd >= (starting_capital * bankroll_fraction)
     result["passed"] = pct_pass and dollar_pass
 
     return result

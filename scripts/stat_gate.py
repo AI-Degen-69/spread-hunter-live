@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -62,6 +63,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     cfg = load_cfg()
     sigma = args.sigma if args.sigma is not None else cfg.stat_gate_deltas[1]
     bankroll = args.bankroll if args.bankroll is not None else cfg.bankroll_usd
+
+    if not math.isfinite(sigma) or sigma <= 0:
+        parser.error(f"sigma must be finite and strictly positive, got {sigma}")
+    if not math.isfinite(bankroll) or bankroll <= 0:
+        parser.error(f"bankroll must be finite and strictly positive, got {bankroll}")
 
     pt = power_table(
         sigma=sigma,

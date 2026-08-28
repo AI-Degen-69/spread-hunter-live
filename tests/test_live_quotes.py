@@ -68,7 +68,7 @@ def test_decide_quotes_outside_band_or_settled_declined():
     inv = Inventory()
     intents, why = decide_quotes(cfg, up_book, down_book, inv, 1e9, None)
     assert len(intents) == 0
-    assert "settled" in why or "outside band" in why or "not tradeable" in why
+    assert "settled" in why or "outside band" in why or "not tradeable" in why or "decided market" in why or "outside [0.20,0.80]" in why
 
 
 def test_inventory_from_registry(tmp_path):
@@ -195,13 +195,15 @@ def test_flat_inventory_refuses_a_lone_leg():
     from dataclasses import replace
     from core_brain.config import load
 
-    cfg = replace(load(), bankroll_usd=5000.0)
+    cfg = replace(load(), bankroll_usd=5000.0, price_band_low=0.30, price_band_high=0.70)
     flat = Inventory(up_shares=0, down_shares=0, up_cost=0.0, down_cost=0.0)
-    # UP sits at the band edge and is blocked; DOWN alone would otherwise rest.
-    up = {"best_bid": 0.11, "best_ask": 0.12,
-          "bids": {0.11: 9999.0}, "asks": {0.12: 9999.0}}
-    down = {"best_bid": 0.87, "best_ask": 0.88,
-            "bids": {0.87: 9999.0}, "asks": {0.88: 9999.0}}
+    # UP is blocked by price band (mid 0.25 -> price ~0.23 < 0.30) while
+    # DOWN (mid 0.65 -> price ~0.63) passes. Both mids inside [0.20,0.80]
+    # so the 2026-08-28 tighten does not mask this lone-leg case.
+    up = {"best_bid": 0.24, "best_ask": 0.26,
+          "bids": {0.24: 9999.0}, "asks": {0.26: 9999.0}}
+    down = {"best_bid": 0.64, "best_ask": 0.66,
+            "bids": {0.64: 9999.0}, "asks": {0.66: 9999.0}}
 
     intents, why = decide_quotes(cfg, up, down, flat, 1e9, None)
     assert intents == []

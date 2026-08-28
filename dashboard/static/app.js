@@ -770,7 +770,68 @@ function renderExpandedOrders(orders, fills, showCancelled) {
 
   let html = '';
 
-  // Toggle bar (only when there are cancelled orders to toggle)
+  html += `<table class="orders-subtable">`;
+  html += `<thead><tr>
+    <th>Pair ID</th>
+    <th>Age</th>
+    <th>Outcome / Leg</th>
+    <th>Price</th>
+    <th>Size</th>
+    <th>Filled</th>
+    <th>Status</th>
+  </tr></thead><tbody>`;
+
+  // Pair grouping — deterministic color per pair_id, orders together
+  function pairHue(pid) {
+    if (!pid) return 200;
+    let h = 0;
+    for (let i = 0; i < pid.length; i++) h = ((h << 5) - h + pid.charCodeAt(i)) | 0;
+    return Math.abs(h) % 360;
+  }
+  function pillForStatus(s) {
+    const v = String(s||'').toLowerCase();
+    if (v === 'open' || v === 'partial' || v === 'pending') return 'open';
+    if (v === 'filled') return 'filled';
+    if (v === 'cancelled' || v === 'canceled') return 'stopped';
+    return 'reconnecting';
+  }
+  // Group by pair_id so same pair rows are adjacent and share color
+  const byPair = {};
+  for (const o of displayOrders) {
+    const key = o.pair_id || '__no_pair__';
+    if (!byPair[key]) byPair[key] = [];
+    byPair[key].push(o);
+  }
+  const pairKeys = Object.keys(byPair).sort((a,b) => a.localeCompare(b));
+  const pairNumMap = {}; pairKeys.forEach((k,i) => pairNumMap[k] = i+1);
+  for (const pid of pairKeys) {
+    const hue = pairHue(pid);
+    const pairNum = pairNumMap[pid];
+    const pairDisplay = pid === '__no_pair__' ? '--' : String(pairNum).padStart(2,'0');
+    const pairTitle = pid === '__no_pair__' ? '' : ` title="${esc(pid)}"`;
+    const pairOrders = byPair[pid].sort((a,b) => (a.price||0) - (b.price||0));
+    for (const o of pairOrders) {
+      const oFills = fillsByOrder[o.id] || [];
+      const fillCount = oFills.length;
+      const statusCls = pillForStatus(o.status);
+      const isDown = o.token_side === 'DOWN' || (o.outcome && (o.outcome.toLowerCase().includes('no') || o.outcome.toLowerCase().includes('down')));
+      const badgeCls = isDown ? 'badge-down' : 'badge-up';
+      const label = o.outcome ? `${o.outcome} (${fmtSide(o.side)})` : (o.token_side ? `${o.token_side} (${fmtSide(o.side)})` : fmtSide(o.side));
+      const isCancelled = isCancelledStatus(o.status);
+      html += `<tr class="${isCancelled ? 'order-cancelled ' : ''}pair-row" style="--pair-hue:${hue}; background: hsla(${hue},72%,60%,0.06)">
+        <td class="mono" style="font-size:11px;color:var(--text-muted)"><span class="pair-label"${pairTitle}><span class="pair-dot" style="--pair-hue:${hue}"></span>${esc(pairDisplay)}</span></td>
+        <td class="mono" style="font-size:11px;color:var(--text-secondary)">${fmtOrderAge(o.age_sec)}</td>
+        <td class="mono"><span class="${badgeCls} side-${(o.side||'').toLowerCase()}">${esc(label)}</span></td>
+        <td class="mono">${esc(o.price !== null && o.price !== undefined ? o.price.toFixed(4) : '--')}</td>
+        <td class="mono">${esc(o.original_size !== null && o.original_size !== undefined ? o.original_size : '--')}</td>
+        <td class="mono">${esc(o.size_matched !== null && o.size_matched !== undefined ? o.size_matched : '--')}</td>
+        <td><span class="pill ${statusCls}">${fmtOrderStatus(o.status)}</span></td>
+      </tr>`;
+    }
+  }
+
+  html += `</tbody></table>`;
+
   if (cancelledOrders.length > 0) {
     html += `<div class="cancelled-toggle-bar">
       <button class="toggle-cancelled-btn" type="button">
@@ -778,41 +839,6 @@ function renderExpandedOrders(orders, fills, showCancelled) {
       </button>
     </div>`;
   }
-
-  html += `<table class="orders-subtable">`;
-  html += `<thead><tr>
-    <th>Outcome / Leg</th>
-    <th>Price</th>
-    <th>Size</th>
-    <th>Filled</th>
-    <th>Remaining</th>
-    <th>Status</th>
-    <th>Pair</th>
-    <th>Age</th>
-    <th>Fills</th>
-  </tr></thead><tbody>`;
-
-  for (const o of displayOrders) {
-    const oFills = fillsByOrder[o.id] || [];
-    const fillCount = oFills.length;
-    const statusCls = o.status === 'open' ? 'active' : (o.status === 'filled' ? 'active' : (isCancelledStatus(o.status) ? 'stopped' : 'reconnecting'));
-    const isDown = o.token_side === 'DOWN' || (o.outcome && (o.outcome.toLowerCase().includes('no') || o.outcome.toLowerCase().includes('down')));
-    const badgeCls = isDown ? 'badge-down' : 'badge-up';
-    const label = o.outcome ? `${o.outcome} (${fmtSide(o.side)})` : (o.token_side ? `${o.token_side} (${fmtSide(o.side)})` : fmtSide(o.side));
-    html += `<tr${isCancelledStatus(o.status) ? ' class="order-cancelled"' : ''}>
-      <td class="mono"><span class="${badgeCls} side-${(o.side||'').toLowerCase()}">${esc(label)}</span></td>
-      <td class="mono">${esc(o.price !== null && o.price !== undefined ? o.price.toFixed(4) : '--')}</td>
-      <td class="mono">${esc(o.original_size !== null && o.original_size !== undefined ? o.original_size : '--')}</td>
-      <td class="mono">${esc(o.size_matched !== null && o.size_matched !== undefined ? o.size_matched : '--')}</td>
-      <td class="mono">${esc(o.size_remaining !== null && o.size_remaining !== undefined ? o.size_remaining : '--')}</td>
-      <td><span class="pill ${statusCls}">${fmtOrderStatus(o.status)}</span></td>
-      <td class="mono" style="font-size:10px;color:var(--text-muted)">${esc(o.pair_id ? o.pair_id.slice(0,12) : '--')}</td>
-      <td class="mono" style="font-size:11px;color:var(--text-secondary)">${fmtOrderAge(o.age_sec)}</td>
-      <td class="mono">${fillCount > 0 ? fillCount : '--'}</td>
-    </tr>`;
-  }
-
-  html += `</tbody></table>`;
   return html;
 }
 
@@ -826,9 +852,31 @@ function renderMarkets(kpi, state) {
   // Group orders from /api/state by condition_id
   const ordersByMarket = groupOrdersByMarket(state?.orders);
   const fills = state?.fills || [];
+  const graduatedCids = new Set((kpi.funnel?.graduated || []).map(g => g.cid || g.condition_id));
+
+  // Market order: OPEN (pure) → mixed OPEN+FILLED → pure FILLED → zero active / IDLE/FINISHED at bottom
+  const entries = Object.entries(kpi.by_market);
+  entries.sort((a,b) => {
+    const [cidA] = a; const [cidB] = b;
+    const activeA = (ordersByMarket[cidA] || []).filter(o => !isCancelledStatus(o.status));
+    const activeB = (ordersByMarket[cidB] || []).filter(o => !isCancelledStatus(o.status));
+    const rank = (active) => {
+      if (active.length === 0) return 4;
+      const hasOpen = active.some(o => { const v=String(o.status||'').toLowerCase(); return v==='open'||v==='partial'||v==='pending'; });
+      const hasFilled = active.some(o => String(o.status||'').toLowerCase()==='filled');
+      if (hasOpen && !hasFilled) return 1;
+      if (hasOpen && hasFilled) return 2;
+      if (!hasOpen && hasFilled) return 3;
+      return 2;
+    };
+    const ra = rank(activeA), rb = rank(activeB);
+    if (ra !== rb) return ra - rb;
+    if (activeB.length !== activeA.length) return activeB.length - activeA.length;
+    return (a[1].title||'').localeCompare(b[1].title||'');
+  });
 
   body.innerHTML = '';
-  for (const [cid, m] of Object.entries(kpi.by_market)) {
+  for (const [cid, m] of entries) {
     const fills_count = m.fills_count || 0;
     const hedged = m.balance !== null && m.balance !== undefined && m.balance >= 0.99 ? 'Hedged' : 'One-Sided';
     const isExpanded = expandedMarkets.has(cid);
@@ -837,13 +885,38 @@ function renderMarkets(kpi, state) {
     const activeOrders = allOrders.filter(o => !isCancelledStatus(o.status));
     const cancelledCount = allOrders.length - activeOrders.length;
     const showCancelled = showCancelledByMarket.has(cid);
+    // Distinct FINISHED when market is resolved or dropped from current
+    // graduated universe but still has history (shadow retains it for P/L).
+    // Covers: days_to_resolve <0, venue_sync resolved, or simply not in
+    // kpi.funnel.graduated anymore (e.g., Mlb Lad Atl 2026-08-27 past date).
+    // HasFunnel guards: when funnel empty (no scan yet) don't mark everything.
+    const hasFunnel = graduatedCids.size > 0;
+    const isFinished = (m.days_to_resolve !== null && m.days_to_resolve < 0)
+      || (hasFunnel && !graduatedCids.has(cid) && hasOrders);
 
-    // Badge: active count, plus muted cancelled count when present
+    // Badge: per-status pills same size/style as order pills — OPEN blue, FILLED green, 0 ACTIVE gray
     let badgeHtml = '';
     if (hasOrders) {
-      badgeHtml = `<span class="order-count-badge">${activeOrders.length} active</span>`;
-      if (cancelledCount > 0) {
-        badgeHtml += ` <span class="order-count-badge cancelled-count">${cancelledCount} cancelled</span>`;
+      if (activeOrders.length === 0) {
+        badgeHtml = `<span class="pill stopped" style="font-size:10px; padding:2px 8px; margin-left:4px">0 ACTIVE</span>`;
+      } else {
+        const statusCounts = {};
+        for (const o of activeOrders) {
+          const v = String(o.status||'').toLowerCase();
+          const norm = (v === 'open' || v === 'partial' || v === 'pending') ? 'OPEN' : (v === 'filled' ? 'FILLED' : v.toUpperCase());
+          statusCounts[norm] = (statusCounts[norm] || 0) + 1;
+        }
+        const order = ['OPEN','FILLED'];
+        const keys = Object.keys(statusCounts).sort((a,b) => {
+          const ia = order.indexOf(a), ib = order.indexOf(b);
+          if (ia !== -1 || ib !== -1) return (ia===-1?99:ia) - (ib===-1?99:ib);
+          return a.localeCompare(b);
+        });
+        for (const k of keys) {
+          const cnt = statusCounts[k];
+          const cls = k === 'OPEN' ? 'open' : k === 'FILLED' ? 'filled' : 'reconnecting';
+          badgeHtml += `<span class="pill ${cls}" style="font-size:10px; padding:2px 8px; margin-left:4px">${cnt} ${k}</span>`;
+        }
       }
     }
     // Main row — clickable to expand
@@ -857,7 +930,7 @@ function renderMarkets(kpi, state) {
       <td><span class="pill ${hedged === 'Hedged' ? 'active' : 'reconnecting'}">${hedged}</span></td>
       <td class="mono">${esc(m.realized_pnl !== null && m.realized_pnl !== undefined ? fmtUSD(m.realized_pnl) : '--')}</td>
       <td class="mono">${esc(fills_count)}</td>
-      <td><span class="pill ${m.quotes_count > 0 ? 'active' : 'stopped'}">${m.quotes_count > 0 ? 'QUOTING' : 'IDLE'}</span></td>
+      <td><span class="pill ${isFinished ? 'finished' : (m.quotes_count > 0 ? 'quoting-breathing' : 'stopped')}">${isFinished ? 'FINISHED' : (m.quotes_count > 0 ? 'QUOTING' : 'IDLE')}</span></td>
     </tr>`;
 
     // Expanded sub-row with individual orders
@@ -977,7 +1050,7 @@ function getStageHero(key, funnel) {
     case 'identity':
       return {
         param: 'TEST: CONTRACT & KEYWORDS',
-        value: 'Binary · Mid [0.05, 0.95]',
+        value: 'Binary · Mid [0.20, 0.80]',
       };
     case 'volume':
       return {

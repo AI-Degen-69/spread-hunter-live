@@ -457,9 +457,14 @@ def evaluate(session: requests.Session, rate: float, m: dict,
             return None
         books.append(("YES" if j == 0 else "NO", bids, asks))
         mid = (max(bids)[0] + min(asks)[0]) / 2.0
-        # Outside [0.05, 0.95] the book is one-sided in practice and the
+        # Outside [0.20, 0.80] the book is one-sided in practice and the
         # position is mostly a bet on a near-settled outcome.
-        if not 0.05 < mid < 0.95:
+        # Tightened 2026-08-28 from [0.05, 0.95] per operator directive:
+        # 5c left no room to work — a finished market at 100%/0.1% was still
+        # quotable until the settled-book arm caught it. 20c keeps a real
+        # spread to capture and prevents a decided leg from ever entering the
+        # graduated universe.
+        if not 0.20 < mid < 0.80:
             return None
         mids[j] = mid
         best_bids[j] = max(bids)[0]

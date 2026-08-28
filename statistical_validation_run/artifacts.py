@@ -403,7 +403,9 @@ def render_report_md(
         # `100.0 * count / len`, e.g. 100.0 == 100%), so render it with
         # _fmt + "%" like the other percent-scaled metrics -- _pct would
         # double the scale (100.0 -> 10000.0%).
-        "- **pairs_under_1**: " + _fmt(kpi.get("pairs_under_1"), 2) + "%"
+        "- **pairs_under_1**: "
+        + ("n/a" if kpi.get("pairs_under_1") is None
+           else _fmt(kpi.get("pairs_under_1"), 2) + "%")
         + f" (median pair cost {_fmt(kpi.get('median_pair_cost'), 4)})",
         "- **adverse_selection/share**: " + _fmt(kpi.get("adverse_selection"), 6)
         + f" ({kpi.get('markout_samples')} markout samples)",

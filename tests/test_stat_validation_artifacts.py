@@ -359,3 +359,30 @@ class TestArtifactBundle:
         line = next(l for l in md.splitlines() if "pairs_under_1" in l)
         assert "100.00%" in line
         assert "10000.0%" not in md
+
+    def test_memo_renders_missing_pairs_under_1_as_clean_n_a(self):
+        """When pairs_under_1 is None the memo renders a clean `n/a`, never the
+        malformed `n/a%` (the '%' suffix must belong to a value, not a marker)."""
+        cfg = load_cfg()
+        md = render_report_md(
+            run_id=RUN_ID,
+            db_path="data/shadow.db",
+            artifact_dir="reports/stat_x",
+            kpi={
+                "pairs_under_1": None,
+                "median_pair_cost": None,
+                "trade_analytics": {"n_closes": 0},
+                "portfolio": {"realized_pnl": 0.0},
+            },
+            cfg=cfg,
+            gate_rows=[],
+            verdict="INCONCLUSIVE",
+            verdict_reason="underpowered",
+            run_result={"status": "INCONCLUSIVE", "reason": "underpowered"},
+            closes=[],
+            target_closes=None,
+            min_markouts=None,
+        )
+        line = next(l for l in md.splitlines() if "pairs_under_1" in l)
+        assert "pairs_under_1**: n/a " in line
+        assert "%" not in line

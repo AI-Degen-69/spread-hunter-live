@@ -1205,10 +1205,11 @@ def test_app_js_has_expandable_market_rows():
     # The per-order sub-table renderer
     assert "renderExpandedOrders" in app_js
     assert "orders-subtable" in app_js
-    # Individual order fields surfaced
+    # Individual order fields surfaced — Remaining removed per UX (Size vs Filled only)
     assert "original_size" in app_js
     assert "size_matched" in app_js
-    assert "size_remaining" in app_js
+    # size_remaining still calculated in registry_state but not rendered in expanded table (Age | Pair ID | Outcome | Price | Size | Filled | Status)
+    assert "Pair ID" in app_js
     assert "pair_id" in app_js
     # Side coloring (template literal produces side-buy/side-sell at runtime)
     assert "side-" in app_js

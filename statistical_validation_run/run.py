@@ -34,6 +34,11 @@ from core_brain.shadow_run import (
     ShadowResult,
 )
 from core_brain.venue import MAX_ORDER_USD, MAX_TOTAL_USD
+from statistical_validation_run.artifacts import (
+    build_gate_rows,
+    resolve_verdict,
+    write_artifacts,
+)
 
 log = logging.getLogger("statistical_validation_run")
 
@@ -192,25 +197,34 @@ def snapshot_stat_validation_env(
     *,
     root: Optional[Path] = None,
 ) -> None:
-    """Create artifact directory and snapshot pipeline inputs and effective config."""
+    """Create artifact directory and snapshot pipeline inputs and effective config.
+
+    File names carry the `_snapshot` suffix (Issue #54): the bundle a run emits
+    is `config_snapshot.json`, `pipeline_snapshot.json` and
+    `markets_snapshot.json`, so a reader can tell a run's frozen inputs from
+    the live files still being written under `runtime/`.
+    """
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    for fname in ("pipeline.json", "markets.json"):
+    for fname, snap_name in (
+        ("pipeline.json", "pipeline_snapshot.json"),
+        ("markets.json", "markets_snapshot.json"),
+    ):
         src = resolve_runtime_file(fname, root=root)
         if src.is_file():
             try:
-                shutil.copy2(src, artifact_dir / fname)
+                shutil.copy2(src, artifact_dir / snap_name)
             except OSError as e:
                 log.warning("snapshot: failed to copy %s: %s", fname, e)
         else:
             log.warning("snapshot: source file %s missing, skipping", fname)
 
-    cfg_path = artifact_dir / "config.json"
+    cfg_path = artifact_dir / "config_snapshot.json"
     try:
         with open(cfg_path, "w", encoding="utf-8") as f:
             json.dump(dataclasses.asdict(cfg), f, indent=2)
     except (OSError, TypeError) as e:
-        log.warning("snapshot: failed to write config.json: %s", e)
+        log.warning("snapshot: failed to write config_snapshot.json: %s", e)
 
     log.info(
         "STAT HARNESS config: max_order_usd=%.2f max_total_usd=%.2f objective=%s bankroll_usd=%.2f",
@@ -260,6 +274,12 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         type=str,
         default=None,
         help="isolated shadow database path (default: data/shadow_stat_<ts>_<run_id>.db)",
+    )
+    ap.add_argument(
+        "--report",
+        type=str,
+        default=None,
+        help="artifact directory (default: reports/stat_<ts>_<run_id>/)",
     )
     ap.add_argument(
         "--max-markets",
@@ -315,7 +335,11 @@ def main(
         run_id,
     )
 
-    artifact_dir = Path(f"data/shadow_stat_{ts_str}_{run_id}")
+    artifact_dir = (
+        Path(a.report)
+        if a.report
+        else Path(f"reports/stat_{ts_str}_{run_id}")
+    )
 
     from dataclasses import replace as dc_replace
     cfg = dc_replace(load_cfg(), single_buy_grace_sec=0.0)
@@ -420,5 +444,58 @@ def main(
         result_path.write_text(json.dumps(run_result, indent=2), encoding="utf-8")
     except Exception as e:
         log.warning("failed to write run_result.json: %s", e)
+
+    # ── Issue #54: the full KPI artifact bundle ────────────────────────────
+    # The harness must prove the gate inclusive of ALL losses, so the report
+    # is generated from the shadow store through the same kpi.report path the
+    # live dashboard reads, scoped to this run. The verdict is INCONCLUSIVE
+    # whenever the sample is underpowered; GO/NO-GO only with adequate sample.
+    try:
+        from core_brain.kpi import report as kpi_report
+        kpi = kpi_report(db_path, run_id=run_id)
+        from core_brain.order_registry import OrderRegistry
+        reg = OrderRegistry(db_path)
+        run_closes = [
+            c for c in reg.get_all_closes() if c.get("run_id") == run_id
+        ]
+        gate_rows = build_gate_rows(
+            closes=run_closes,
+            kpi=kpi,
+            cfg=cfg,
+            target_closes=a.target_closes,
+            matured_markouts=matured_markouts,
+            min_markouts=a.min_markouts,
+        )
+        stat = resolve_verdict(
+            gate_rows=gate_rows,
+            kpi=kpi,
+            underpowered=is_underpowered,
+            underpowered_reasons=underpowered_reasons,
+            threshold_pct=cfg.stat_gate_threshold_pct,
+        )
+        write_artifacts(
+            artifact_dir,
+            db_path=db_path,
+            run_id=run_id,
+            cfg=cfg,
+            kpi=kpi,
+            verdict=stat["verdict"],
+            verdict_reason=stat["verdict_reason"],
+            gate_rows=gate_rows,
+            run_result=run_result,
+            target_closes=a.target_closes,
+            min_markouts=a.min_markouts,
+        )
+        log.warning(
+            "STAT VERDICT: %s (%s) -- memo at %s/report.md",
+            stat["verdict"],
+            stat["verdict_reason"],
+            artifact_dir,
+        )
+    except Exception as e:  # noqa: BLE001 - the run itself already finished
+        log.warning(
+            "artifact emission failed (run finished, results remain in %s): %s",
+            db_path, e,
+        )
 
     return 0 if result.results else 1

@@ -367,3 +367,62 @@ def test_resolved_market_drops_when_ranker_records_negative_days_to_resolve(temp
     data = report(db_path=temp_db, run_id=RUN)
     assert "0xexpired" not in data["by_market"]
     assert "0xlive" in data["by_market"]
+
+
+# --------------------------------------------------------------------------
+# Issue #69: Starting capital derived from live venue account marks
+# --------------------------------------------------------------------------
+
+def test_starting_capital_derives_from_account_marks_when_present(temp_db):
+    """When the venue account was swept, starting capital reflects the real baseline."""
+    from core_brain import account as acct
+    reg = OrderRegistry(temp_db)
+    t0 = time.time() - 600
+    mark = acct.compose_account_mark(
+        collateral_usd=85.27,
+        positions_value_usd=0.0,
+        open_positions=[],
+        closed_positions=[],
+        user_pnl_usd=0.0,
+    )
+    reg.log_account_mark(mark, ts=t0, run_id=RUN)
+    reg.log_close(CloseRecord(
+        ts=t0 + 60, condition_id="0xmarket_a", market_slug="market-a",
+        method="merge", shares=5.0, cost_basis=4.50, proceeds=5.00,
+        realized_pnl=0.50, tx_hash="0xaaa", run_id=RUN,
+    ))
+
+    data = report(db_path=temp_db, run_id=RUN)
+    p = data["portfolio"]
+    assert p["starting_capital"] == pytest.approx(85.27)
+    assert p["realized_pnl"] == pytest.approx(0.50)
+    assert p["total_value"] == pytest.approx(85.27 + 0.50)
+    assert p["pnl_pct"] == pytest.approx(100.0 * 0.50 / 85.27)
+
+
+def test_starting_capital_for_run_uses_run_baseline_mark(temp_db):
+    """A run's starting capital is the first account mark in that run's window."""
+    from core_brain import account as acct
+    reg = OrderRegistry(temp_db)
+    t0 = time.time() - 600
+    mark1 = acct.compose_account_mark(
+        collateral_usd=80.00, positions_value_usd=0.0,
+        open_positions=[], closed_positions=[], user_pnl_usd=0.0,
+    )
+    mark2 = acct.compose_account_mark(
+        collateral_usd=90.00, positions_value_usd=0.0,
+        open_positions=[], closed_positions=[], user_pnl_usd=0.0,
+    )
+    reg.log_account_mark(mark1, ts=t0, run_id="run-1")
+    reg.log_account_mark(mark2, ts=t0 + 300, run_id="run-2")
+
+    data1 = report(db_path=temp_db, run_id="run-1")
+    assert data1["portfolio"]["starting_capital"] == pytest.approx(80.00)
+
+    data2 = report(db_path=temp_db, run_id="run-2")
+    assert data2["portfolio"]["starting_capital"] == pytest.approx(90.00)
+
+    # When reporting all runs, the overall starting capital is the first mark
+    data_all = report(db_path=temp_db, run_id="all")
+    assert data_all["portfolio"]["starting_capital"] == pytest.approx(80.00)
+

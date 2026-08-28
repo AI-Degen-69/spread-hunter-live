@@ -87,12 +87,14 @@ def test_swept_account_reports_the_venue_figures(temp_db):
 
 
 def test_account_value_does_not_come_from_the_config_bankroll(temp_db):
-    """The whole point: $101.88 from the venue, not $100.30 from a constant."""
+    """The whole point: $101.88 from the venue, not $100.00 from a constant."""
+    from core_brain import kpi as kpi_mod
     reg = OrderRegistry(temp_db)
     reg.log_account_mark(_mark(), ts=time.time(), run_id=RUN)
 
     p = report(db_path=str(temp_db), run_id="all")["portfolio"]
-    assert p["account"]["account_value_usd"] != pytest.approx(p["total_value"])
+    assert p["starting_capital"] == pytest.approx(101.88)
+    assert p["starting_capital"] != pytest.approx(kpi_mod._CFG.bankroll_usd)
     assert p["account"]["account_value_usd"] == pytest.approx(101.88)
 
 

@@ -562,19 +562,39 @@ def get_system_status() -> dict:
     }
 
 
+def _save_starting_account_value(val: float) -> None:
+    """Safely persist starting_account_value into processes.json if not already set."""
+    procs_file = runtime_file("processes.json", root=LIVE_ROOT)
+    saved = {}
+    if procs_file.exists():
+        try:
+            saved = json.loads(procs_file.read_text(encoding="utf-8"))
+        except Exception:
+            saved = {}
+    if not isinstance(saved, dict):
+        saved = {}
+    if "starting_account_value" not in saved or saved.get("starting_account_value") is None:
+        saved["starting_account_value"] = val
+        procs_file.parent.mkdir(parents=True, exist_ok=True)
+        procs_file.write_text(json.dumps(saved, indent=2), encoding="utf-8")
+
+
 def _capture_starting_capital() -> float | None:
-    """Snapshot the real account equity at bot-start time.
+    """Snapshot the real account equity from the venue.
 
     Returns the venue-reported account_value_usd, or None if the venue is
-    unreachable (the dashboard falls back to the config bankroll label).
+    unreachable. Updates processes.json with starting_account_value if not set.
     Never raises -- a failed balance read at start time must not block the
-    bot from launching.
+    bot or dashboard from launching.
     """
     try:
         from core_brain.order_manager import account_sweep
-        result = account_sweep(quiet=True)
+        db_path = str(resolve_db_path(_ACTIVE_DB_OVERRIDE))
+        result = account_sweep(quiet=True, db_path=db_path)
         if isinstance(result, dict) and result.get("account_value_usd") is not None:
-            return float(result["account_value_usd"])
+            val = float(result["account_value_usd"])
+            _save_starting_account_value(val)
+            return val
     except (Exception, SystemExit):
         # account_sweep exits with SystemExit when POLY_FUNDER is unset (a
         # missing funder must not block the bot from launching) and raises
@@ -1330,6 +1350,26 @@ def get_run_profitability(run_id: str | None = None):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.post("/api/account/sweep")
+@app.get("/api/account/sweep")
+def trigger_account_sweep():
+    """Trigger an on-demand account sweep against the venue and update starting capital if unset."""
+    import os
+    if not os.environ.get("POLY_FUNDER"):
+        return JSONResponse({"ok": False, "error": "POLY_FUNDER is not configured in environment"}, status_code=400)
+    from core_brain.order_manager import account_sweep
+    db_path = str(resolve_db_path(_ACTIVE_DB_OVERRIDE))
+    try:
+        res = account_sweep(quiet=True, db_path=db_path)
+        if isinstance(res, dict) and res.get("account_value_usd") is not None:
+            val = float(res["account_value_usd"])
+            _save_starting_account_value(val)
+            return JSONResponse({"ok": True, "sweep": res, "starting_capital": val})
+        return JSONResponse({"ok": False, "message": "Sweep did not return account value", "sweep": res})
+    except (Exception, SystemExit) as e:
+        return JSONResponse({"ok": False, "error": str(e) or "account_sweep exited unexpectedly"}, status_code=500)
+
+
 def compute_scan_state(
     last_event_ts: Optional[float],
     hb_ts: Optional[float],
@@ -1872,6 +1912,11 @@ def main():
     _ACTIVE_PORT = args.port
 
     print(f"Starting Live Execution Dashboard on http://{args.host}:{args.port}")
+    # Best-effort initial snapshot so the dashboard opens with fresh live balance
+    try:
+        _capture_starting_capital()
+    except Exception:
+        pass
     uvicorn.run(app, host=args.host, port=args.port)
 
 

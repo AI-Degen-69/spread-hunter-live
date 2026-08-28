@@ -3129,6 +3129,7 @@ def main() -> None:
                          help="Read-only: record venue account value and P&L into the registry.")
     asw.add_argument("--funder", default=None, help="Funder address (default: POLY_FUNDER)")
     asw.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
+    asw.add_argument("-q", "--quiet", action="store_true", help="Suppress console output")
     c = sub.add_parser("cancel-all")
     c.add_argument("--live", action=argparse.BooleanOptionalAction,
                default=argparse.SUPPRESS,
@@ -3153,7 +3154,7 @@ def main() -> None:
     elif a.cmd == "account-sweep":
         # No --live gate: every venue call underneath is a GET. The staged
         # exposure rule gates direction, and this command has none.
-        account_sweep(funder=a.funder, db_path=a.db)
+        account_sweep(funder=a.funder, db_path=a.db, quiet=bool(getattr(a, "quiet", False)))
     elif a.cmd == "kpi":
         from core_brain.kpi import report as generate_kpi_report
         import pprint

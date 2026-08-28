@@ -869,8 +869,41 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # Mirrors the paper run's capitalSeries widget (server/spread_dash_html.py:175):
     # realised closes stacked on the starting bankroll, with the open float
     # folded in at the timestamps it was actually marked.
+    #
+    # Starting capital derives from live venue account marks (the account's real
+    # balance at start/sweep time), falling back to config bankroll only when no
+    # venue measurements exist (e.g. synthetic test fixtures).
     # ------------------------------------------------------------------
-    starting_capital = _CFG.bankroll_usd
+    starting_capital = None
+    if active_run_id and active_run_id != "all":
+        _run_marks = [
+            am for am in all_account_marks
+            if am.get("run_id") == active_run_id and am.get("account_value_usd") is not None
+        ]
+        if _run_marks:
+            _sorted_rm = sorted(
+                [m for m in _run_marks if m.get("ts") is not None],
+                key=lambda m: float(m["ts"]),
+            )
+            if _sorted_rm:
+                starting_capital = float(_sorted_rm[0]["account_value_usd"])
+
+    if starting_capital is None:
+        _valid_marks = [
+            am for am in all_account_marks
+            if am.get("account_value_usd") is not None
+        ]
+        if _valid_marks:
+            _sorted_all = sorted(
+                [m for m in _valid_marks if m.get("ts") is not None],
+                key=lambda m: float(m["ts"]),
+            )
+            if _sorted_all:
+                starting_capital = float(_sorted_all[0]["account_value_usd"])
+
+    if starting_capital is None:
+        starting_capital = _CFG.bankroll_usd
+
     sorted_closes = sorted(
         [c for c in closes if c.get("ts") is not None], key=lambda c: float(c["ts"])
     )

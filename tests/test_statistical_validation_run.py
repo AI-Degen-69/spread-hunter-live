@@ -199,13 +199,14 @@ class TestMaturityGate:
 
     def test_immature_run_reports_insufficient_sample_not_zero_drift(self, tmp_path):
         from core_brain.markout import fleet_stats
+        from statistical_validation_run.run import count_matured_markouts
         db = tmp_path / "fleet_test.db"
         init_db(db)
         reg = OrderRegistry(db_path=db)
 
-        # Insert 10 markouts (under the 25 threshold)
+        # Insert 24 markouts (under the 25 threshold)
         with reg._conn() as conn:
-            for i in range(10):
+            for i in range(24):
                 conn.execute(
                     """INSERT INTO markouts (ts, ref_mid, ref_mid_source, mid_h0, size, run_id)
                        VALUES (?, ?, 'clean', ?, 1.0, 'shadow-run')""",
@@ -213,17 +214,21 @@ class TestMaturityGate:
                 )
             conn.commit()
 
+        # Direct count check for 24 markouts
+        assert count_matured_markouts(db, run_id="shadow-run") == 24
+
         stats = fleet_stats(reg, min_sample=25)
         assert stats["verdict"] == "insufficient_sample"
         assert stats["mean_per_share"] is None
 
     def test_mature_run_passes_sample_threshold(self, tmp_path):
         from core_brain.markout import fleet_stats
+        from statistical_validation_run.run import count_matured_markouts
         db = tmp_path / "fleet_test_mature.db"
         init_db(db)
         reg = OrderRegistry(db_path=db)
 
-        # Insert 25 matured markouts
+        # Insert 25 matured markouts (exact boundary)
         with reg._conn() as conn:
             for i in range(25):
                 conn.execute(
@@ -232,6 +237,9 @@ class TestMaturityGate:
                     (100.0 + i, 0.50, 0.52),
                 )
             conn.commit()
+
+        # Direct count check for 25 markouts
+        assert count_matured_markouts(db, run_id="shadow-run") == 25
 
         stats = fleet_stats(reg, min_sample=25)
         assert stats["verdict"] in ("earning", "losing")

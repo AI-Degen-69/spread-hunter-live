@@ -392,7 +392,7 @@ def main(
 
     if is_underpowered:
         verdict = "INCONCLUSIVE"
-        verdict_reason = f"underpowered: n < N_min or markouts < 25 ({', '.join(underpowered_reasons)})"
+        verdict_reason = f"underpowered: n < N_min or markouts < {a.min_markouts} ({', '.join(underpowered_reasons)})"
         log.warning(
             "VERDICT: %s (%s) -- sample is insufficient to validate spread capture.",
             verdict,

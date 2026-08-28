@@ -46,6 +46,7 @@ runtime/*.jsonl
 runtime/.current_run_id
 data/*.db*
 data/archive/
+data/shadow_stat_*/
 data/*.json
 data/*.jsonl
 data/*.tmp.*

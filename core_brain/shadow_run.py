@@ -482,6 +482,8 @@ def run_shadow(
     fetch_books: Optional[Callable] = None,
     interval: float = 5.0,
     funder: Optional[str] = None,
+    run_id: Optional[str] = None,
+    sleep_fn: Optional[Callable[[float], None]] = None,
 ) -> ShadowResult:
     """One shadow session: rotate until `minutes` elapse, record, spend nothing.
 
@@ -512,7 +514,7 @@ def run_shadow(
     # is alive re-tags this one's later rows, and the id survives the return, so
     # a live order created afterwards in the same process is stamped
     # `shadow-...`. See `shadow_run_id` and `OrderRegistry._run_id`.
-    run_id = shadow_run_id()
+    run_id = run_id if run_id is not None else shadow_run_id()
 
     cfg = dc_replace(load(), single_buy_grace_sec=0.0)
 
@@ -611,6 +613,7 @@ def run_shadow(
     seam.sweep_fn = shadow_sweep
 
     deadline_ts = time.time() + max(0.0, minutes * 60.0)
+    resolved_sleep_fn = sleep_fn if sleep_fn is not None else make_deadline_sleep(deadline_ts)
     results = loop_run(
         seam,
         interval=interval,
@@ -618,7 +621,7 @@ def run_shadow(
         live=True,  # safe: submit/cancel are recorders, the client cannot sign
         markets=markets,
         markets_fn=dynamic_markets_fn,
-        sleep_fn=make_deadline_sleep(deadline_ts),
+        sleep_fn=resolved_sleep_fn,
     )
     return ShadowResult(
         results=results,

@@ -1220,32 +1220,44 @@ function Show-MenuGrid {
     $cStrong  = Get-ProfileColor -Name Strong
     $cNeutral = Get-ProfileColor -Name Neutral
 
-    Write-Host "  LIVE EXECUTION ENGINE" -ForegroundColor $cInfo
-    Write-Host ("  " + ("─" * 23)) -ForegroundColor (Get-ProfileColor -Name Border)
+    Write-Host "  SPREAD HUNTER - CONTROL CENTER" -ForegroundColor $cInfo
+    Write-Host ("" + ("─" * 30)) -ForegroundColor (Get-ProfileColor -Name Border)
     Write-Host ""
 
-    # Each entry gets a colored badge (number on cyan) + icon + label + dim description
-    $items = @(
-        @{ K = "1"; Icon = "▶"; IconColor = "Success"; V = "Start Live Stack"; D = "Dashboard + screener + engine + fleet (detached)" }
-        @{ K = "2"; Icon = "■"; IconColor = "Error";   V = "Stop Live Stack";  D = "Stop bot stack, then the dashboard" }
-        @{ K = "3"; Icon = "≡"; IconColor = "Info";    V = "Status";           D = "All 5 processes + feed + repo identity" }
-        @{ K = "4"; Icon = "◉"; IconColor = "Warning"; V = "Open Dashboard";   D = "Start live dashboard in background (no bot) & open in browser" }
-        @{ K = "5"; Icon = "◎"; IconColor = "Info";    V = "Open Shadow Dashboard"; D = "python -m dashboard.server --db data/shadow.db --port 8799 + open" }
-        @{ K = "6"; Icon = "□"; IconColor = "Neutral"; V = "Stop Shadow Dashboard";  D = "Close shadow dash on :8799 (stop port)" }
-        @{ K = "7"; Icon = "↺"; IconColor = "Warning"; V = "Reset & Start Fresh";    D = "Stop all, wipe runtime state, verify clean (no start)" }
-        @{ K = "8"; Icon = "◎"; IconColor = "Info";    V = "Reset + Shadow Dash";    D = "Wipe, then start shadow dash on :8799 (shadow.db)" }
-        @{ K = "9"; Icon = "▶"; IconColor = "Error";   V = "Reset + Live Stack";     D = "Wipe, then live stack (REAL bids; typed confirm)" }
-        @{ K = "q"; Icon = "×"; IconColor = "Neutral"; V = "Exit";            D = "Return to PowerShell" }
+    # Grouped levers: badge (cyan number) + icon + label + description. One
+    # wording style: Start/Open = "Start the <target>", Stop = "Stop the
+    # <target>", Reset+ = "Stop all, wipe state, then start the <target>".
+    # Live actions that rest real maker bids carry "; type START" as the cue.
+    $groups = @(
+        @{ Header = "LIVE - real maker bids"; Items = @(
+            @{ K = "1"; Icon = "▶"; IconColor = "Success"; V = "Start Live Stack";         D = "Start the live dashboard + bot stack; type START to confirm" }
+            @{ K = "2"; Icon = "↺"; IconColor = "Error";   V = "Reset + Live Stack";       D = "Stop all, wipe state, then start the live stack; type START" }
+            @{ K = "3"; Icon = "■"; IconColor = "Error";   V = "Stop Live Stack";          D = "Stop the live bot stack, then the dashboard" }
+            @{ K = "4"; Icon = "◉"; IconColor = "Warning"; V = "Open Dashboard";           D = "Live dashboard only, no bot; open in browser" }
+        ) }
+        @{ Header = "SHADOW - rehearsal, spends nothing"; Items = @(
+            @{ K = "5"; Icon = "◎"; IconColor = "Info";    V = "Open Shadow Dashboard";    D = "Start the shadow dashboard only; drive a run with shadow_run" }
+            @{ K = "6"; Icon = "↺"; IconColor = "Info";    V = "Reset + Shadow Dashboard"; D = "Stop all, wipe state, then start the shadow dashboard only" }
+            @{ K = "7"; Icon = "□"; IconColor = "Neutral"; V = "Stop Shadow Dashboard";    D = "Stop the shadow viewer on :8799 only" }
+        ) }
+        @{ Header = "RESET / STATUS"; Items = @(
+            @{ K = "8"; Icon = "↺"; IconColor = "Warning"; V = "Reset State Only";         D = "Stop all, wipe runtime state, verify clean; starts nothing" }
+            @{ K = "9"; Icon = "≡"; IconColor = "Info";    V = "Status";                   D = "All processes + feed + repo identity" }
+        ) }
     )
-    foreach ($it in $items) {
-        # Badge:  [ 1 ] with cyan number on subtle background
-        Write-Host "   " -NoNewline
-        Write-Host (" {0} " -f $it.K) -BackgroundColor DarkCyan -ForegroundColor White -NoNewline
-        Write-Host ("  {0} " -f $it.Icon) -ForegroundColor (Get-ProfileColor -Name $it.IconColor) -NoNewline
-        Write-Host ("{0,-22}" -f $it.V) -ForegroundColor $cStrong -NoNewline
-        Write-Host $it.D -ForegroundColor $cNeutral
+
+    foreach ($g in $groups) {
+        Write-Host ("  " + $g.Header) -ForegroundColor $cInfo
+        foreach ($it in $g.Items) {
+            Write-Host "   " -NoNewline
+            Write-Host (" {0} " -f $it.K) -BackgroundColor DarkCyan -ForegroundColor White -NoNewline
+            Write-Host ("  {0} " -f $it.Icon) -ForegroundColor (Get-ProfileColor -Name $it.IconColor) -NoNewline
+            Write-Host ("{0,-26}" -f $it.V) -ForegroundColor $cStrong -NoNewline
+            Write-Host $it.D -ForegroundColor $cNeutral
+        }
+        Write-Host ""
     }
-    Write-Host ""
+    Write-Host "  q  × Exit · Return to PowerShell" -ForegroundColor $cNeutral
 }
 
 function Invoke-LiveAction {
@@ -1262,11 +1274,16 @@ function Invoke-LiveAction {
             if (Start-Dashboard) { Start-BotStack }
         }
         "2" {
+            Write-Host ""
+            $confirm = Read-Host "  Type START to confirm: stop everything, wipe state, then start the LIVE stack (real maker bids)"
+            if ($confirm -ne "START") { Lsh-Warn "Reset cancelled."; return }
+            $null = Reset-Environment -Mode "live" -Force
+        }
+        "3" {
             Stop-BotStack
             $null = Stop-Dashboard
             Lsh-Ok "Live stack is down."
         }
-        "3" { Show-Status }
         "4" {
             if (Start-Dashboard) {
                 try {
@@ -1289,31 +1306,26 @@ function Invoke-LiveAction {
             }
         }
         "6" {
+            $confirm = Read-Host "  Stop everything, wipe runtime state, then start the SHADOW dashboard? [y/N]"
+            if ($confirm -match '^[yY]') { $null = Reset-Environment -Mode "shadow" }
+            else { Lsh-Warn "Reset cancelled." }
+        }
+        "7" {
             if (Stop-ShadowDashboard) {
                 Lsh-Ok "Shadow dashboard stopped — port $ShadowPort is free."
             } else {
                 Lsh-Warn "Shadow dashboard stop finished with port still LISTENING — check PID."
             }
         }
-        "7" {
+        "8" {
             $confirm = Read-Host "  Wipe all runtime state (logs, events, feed, shadow stores)? data/orders.db is kept. [y/N]"
             if ($confirm -match '^[yY]') { $null = Reset-Environment -Mode "none" }
             else { Lsh-Warn "Reset cancelled." }
         }
-        "8" {
-            $confirm = Read-Host "  Stop everything, wipe runtime state, then start the SHADOW dashboard? [y/N]"
-            if ($confirm -match '^[yY]') { $null = Reset-Environment -Mode "shadow" }
-            else { Lsh-Warn "Reset cancelled." }
-        }
-        "9" {
-            Write-Host ""
-            $confirm = Read-Host "  Type START to confirm: stop everything, wipe state, then start the LIVE stack (real maker bids)"
-            if ($confirm -ne "START") { Lsh-Warn "Reset cancelled."; return }
-            $null = Reset-Environment -Mode "live" -Force
-        }
+        "9" { Show-Status }
         "q" { Write-Host "Exiting Spread Hunter Live menu." -ForegroundColor (Get-ProfileColor -Name Neutral); exit 0 }
         default {
-            Lsh-Warn "Invalid selection: $Key (choose 1-6, or q)."
+            Lsh-Warn "Invalid selection: $Key (choose 1-9, or q)."
             Start-Sleep -Seconds 1
         }
     }
@@ -1323,8 +1335,8 @@ function Invoke-LiveAction {
 if ($Action -ne "") {
     $actionMap = @{
         "start"        = "1"
-        "stop"         = "2"
-        "status"       = "3"
+        "reset-live"   = "2"
+        "stop"         = "3"
         "open"         = "4"
         "dashboard"    = "4"
         "dash"         = "4"
@@ -1332,17 +1344,17 @@ if ($Action -ne "") {
         "shadow-open"  = "5"
         "shadow-dash"  = "5"
         "open-shadow"  = "5"
-        "shadow-stop"  = "6"
-        "stop-shadow"  = "6"
-        "reset"        = "7"
-        "reset-shadow" = "8"
-        "reset-live"   = "9"
+        "reset-shadow" = "6"
+        "shadow-stop"  = "7"
+        "stop-shadow"  = "7"
+        "reset"        = "8"
+        "status"       = "9"
     }
     $key = $Action.Trim().ToLower()
     if ($actionMap.ContainsKey($key)) { $key = $actionMap[$key] }
 
-    # Require -Yes flag for non-interactive start (live stack paths)
-    if (($key -eq "1" -or $key -eq "9") -and -not $Yes) {
+    # Require -Yes flag for non-interactive start (live stack paths: start, reset-live)
+    if (($key -eq "1" -or $key -eq "2") -and -not $Yes) {
         Write-Host "ERROR: Non-interactive start requires explicit -Yes flag" -ForegroundColor Red
         Write-Host "Usage: .\scripts\spread-hunter-menu.ps1 start -Yes   or   .\scripts\spread-hunter-menu.ps1 reset-live -Yes"
         exit 1

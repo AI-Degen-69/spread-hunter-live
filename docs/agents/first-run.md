@@ -21,10 +21,7 @@ them → wipe runtime state → verify nothing blocks → start the chosen mode*
 | `open` | Start bare live dashboard (no bot) + account sweep + open browser | Yes |
 | `shadow` | Start shadow dashboard + open browser (no run) | Yes (spends nothing) |
 | `stop-shadow` | Stop the shadow dashboard on :8799 | Yes |
-| `status` | Read-only: dashboard + every stack process + feed + repo identity | Yes |
-
-Interactive menu equivalents: `7` reset (no start), `8` reset + shadow dashboard,
-`9` reset + live stack (requires typing `START`).
+| `status` | Read-only: dashboard + every stack process + feed + repo identity | Yes |Interactive menu equivalents, grouped in the grid: **LIVE** `1` start live / `2` reset + live (both type `START`), `3` stop, `4` open dashboard; **SHADOW** `5` open / `6` reset + shadow / `7` stop shadow; **RESET / STATUS** `8` reset state only, `9` status.
 
 ### What the reset refuses to do
 

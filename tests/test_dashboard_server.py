@@ -1847,6 +1847,14 @@ def test_market_table_headers_and_cells_alignment():
 
 def test_account_sweep_endpoint(client, monkeypatch):
     """/api/account/sweep triggers an account sweep and returns starting capital."""
+    # When POLY_FUNDER is not configured
+    monkeypatch.delenv("POLY_FUNDER", raising=False)
+    res_unconfigured = client.post("/api/account/sweep")
+    assert res_unconfigured.status_code == 400
+    assert res_unconfigured.json()["ok"] is False
+
+    # When POLY_FUNDER is configured
+    monkeypatch.setenv("POLY_FUNDER", "0x1234567890123456789012345678901234567890")
     import core_brain.order_manager as om
     monkeypatch.setattr(om, "account_sweep", lambda quiet=True, db_path=None: {
         "account_value_usd": 92.50,

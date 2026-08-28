@@ -1082,6 +1082,9 @@ function Invoke-LiveAction {
                 try {
                     Lsh-Step "Sweeping Polymarket account balance to sync live starting capital..."
                     & python -m core_brain.order_manager account-sweep --quiet
+                    if ($LASTEXITCODE -ne 0) {
+                        Lsh-Warn "Initial account sweep exited with code $LASTEXITCODE; using local registry marks."
+                    }
                 } catch {
                     Lsh-Warn "Initial account sweep skipped: $_"
                 }

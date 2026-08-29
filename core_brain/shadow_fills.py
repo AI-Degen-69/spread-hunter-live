@@ -55,6 +55,13 @@ def credit_fills(
 ) -> tuple[list[ShadowFill], dict[str, float]]:
     """Credit tape volume to resting orders, oldest first.
 
+    This is the ONLY way a shadow fill is ever credited. No fills from
+    mid-price moves, no fills from time spent in the book, tape volume only:
+    a resting order fills only when real trade tape at its own price consumes
+    the queue ahead of it and then reaches it. `core_brain/live_fill_engine.py`
+    is the inverse and stays that way -- live, a fill exists only when the
+    venue says so.
+
     `orders` arrives in post order, which is queue order at a price level.
     `traded` is `markets.recent_trades` output: token -> price -> volume since
     the last look. Volume consumes each order's remaining `queue_ahead` before

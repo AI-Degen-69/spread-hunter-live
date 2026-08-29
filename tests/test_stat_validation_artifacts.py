@@ -386,3 +386,34 @@ class TestArtifactBundle:
         line = next(l for l in md.splitlines() if "pairs_under_1" in l)
         assert "pairs_under_1**: n/a " in line
         assert "%" not in line
+
+
+class TestPessimisticSensitivity:
+    """Issue #55: the artifact bundle embeds the base/pessimistic sensitivity
+    column and the GO-survives-pessimism verdict."""
+
+    def test_report_json_carries_base_and_pessimistic_variants(self, tmp_path):
+        closes = [
+            {"method": "shadow_merge", "realized_pnl": 0.30,
+             "cost_basis": 9.8, "shares": 10},
+            {"method": "shadow_merge", "realized_pnl": 0.30,
+             "cost_basis": 9.8, "shares": 10},
+            {"method": "shadow_merge", "realized_pnl": 0.30,
+             "cost_basis": 9.8, "shares": 10},
+        ]
+        out, _kpi = _write_bundle(tmp_path, closes)
+
+        data = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        sens = data["sensitivity"]
+        assert set(sens) >= {"base", "pessimistic", "verdict",
+                             "gas", "tick_per_share", "threshold_pct"}
+        assert sens["gas"] == pytest.approx(0.05)
+        assert sens["base"]["ci90_lower_pct"] >= 1.0
+        assert sens["pessimistic"]["ci90_lower_pct"] >= 1.0
+        assert sens["verdict"] == "GO"
+        assert sens["base"]["rebate_est"] is None
+        assert sens["pessimistic"]["rebate_est"] is None
+
+        md = (out / "report.md").read_text(encoding="utf-8")
+        assert "Pessimistic sensitivity" in md
+        assert "no fill is ever credited without" in md

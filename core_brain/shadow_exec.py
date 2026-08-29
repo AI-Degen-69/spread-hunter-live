@@ -66,11 +66,37 @@ def ensure_shadow_tables(db_path: Path | str) -> None:
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS shadow_queue (
-                local_id TEXT PRIMARY KEY,
-                queue_ahead REAL NOT NULL
+                run_id TEXT NOT NULL DEFAULT '',
+                local_id TEXT NOT NULL,
+                queue_ahead REAL NOT NULL,
+                PRIMARY KEY (run_id, local_id)
             )
             """
         )
+        # `shadow_queue` predates run scoping: earlier stores keyed queue state
+        # by `local_id` alone, so a fresh run could read another run's leftover
+        # queue-ahead and under-credit itself. Migrate it once -- old rows get
+        # `run_id = ''`, which is "nobody's run" exactly like a NULL `run_id`
+        # order in `settle_market`. A store that already has the column (new or
+        # already migrated) is left alone.
+        qcols = {r[1] for r in conn.execute("PRAGMA table_info(shadow_queue)")}
+        if "run_id" not in qcols:
+            conn.execute("ALTER TABLE shadow_queue RENAME TO shadow_queue_legacy")
+            conn.execute(
+                """
+                CREATE TABLE shadow_queue (
+                    run_id TEXT NOT NULL DEFAULT '',
+                    local_id TEXT NOT NULL,
+                    queue_ahead REAL NOT NULL,
+                    PRIMARY KEY (run_id, local_id)
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO shadow_queue (run_id, local_id, queue_ahead) "
+                "SELECT '', local_id, queue_ahead FROM shadow_queue_legacy"
+            )
+            conn.execute("DROP TABLE shadow_queue_legacy")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS queue_marks (
@@ -115,22 +141,41 @@ def ensure_shadow_tables(db_path: Path | str) -> None:
         conn.commit()
 
 
-def write_queue_ahead(db_path: Path | str, local_id: str, queue_ahead: float) -> None:
+def write_queue_ahead(
+    db_path: Path | str, run_id: str, local_id: str, queue_ahead: float
+) -> None:
+    """Persist one order's queue-ahead under THIS run's id.
+
+    Keying by `(run_id, local_id)` rather than `local_id` alone keeps one
+    rehearsal's queue position invisible to the next: `data/shadow.db` is
+    reused between runs, and a fresh order reading a stale order's queue-ahead
+    (a leftover half-eaten number from an earlier run) would under-credit its
+    own tape.
+    """
     with closing(get_connection(Path(db_path))) as conn:
         conn.execute(
-            "INSERT INTO shadow_queue (local_id, queue_ahead) VALUES (?, ?) "
-            "ON CONFLICT(local_id) DO UPDATE SET queue_ahead = excluded.queue_ahead",
-            (local_id, float(queue_ahead)),
+            "INSERT INTO shadow_queue (run_id, local_id, queue_ahead) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(run_id, local_id) DO UPDATE SET "
+            "queue_ahead = excluded.queue_ahead",
+            (run_id, local_id, float(queue_ahead)),
         )
         conn.commit()
 
 
-def read_queue_ahead(db_path: Path | str, local_id: str) -> float:
+def read_queue_ahead(db_path: Path | str, run_id: str, local_id: str) -> float:
+    """The queue-ahead this run recorded for this order, or 0.0 if this run
+    never recorded one. Never another run's row: a stale value here would
+    consume tape that belonged to the order as if it had already been carved
+    out by someone else's queue."""
     with closing(get_connection(Path(db_path))) as conn:
         row = conn.execute(
-            "SELECT queue_ahead FROM shadow_queue WHERE local_id = ?", (local_id,)
+            "SELECT queue_ahead FROM shadow_queue "
+            "WHERE run_id = ? AND local_id = ?",
+            (run_id, local_id),
         ).fetchone()
     return float(row["queue_ahead"]) if row else 0.0
+
 
 
 def record_submit(
@@ -208,7 +253,7 @@ def record_submit(
                 # as deep as this order instead: that never over-credits.
                 book = {"bids": {round(float(i.price), 4): float(i.size)}}
             queue_ahead = queue_ahead_at(book, i.price)
-            write_queue_ahead(db_path, local_id, queue_ahead)
+            write_queue_ahead(db_path, registry._run_id(), local_id, queue_ahead)
             registry.log_quote(QuoteRecord(
                 ts=now_fn(),
                 market_slug=getattr(market, "market_slug", None),
@@ -407,7 +452,7 @@ def settle_market(
         ShadowRestingOrder(
             local_id=o.id, token_id=o.token_id, price=o.price,
             size=o.original_size, filled=_filled_size(db_path, o.id),
-            queue_ahead=read_queue_ahead(db_path, o.id),
+            queue_ahead=read_queue_ahead(db_path, mine_run_id, o.id),
         )
         for o in owned
     ]
@@ -415,14 +460,14 @@ def settle_market(
         ShadowRestingOrder(
             local_id=o.id, token_id=o.token_id, price=o.price,
             size=o.original_size, filled=_filled_size(db_path, o.id),
-            queue_ahead=read_queue_ahead(db_path, o.id),
+            queue_ahead=read_queue_ahead(db_path, mine_run_id, o.id),
         )
         for o in resting
     ]
     fills, queues = credit_fills(orders, traded)
 
     for local_id, queue_ahead in queues.items():
-        write_queue_ahead(db_path, local_id, queue_ahead)
+        write_queue_ahead(db_path, mine_run_id, local_id, queue_ahead)
 
     if book_fn is not None:
         _record_queue_marks(db_path, market, marks, traded, book_fn,
@@ -466,6 +511,19 @@ def _book_side_to_levels(side, *, reverse: bool) -> list:
         return list(side or [])
     prices = sorted(side.keys(), reverse=reverse)
     return [{"price": p, "size": side[p]} for p in prices]
+
+
+def pessimistic_completion_price(base_price: float, tick: float) -> float:
+    """One completion, priced one tick worse than the base ask.
+
+    The base path fills a completion at the ask the caller passes in (see
+    `ShadowExecutionClient.create_and_post_market_order`) -- the optimistic
+    end for a taker. This is the what-if price the pessimistic report variant
+    recosts that completion at: ask + one tick. It is a pure helper, and it
+    does NOT change how `create_and_post_market_order` fills the recorded
+    base path; it only feeds the sensitivity column.
+    """
+    return float(base_price) + float(tick)
 
 
 class ShadowExecutionClient:

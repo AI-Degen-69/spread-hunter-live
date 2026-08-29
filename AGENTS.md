@@ -59,9 +59,9 @@ agent-run output, not the impression. Rules and examples:
   — launch the script/stack, open the dashboard, click through, observe behavior — not to
   audit tooling. It must NOT include:
   - running the test suite (`pytest`);
-  - `gh issue/pr view`, `gh`/`git` status, or any "confirm the issue is closed / PR is
-    merged / checks are green" step — the operator reads GitHub and CI themselves, so don't
-    narrate the agent's own git hygiene back as a verify step;
+  - `gh issue view` / `gh pr view` or `git status`, or any "confirm the issue is closed /
+    PR is merged / checks are green" step — the operator reads GitHub and CI themselves, so
+    don't narrate the agent's own git hygiene back as a verify step;
   - anything that only re-states state the operator can already see.
   Point the operator to touch, experience, and exercise the feature.
 

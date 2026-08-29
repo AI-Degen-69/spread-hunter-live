@@ -85,21 +85,21 @@
         <div id="rp-verdict" class="rp-verdict"></div>
         <div class="rp-tip">
           <button class="info-bubble" type="button" aria-label="Verdict explained">?</button>
-          <div class="info-tooltip">The run's bottom line. Green border = made money, red border = lost, gray = no trades or break-even. If money is still in an open position that can move, the amount in parentheses is included so the headline reflects total (closed + open) P&amp;L.</div>
+          <div class="info-tooltip">The run's bottom line. Green border = made money, red border = lost, gray = no trades or break-even. If money is still in an open position that can move, the amount after the separator is the open portion, so the headline reflects total (closed + open) P&amp;L.</div>
         </div>
       </div>
       <div class="rp-line">
         <div id="rp-details" class="mono rp-details"></div>
         <div class="rp-tip">
           <button class="info-bubble" type="button" aria-label="Details explained">?</button>
-          <div class="info-tooltip">Counts behind the verdict: fills are legs bought, quotes are bids rested, closes are finished positions. Win rate is the share of closes that profited. Expectancy is average P&amp;L per close (positive means it nets on average). Merges are pairs closed the proper way, hedged back to $1.00.</div>
+          <div class="info-tooltip">Counts behind the verdict: fills are completed orders (both the buys that rest on the book and the sells that cross it), quotes are bids rested, closes are finished positions. Win rate is the share of closes that profited. Expectancy is average P&amp;L per close (positive means it nets on average). Merges are pairs closed the proper way, hedged back to $1.00.</div>
         </div>
       </div>
       <div class="rp-line">
         <div id="rp-venue" class="mono rp-venue"></div>
         <div class="rp-tip">
           <button class="info-bubble" type="button" aria-label="Venue line explained">?</button>
-          <div class="info-tooltip">Ground truth from your Polymarket wallet during this run's window: account value at the start, at the end, and the difference. If unmeasured, no wallet sweep landed inside the window. The open-order count shows whether the run ended flat or left money resting on the book.</div>
+          <div class="info-tooltip">Ground truth from your Polymarket wallet during this run's window: account value at the start, at the end, and the difference. If unmeasured, no wallet sweep landed inside the window. The open-order count is how many orders are still resting on the venue when the run ended — 0 means flat, more than 0 means money is still on the book.</div>
         </div>
       </div>
     </div>

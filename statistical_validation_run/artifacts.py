@@ -33,7 +33,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core_brain.config import MakerConfig
-from core_brain.kpi import evaluate_stat_gate, gate_definition
+from core_brain.kpi import (
+    PESSIMISTIC_CONVERSION_GAS,
+    build_sensitivity,
+    evaluate_stat_gate,
+    gate_definition,
+)
 from core_brain.order_registry import OrderRegistry
 from core_brain.venue import MAX_ORDER_USD, MAX_TOTAL_USD
 
@@ -336,11 +341,17 @@ def render_report_md(
     closes: list[dict[str, Any]],
     target_closes: Optional[int],
     min_markouts: Optional[int],
+    sensitivity: Optional[dict[str, Any]] = None,
 ) -> str:
     """The human decision memo: verdict first, gate table, inclusive outcomes,
-    rescue block, mechanics, cost of being wrong, caps, limitations."""
+    resilience + pessimistic sensitivity, mechanics, cost of being wrong, caps,
+    limitations."""
     ta = kpi.get("trade_analytics") or {}
     portfolio = kpi.get("portfolio") or {}
+    if sensitivity is None:
+        sensitivity = build_sensitivity(
+            closes, threshold_pct=cfg.stat_gate_threshold_pct,
+        )
     rescues = rescue_stats(closes)
     methods = sorted({c.get("method") or "unknown" for c in closes})
     ci95 = ta.get("ci95_return_pct") or {}
@@ -366,6 +377,22 @@ def render_report_md(
         f"**{verdict}**",
         "",
         verdict_reason,
+        "",
+        "## Pessimistic sensitivity (GO must survive pessimism)",
+        "",
+        "- **Verdict**: "
+        + str(sensitivity.get("verdict"))
+        + " — " + str(sensitivity.get("verdict_reason") or ""),
+        "- **Base**: `ci90_lower_pct` "
+        + _fmt(sensitivity["base"].get("ci90_lower_pct"), 4) + "%"
+        + f" (mean {_fmt(sensitivity['base'].get('mean_return_pct'), 4)}%, n={sensitivity['base'].get('n_closes')})",
+        "- **Pessimistic**: completion recosted at `ask + 1 tick` "
+        f"(tick {sensitivity['tick_per_share']}) plus `gas` "
+        f"({sensitivity['gas']:.2f}), ci90_lower_pct "
+        + _fmt(sensitivity["pessimistic"].get("ci90_lower_pct"), 4) + "%"
+        + f" (mean {_fmt(sensitivity['pessimistic'].get('mean_return_pct'), 4)}%, n={sensitivity['pessimistic'].get('n_closes')})",
+        f"- **Threshold**: `ci90_lower_pct >= {sensitivity['threshold_pct']} (inclusive)` in BOTH variants for GO",
+        "- **Rebate income**: `None` in both variants (graduated spread markets pay $0.00 maker rewards).",
         "",
         "## Gate table",
         "",
@@ -448,9 +475,14 @@ def render_report_md(
         "## Limitations",
         "",
         "- Fills are tape-confirmed models, not venue executions "
-        "(`shadow_fills.credit_fills` only).",
+        "(`shadow_fills.credit_fills` only); no fill is ever credited without "
+        "trade-tape volume at the order's own price.",
         "- Completion fills are priced at the ask — the optimistic end of taker "
-        "(upper bound, noted in the design doc).",
+        "(upper bound, noted in the design doc). The pessimistic sensitivity "
+        f"column re-prices that completion one tick worse plus `gas={PESSIMISTIC_CONVERSION_GAS:.2f}`; "
+        "GO requires the base AND the pessimistic `ci90_lower_pct` to pass.",
+        "- Rebate income is `None` on graduated spread markets (`rebate_est`); "
+        "the report never invents rebate income.",
         "- Gas is 0 in shadow; `merge_gas_usd` is reported as the economic gate.",
         "- Immature markouts read as `insufficient_sample` (INCONCLUSIVE), never "
         "as zero drift.",
@@ -523,11 +555,33 @@ def write_artifacts(
 
     methods = sorted({c.get("method") or "unknown" for c in closes})
 
+    # Issue #55: the side-by-side sensitivity column. GO must survive pessimism,
+    # so the verdict here is GO only when BOTH the base and the pessimistic
+    # `ci90_lower_pct` sit at or above the threshold. `rebate_est` stays None in
+    # both variants -- the report never invents rebate income.
+    sensitivity = build_sensitivity(
+        closes, threshold_pct=cfg.stat_gate_threshold_pct,
+    )
+
+    # Issue #55: GO must survive pessimism, so the headline verdict is the thing
+    # the sensitivity gate can veto. When the primary verdict is GO but the
+    # sensitivity gate is not, a GO on the cover of the same report would say the
+    # opposite of the ticket -- downgrade it to the sensitivity verdict. A
+    # primary NO-GO or INCONCLUSIVE already fails, so it is left untouched (it
+    # never upgrades on a weaker gate).
+    if verdict == "GO" and sensitivity["verdict"] != "GO":
+        effective_verdict = sensitivity["verdict"]
+        effective_reason = sensitivity["verdict_reason"]
+    else:
+        effective_verdict = verdict
+        effective_reason = verdict_reason
+
     report = dict(kpi)
+    report["sensitivity"] = sensitivity
     report["stat_validation"] = {
         "run_id": run_id,
-        "verdict": verdict,
-        "verdict_reason": verdict_reason,
+        "verdict": effective_verdict,
+        "verdict_reason": effective_reason,
         "gates": gate_rows,
         "primary_gate": f"ci90_lower_pct > {cfg.stat_gate_threshold_pct} inclusive",
         "threshold_pct": cfg.stat_gate_threshold_pct,
@@ -556,12 +610,13 @@ def write_artifacts(
                 kpi=kpi,
                 cfg=cfg,
                 gate_rows=gate_rows,
-                verdict=verdict,
-                verdict_reason=verdict_reason,
+                verdict=effective_verdict,
+                verdict_reason=effective_reason,
                 run_result=run_result,
                 closes=closes,
                 target_closes=target_closes,
                 min_markouts=min_markouts,
+                sensitivity=sensitivity,
             ),
         ),
         "closes.csv": _write("closes.csv", rows_to_csv(closes)),

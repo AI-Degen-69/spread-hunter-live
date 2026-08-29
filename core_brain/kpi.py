@@ -605,6 +605,145 @@ def _pipeline_sourced_dbs() -> set[Path]:
     }
 
 
+# The pessimistic report variant (Issue #55) charges a conversion gas the base
+# scenario does not. Mirrors the seeded `MakerConfig.merge_gas_usd` (0.05): a
+# rehearsal's merge records gas = 0, so the sensitivity column charges the
+# constant the return WOULD have paid to cross and merge a completion. Kept
+# next to the scenario code so it is easy to find and change.
+PESSIMISTIC_CONVERSION_GAS = 0.05
+
+# Close methods that resolved through a taker action -- a completion buy crossed
+# at the ask, or a naked / single-buy leg sold through the book. These are the
+# rows whose recorded exit is the optimistic end of a taker, so the pessimistic
+# variant recosts them. Everything else (a non-shadow plain close) never
+# depended on an optimistic ask and is recosted at zero extra.
+TAKER_RESOLVED_METHODS = ("shadow_merge", "single_buy_exit", "naked_exit")
+
+
+def _pessimistic_close_return(closes_row: dict, tick: float, gas: float) -> Optional[float]:
+    """One close's return % recomputed so its taker resolution paid one tick
+    worse plus `gas`. Returns None when the close has no positive cost basis to
+    price a return against.
+
+    The store records a completed pair at one merged cost figure (the pair's
+    remaining-average cost), so the per-leg completion split -- exactly how many
+    shares crossed at the ask -- is not recoverable from the close alone. The
+    tick penalty is therefore applied to the pair's whole share count: a
+    conservative upper bound. Erring against the strategy is the safe direction
+    for a gate that exists to prove GO survives pessimism.
+    """
+    cost = closes_row.get("cost_basis")
+    cost_f = float(cost) if cost is not None else None
+    if cost_f is None or cost_f <= 0:
+        return None
+    method = closes_row.get("method") or "unknown"
+    if method not in TAKER_RESOLVED_METHODS:
+        pnl = float(closes_row.get("realized_pnl") or 0.0)
+        return 100.0 * pnl / cost_f
+    shares = float(closes_row.get("shares") or 0.0)
+    extra = shares * tick + gas
+    penalty_pnl = float(closes_row.get("realized_pnl") or 0.0) - extra
+    return 100.0 * penalty_pnl / cost_f
+
+
+def compute_pessimistic_analytics(
+    closes: list[dict],
+    tick: float = 0.01,
+    gas: float = PESSIMISTIC_CONVERSION_GAS,
+) -> dict[str, Any]:
+    """Recompute the return distribution as if every taker resolution paid one
+    tick worse plus `gas`. Same tail shape as `compute_trade_analytics`:
+    mean, stdev, and `ci90_lower_pct` (z=1.645), with `rebate_est` pinned to
+    None -- the pessimistic variant never invents rebate income. A field is
+    NULL when it cannot be measured.
+    """
+    returns = [
+        r for r in (_pessimistic_close_return(c, tick, gas) for c in closes)
+        if r is not None
+    ]
+    n = len(returns)
+    mean_r = statistics.mean(returns) if returns else None
+    stdev_r = statistics.stdev(returns) if n > 1 else None
+    ci90: Optional[float] = None
+    if mean_r is not None and stdev_r is not None and n > 1:
+        ci90 = mean_r - Z_ALPHA_90_ONE_SIDED * (stdev_r / math.sqrt(n))
+    return {
+        "n_closes": n,
+        "mean_return_pct": mean_r,
+        "stdev_return_pct": stdev_r,
+        "ci90_lower_pct": ci90,
+        "rebate_est": None,
+        "gas_per_close": gas,
+        "tick_per_share": tick,
+    }
+
+
+def build_sensitivity(
+    closes: list[dict],
+    tick: float = 0.01,
+    gas: float = PESSIMISTIC_CONVERSION_GAS,
+    threshold_pct: float = 1.0,
+) -> dict[str, Any]:
+    """The base/pessimistic side-by-side column and the GO-survives-pessimism
+    verdict for a run's closes (Issue #55).
+
+    `base` uses the same `evaluate_stat_gate` the harness's primary gate does,
+    and `pessimistic` recomputes it one tick worse plus `gas`. The verdict is
+    GO only when BOTH `ci90_lower_pct` values sit at or above `threshold_pct`
+    ("inclusive"), NO-GO otherwise, INCONCLUSIVE when either CI cannot be
+    computed. Both variants carry `rebate_est = None`.
+    """
+    base = evaluate_stat_gate(
+        closes,
+        starting_capital=0.0,
+        threshold_pct=threshold_pct,
+    )
+    base_obj = {
+        "ci90_lower_pct": base.get("ci90_lower_pct"),
+        "mean_return_pct": base.get("mean_return_pct"),
+        "stdev_return_pct": base.get("stdev_return_pct"),
+        "n_closes": base.get("n_closes"),
+        "rebate_est": None,
+    }
+    pess = compute_pessimistic_analytics(closes, tick=tick, gas=gas)
+    pess_obj = {
+        "ci90_lower_pct": pess["ci90_lower_pct"],
+        "mean_return_pct": pess["mean_return_pct"],
+        "stdev_return_pct": pess["stdev_return_pct"],
+        "n_closes": pess["n_closes"],
+        "rebate_est": None,
+    }
+    b = base_obj["ci90_lower_pct"]
+    p = pess_obj["ci90_lower_pct"]
+    if b is None or p is None:
+        verdict = "INCONCLUSIVE"
+        reason = (
+            "cannot build the CI for both variants (fewer than 2 priced closes "
+            "in base or pessimistic)"
+        )
+    elif b >= threshold_pct and p >= threshold_pct:
+        verdict = "GO"
+        reason = (
+            f"GO survives pessimism -- base ci90_lower_pct {b:.4f}% and "
+            f"pessimistic {p:.4f}% both sit at or above {threshold_pct:.4f}%"
+        )
+    else:
+        verdict = "NO-GO"
+        reason = (
+            f"GO does not survive pessimism -- base ci90_lower_pct {b:.4f}% / "
+            f"pessimistic {p:.4f}% vs threshold {threshold_pct:.4f}%"
+        )
+    return {
+        "threshold_pct": threshold_pct,
+        "tick_per_share": tick,
+        "gas": gas,
+        "base": base_obj,
+        "pessimistic": pess_obj,
+        "verdict": verdict,
+        "verdict_reason": reason,
+    }
+
+
 def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> dict[str, Any]:
     """
     Generate a live KPI report containing run-level, portfolio, market-level, funnel, and mechanics metrics.

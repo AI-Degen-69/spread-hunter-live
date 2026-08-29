@@ -80,8 +80,9 @@ def test_queue_position_is_captured_from_the_book_at_post_time(registry):
                   db_path=db, book_fn=_books)
 
     by_token = {r.token_id: r.id for r in reg.get_active_orders()}
-    assert read_queue_ahead(db, by_token["tok-up"]) == 300.0
-    assert read_queue_ahead(db, by_token["tok-dn"]) == 80.0
+    run_id = reg._run_id()
+    assert read_queue_ahead(db, run_id, by_token["tok-up"]) == 300.0
+    assert read_queue_ahead(db, run_id, by_token["tok-dn"]) == 80.0
 
 
 def test_a_leg_over_max_order_usd_is_refused_before_any_row_is_written(registry):
@@ -109,6 +110,92 @@ def test_no_intents_writes_nothing(registry):
     assert record_submit(object(), reg, FakeMarket(), [], _cfg(),
                          db_path=db, book_fn=_books) == 0
     assert reg.get_active_orders() == []
+
+
+def test_shadow_queue_is_scoped_by_run_id(registry):
+    """One run's queue-ahead can never leak into another run's read.
+
+    `data/shadow.db` is reused between rehearsals; queue state keyed by
+    `local_id` alone would let a fresh order read an older run's leftover
+    queue and under-credit its own tape.
+    """
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, read_queue_ahead, write_queue_ahead,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+
+    write_queue_ahead(db, "run-aaa", "ord-1", 300.0)
+    write_queue_ahead(db, "run-bbb", "ord-1", 0.0)
+
+    assert read_queue_ahead(db, "run-aaa", "ord-1") == 300.0
+    assert read_queue_ahead(db, "run-bbb", "ord-1") == 0.0
+    # An order that only ever existed in one run is invisible to the other.
+    assert read_queue_ahead(db, "run-bbb", "ord-2") == 0.0
+    assert read_queue_ahead(db, "run-aaa", "ord-2") == 0.0
+
+
+def test_write_queue_ahead_updates_the_same_runs_row_in_place(registry):
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, read_queue_ahead, write_queue_ahead,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    write_queue_ahead(db, "run-aaa", "ord-1", 300.0)
+    write_queue_ahead(db, "run-aaa", "ord-1", 120.0)
+    assert read_queue_ahead(db, "run-aaa", "ord-1") == 120.0
+
+
+def test_shadow_queue_migration_preserves_legacy_rows_as_no_run(registry):
+    """A store predating run scoping must be lifted in place: old rows keep
+    their data under `run_id = ''` ("nobody's run") and are never mistaken for
+    a real run's state."""
+    import sqlite3
+
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, read_queue_ahead,
+    )
+
+    reg, db = registry
+    # Build the legacy pre-run_id schema by hand.
+    con = sqlite3.connect(db)
+    try:
+        con.execute(
+            "CREATE TABLE shadow_queue (local_id TEXT PRIMARY KEY, "
+            "queue_ahead REAL NOT NULL)")
+        con.execute(
+            "INSERT INTO shadow_queue (local_id, queue_ahead) VALUES "
+            "('legacy-1', 42.0)")
+        con.commit()
+    finally:
+        con.close()
+
+    ensure_shadow_tables(db)
+
+    con = sqlite3.connect(db)
+    try:
+        cols = {r[1] for r in con.execute("PRAGMA table_info(shadow_queue)")}
+        assert "run_id" in cols
+        legacy = con.execute(
+            "SELECT run_id, local_id, queue_ahead FROM shadow_queue "
+            "WHERE local_id = 'legacy-1'").fetchone()
+    finally:
+        con.close()
+    assert legacy == ("", "legacy-1", 42.0)
+    # Reachable only under the empty run id, never under a real run.
+    assert read_queue_ahead(db, "", "legacy-1") == 42.0
+    assert read_queue_ahead(db, "run-fresh", "legacy-1") == 0.0
+
+
+def test_pessimistic_completion_price_is_at_least_one_tick_worse():
+    from core_brain.shadow_exec import pessimistic_completion_price
+
+    base, tick = 0.51, FakeMarket.tick_size
+    pessimistic = pessimistic_completion_price(base, tick)
+    assert pessimistic == pytest.approx(base + tick)
+    assert pessimistic >= base + tick
 
 
 def test_mid_loop_failure_cancels_all_created_rows(registry):
@@ -141,12 +228,12 @@ def test_oserror_on_second_leg_cancels_first_and_propagates(registry):
     original_write_queue_ahead = None
     call_count = [0]  # Use list to allow modification in nested function
 
-    def mock_write_queue_ahead(db_path, local_id, queue_ahead):
+    def mock_write_queue_ahead(db_path, run_id, local_id, queue_ahead):
         call_count[0] += 1
         if call_count[0] == 2:  # Fail on second leg
             raise OSError("Simulated system error in write_queue_ahead")
         # Call original for first leg
-        return original_write_queue_ahead(db_path, local_id, queue_ahead)
+        return original_write_queue_ahead(db_path, run_id, local_id, queue_ahead)
 
     import core_brain.shadow_exec
     original_write_queue_ahead = core_brain.shadow_exec.write_queue_ahead
@@ -293,7 +380,7 @@ def test_a_shrinking_queue_without_a_fill_is_remembered(registry):
                   traded_fn=lambda cid, seen: {"tok-up": {0.47: 30.0}})
 
     up_id = next(r.id for r in reg.get_active_orders() if r.token_id == "tok-up")
-    assert read_queue_ahead(db, up_id) == 20.0
+    assert read_queue_ahead(db, reg._run_id(), up_id) == 20.0
 
 
 def test_settle_calls_traded_fn_even_with_no_resting_orders(registry):

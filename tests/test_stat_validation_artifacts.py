@@ -386,3 +386,59 @@ class TestArtifactBundle:
         line = next(l for l in md.splitlines() if "pairs_under_1" in l)
         assert "pairs_under_1**: n/a " in line
         assert "%" not in line
+
+
+class TestPessimisticSensitivity:
+    """Issue #55: the artifact bundle embeds the base/pessimistic sensitivity
+    column and the GO-survives-pessimism verdict."""
+
+    def test_report_json_carries_base_and_pessimistic_variants(self, tmp_path):
+        closes = [
+            {"method": "shadow_merge", "realized_pnl": 0.30,
+             "cost_basis": 9.8, "shares": 10},
+            {"method": "shadow_merge", "realized_pnl": 0.30,
+             "cost_basis": 9.8, "shares": 10},
+            {"method": "shadow_merge", "realized_pnl": 0.30,
+             "cost_basis": 9.8, "shares": 10},
+        ]
+        out, _kpi = _write_bundle(tmp_path, closes)
+
+        data = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        sens = data["sensitivity"]
+        assert set(sens) >= {"base", "pessimistic", "verdict",
+                             "gas", "tick_per_share", "threshold_pct"}
+        assert sens["gas"] == pytest.approx(0.05)
+        assert sens["base"]["ci90_lower_pct"] >= 1.0
+        assert sens["pessimistic"]["ci90_lower_pct"] >= 1.0
+        assert sens["verdict"] == "GO"
+        assert sens["base"]["rebate_est"] is None
+        assert sens["pessimistic"]["rebate_est"] is None
+
+        md = (out / "report.md").read_text(encoding="utf-8")
+        assert "Pessimistic sensitivity" in md
+        assert "no fill is ever credited without" in md
+
+    def test_a_primary_go_is_downgraded_when_pessimism_fails(self, tmp_path):
+        """A primary GO must not be headlined when the sensitivity gate says
+        NO-GO -- the report would otherwise claim GO survived pessimism while
+        presenting one that did not."""
+        # Base passes (0.40/19.6 = 2.04%) but the pessimistic column adds
+        # shares*tick (0.20) + gas (0.05) and falls below 1.0%.
+        closes = [
+            {"method": "shadow_merge", "realized_pnl": 0.40,
+             "cost_basis": 19.6, "shares": 20}
+        ] * 5
+        out, _kpi = _write_bundle(tmp_path, closes)
+
+        data = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        sens = data["sensitivity"]
+        assert sens["base"]["ci90_lower_pct"] >= 1.0
+        assert sens["pessimistic"]["ci90_lower_pct"] < 1.0
+        assert sens["verdict"] == "NO-GO"
+        # The effective (headline) verdict is the downgraded sensitivity verdict.
+        assert data["stat_validation"]["verdict"] == "NO-GO"
+
+        md = (out / "report.md").read_text(encoding="utf-8")
+        headline = next(l for l in md.splitlines()
+                        if l.strip() == "**NO-GO**")
+        assert headline == "**NO-GO**"

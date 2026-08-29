@@ -48,6 +48,11 @@ export function injectToken(html: string, token: string): string {
   return html.split(TOKEN_PLACEHOLDER).join(token);
 }
 
+/** Control forwarding is OFF unless BRIDGE_CONTROL=1 explicitly. */
+export function allowControl(): boolean {
+  return process.env.BRIDGE_CONTROL === '1';
+}
+
 let cachedToken = '';
 let cachedAt = 0;
 const TOKEN_TTL_MS = 60_000;
@@ -173,6 +178,35 @@ function proxyApi(clientReq: IncomingMessage, clientRes: ServerResponse, pathnam
   }
 }
 
+/** Forward a POST control action to Python, passing the frontend's token. */
+function proxyControl(clientReq: IncomingMessage, clientRes: ServerResponse, pathname: string): void {
+  const search = clientReq.url ? url.parse(clientReq.url).search || '' : '';
+  const upUrl = `${up.origin}${pathname}${search}`;
+
+  const headers: Record<string, string> = {
+    accept: (clientReq.headers.accept as string) ?? '*/*',
+    'content-type': (clientReq.headers['content-type'] as string) ?? 'application/json',
+  };
+  const token = clientReq.headers['x-control-token'] as string | undefined;
+  if (token) headers['x-control-token'] = token;
+
+  const proxyReq = httpRequest(
+    upUrl,
+    { method: 'POST', headers },
+    (upRes) => {
+      clientRes.writeHead(upRes.statusCode || 502, { ...upRes.headers });
+      upRes.pipe(clientRes);
+      clientReq.on('close', () => upRes.destroy());
+    },
+  );
+  proxyReq.on('error', () => {
+    if (!clientRes.writableEnded) {
+      json(clientRes, 502, { ok: false, error: 'upstream unreachable' });
+    }
+  });
+  clientReq.pipe(proxyReq);
+}
+
 /* ── routing ─────────────────────────────────────────────────────────────── */
 
 const server = createServer((req, res) => {
@@ -182,8 +216,12 @@ const server = createServer((req, res) => {
   if (pathname.startsWith('/api/')) {
     const method = (req.method || 'GET').toUpperCase();
     if (method !== 'GET' && method !== 'HEAD') {
-      // Read-only bridge: protect live control from accidental TS clicks.
-      return json(res, 501, { ok: false, error: 'read-only bridge; control actions are not proxied yet' });
+      const isControl = pathname.startsWith('/api/system/');
+      if (!isControl || !allowControl()) {
+        // Read-only bridge: protect live state unless control is explicitly on.
+        return json(res, 501, { ok: false, error: 'read-only bridge; control actions are not proxied yet' });
+      }
+      return proxyControl(req, res, pathname);
     }
     return proxyApi(req, res, pathname);
   }

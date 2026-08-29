@@ -5,7 +5,9 @@ Every change ships with two proofs. Both are required before reporting the work 
 ## 1. Automated — run it yourself
 
 `python -m pytest -q` green, and every changed behaviour covered by a test that fails
-without the change. Paste the real output, not a summary of it.
+without the change. Paste the real output, not a summary of it. **The agent runs this
+internally and reports the result; it must never prompt or suggest the operator to run the
+test suite.**
 
 Sizing, fill attribution, and merge paths always land with a test.
 
@@ -15,7 +17,10 @@ There is no coverage gate in this repo, and no coverage tooling is installed. Th
 ## 2. Manual — write it out for the operator
 
 End the work with a short **"How to verify"** block the operator can follow without
-reading the code. Pick the cheapest route that actually proves the change:
+reading the code. Pick the cheapest route that actually proves the change. The block must
+steer the operator to exercise the change hands-on — launch the script/stack, open the UI,
+click through, observe — never to `pytest`, `gh`, `git`, or confirming GitHub/CI state the
+operator can already see on their own.
 
 - **Terminal, read-only:** the exact command plus the line to look for.
   Example: `python -m core_brain.order_manager status` → the `open_notional` row reads `$0.00`.
@@ -44,3 +49,6 @@ reading the code. Pick the cheapest route that actually proves the change:
 5. The operator runs the order-placing commands. Agents run read-only and closing
    commands, and may run an opening command only when the operator says so in that
    session.
+6. No verification/CI/reporting commands. Never use `pytest`, `gh issue/pr view`, `git`, or
+   "confirm merged / closed / green" as a step. The block proves the change by having the
+   operator launch, open, click, and observe — not by re-reading state they already see.

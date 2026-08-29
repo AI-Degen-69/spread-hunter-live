@@ -8,6 +8,7 @@
 #   .\scripts\spread-hunter-menu.ps1 stop          # 2 · LIVE: stop bot + dashboard
 #   .\scripts\spread-hunter-menu.ps1 host          # 3 · LIVE: release :8799 from the other menu-owned dashboard (no wipe), host live & open
 #   .\scripts\spread-hunter-menu.ps1 shadow-run [-Minutes N] # 4 · SHADOW: preflight + wipe, full rehearsal (loop + stop loss)
+#   .\scripts\spread-hunter-menu.ps1 statistical-run [-Hours N] # overnight shadow statistics + dashboard
 #   .\scripts\spread-hunter-menu.ps1 stop-shadow   # 5 · SHADOW: stop loop, watcher and viewer
 #   .\scripts\spread-hunter-menu.ps1 open-shadow   # 6 · SHADOW: release :8799 from the other menu-owned dashboard (no wipe), host shadow & open
 #   .\scripts\spread-hunter-menu.ps1 clean         # 7 · GLOBAL: kill all + wipe data + verify (no start)
@@ -28,7 +29,8 @@ param(
     [Parameter(Position = 0)]
     [string]$Action = "",
     [switch]$Yes,
-    [int]$Minutes = 0
+    [int]$Minutes = 0,
+    [double]$Hours = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -152,6 +154,9 @@ if (-not (Get-Command Write-ProfileSuccess -ErrorAction SilentlyContinue)) {
             "Border"   { [ConsoleColor]::DarkCyan }
             "Path"     { [ConsoleColor]::Green }
             "Link"     { [ConsoleColor]::Blue }
+            "Command"  { [ConsoleColor]::Cyan }
+            "Argument" { [ConsoleColor]::DarkYellow }
+            "Danger"   { [ConsoleColor]::DarkRed }
             "Value"    { [ConsoleColor]::DarkCyan }
             "Progress" { [ConsoleColor]::DarkGray }
             "Text"     { [ConsoleColor]::Gray }
@@ -198,6 +203,7 @@ function Lsh-Step   { param([string]$Msg) Write-ProfileInfo -Message $Msg }
 function Lsh-Ok     { param([string]$Msg) Write-ProfileSuccess -Message $Msg }
 function Lsh-Warn   { param([string]$Msg) Write-ProfileWarning -Message $Msg }
 function Lsh-Fail   { param([string]$Msg) Write-ProfileError -Message $Msg }
+function Lsh-Phase  { param([string]$Text) Write-Host ""; Write-ProfileRuleWithText -Text $Text -Style "Info"; Write-Host "" }
 
 # ── Process / port primitives ──
 function Test-PidAlive {
@@ -248,6 +254,57 @@ function Format-AgeSec {
         return "{0}m {1}s" -f $m, $s
     }
     return "{0}s" -f $Seconds
+}
+
+function ConvertTo-RelativePath {
+    <# Shorten an absolute path for display: project-relative (data/orders.db)
+    when under the repo, home-relative (~/...) otherwise. Paths that are
+    already relative pass through unchanged. #>
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    $norm = $Path -replace '\\', '/'
+    if ($norm -notmatch '^[A-Za-z]:/') { return $norm }
+    $proj = $ProjectPath -replace '\\', '/'
+    if ($norm.StartsWith($proj + '/', [System.StringComparison]::OrdinalIgnoreCase)) {
+        return $norm.Substring($proj.Length + 1)
+    }
+    if ($env:USERPROFILE) {
+        $home = $env:USERPROFILE -replace '\\', '/'
+        if ($norm.StartsWith($home + '/', [System.StringComparison]::OrdinalIgnoreCase)) {
+            return '~/' + $norm.Substring($home.Length + 1)
+        }
+    }
+    return $norm
+}
+
+function Get-NextShadowSeq {
+    <# Next 2-digit sequence (01..99) for the short shadow db name, derived
+    from existing DD-MM_HH-mm_shadow-NN.db files in data/ so a new run never
+    collides with a previous one. #>
+    $seqs = @(Get-ChildItem (Join-Path $ProjectPath "data") -File -Filter "*.db" -ErrorAction SilentlyContinue |
+        ForEach-Object { if ($_.BaseName -match '_shadow-(\d+)$') { [int]$Matches[1] } })
+    $next = 1
+    if ($seqs.Count -gt 0) { $next = (@($seqs | Measure-Object -Maximum).Maximum) + 1 }
+    return ("{0:D2}" -f $next)
+}
+
+function Write-DynamicCell {
+    <# Render a status dynamic cell. Accepts either a plain string or a list of
+    segment hashtables @{ t = 'text'; c = 'ColorRole' } where c is optional and
+    falls back to the cell's default color. Segments let one cell mix colors,
+    e.g. "Run: python -m scripts.filter_loop" with the command in Command
+    color and the module/args in Argument color. #>
+    param($Segments, [string]$DefaultColor)
+    $color = Get-ProfileColor -Name $DefaultColor
+    if ($Segments -is [string]) {
+        Write-Host $Segments -ForegroundColor $color
+        return
+    }
+    foreach ($seg in @($Segments)) {
+        $segColor = if ($seg -and $seg.c) { Get-ProfileColor -Name $seg.c } else { $color }
+        Write-Host $seg.t -ForegroundColor $segColor -NoNewline
+    }
+    Write-Host ''
 }
 
 # ── Dashboard process ownership (runtime/live-dash.pids.json) ──
@@ -660,25 +717,38 @@ function Write-ProcessRow {
         [object]$PidVal = $null,
         [Parameter(Mandatory)][string]$Path,
         [string]$RunCmd = "",
-        [string]$ExtraInfo = ""
+        $ExtraInfo = ""
     )
 
     $statusWord = if ($Running) { "ON" } else { "OFF" }
     $statusColor = if ($Running) { Get-ProfileColor -Name Success } else { Get-ProfileColor -Name Error }
 
-    $dynamic = if ($Running) {
-        if ($ExtraInfo) { "PID $PidVal · $ExtraInfo" }
-        elseif ($PidVal) { "PID $PidVal" }
-        else { "running" }
+    if ($Running) {
+        if ($ExtraInfo) {
+            # ExtraInfo may be a plain string or a list of colored segments.
+            $dynamic = if ($ExtraInfo -is [string]) { @(@{ t = "PID $PidVal · $ExtraInfo" }) }
+                       else { @(@{ t = "PID $PidVal · " }) + @($ExtraInfo) }
+        }
+        elseif ($PidVal) { $dynamic = "PID $PidVal" }
+        else { $dynamic = "Running" }
+        $dynamicColor = "Value"
     } else {
-        if ($RunCmd) { "Run: $RunCmd" } else { "stopped" }
+        if ($RunCmd) {
+            $parts = $RunCmd -split ' ', 2
+            $dynamic = @(
+                @{ t = 'Run: '; c = 'Neutral' },
+                @{ t = $parts[0]; c = 'Command' },
+                @{ t = if ($parts.Count -gt 1) { ' ' + $parts[1] } else { '' }; c = 'Argument' }
+            )
+        } else { $dynamic = "Stopped" }
+        $dynamicColor = "Command"
     }
-    $dynamicColor = if ($Running) { Get-ProfileColor -Name Value } else { Get-ProfileColor -Name Command }
 
     Write-Host ("  {0,-27}" -f $Label) -ForegroundColor (Get-ProfileColor -Name Strong) -NoNewline
     Write-Host ("{0,-11}" -f $statusWord) -ForegroundColor $statusColor -NoNewline
-    Write-Host ("{0,-35}" -f $Path) -ForegroundColor (Get-ProfileColor -Name Path) -NoNewline
-    Write-Host $dynamic -ForegroundColor $dynamicColor
+    Write-Host ("{0,-35}" -f $Path) -ForegroundColor (Get-ProfileColor -Name Link) -NoNewline
+    Write-Host ' ' -NoNewline -ForegroundColor (Get-ProfileColor -Name Neutral)
+    Write-DynamicCell -Segments $dynamic -DefaultColor $dynamicColor
 }
 
 function Write-FileRow {
@@ -686,7 +756,7 @@ function Write-FileRow {
         [Parameter(Mandatory)][string]$Label,
         [Parameter(Mandatory)][string]$Status,
         [AllowEmptyString()][string]$Path = "",
-        [string]$Dynamic = "",
+        $Dynamic = "",
         [string]$StatusStyle = "",
         [string]$DynamicStyle = ""
     )
@@ -699,7 +769,7 @@ function Write-FileRow {
         }
     }
     if (-not $DynamicStyle) {
-        $DynamicStyle = if ($Dynamic -like "Run: *" -or $Dynamic -like "*Run: *") { 'Command' }
+        $DynamicStyle = if ($Dynamic -is [string] -and $Dynamic -like "Run: *") { 'Command' }
                         elseif ($Status -in "MISSING", "ERROR") { 'Error' }
                         elseif ($Status -in "STALE", "AGING") { 'Warning' }
                         else { 'Neutral' }
@@ -707,14 +777,15 @@ function Write-FileRow {
 
     $cLabel   = Get-ProfileColor -Name Strong
     $cStatus  = Get-ProfileColor -Name $StatusStyle
-    $cPath    = Get-ProfileColor -Name Path
-    $cDynamic = Get-ProfileColor -Name $DynamicStyle
 
     Write-Host ("  {0,-27}" -f $Label) -ForegroundColor $cLabel -NoNewline
     Write-Host ("{0,-11}" -f $Status) -ForegroundColor $cStatus -NoNewline
     if ($Path -or $Dynamic) {
-        Write-Host ("{0,-35}" -f $Path) -ForegroundColor $cPath -NoNewline
-        Write-Host $Dynamic -ForegroundColor $cDynamic
+        # Relative paths render in Link color; a guaranteed space keeps long
+        # paths from jamming into the dynamic cell ("...db2s old" -> "...db 2s Old").
+        Write-Host ("{0,-35}" -f $Path) -ForegroundColor (Get-ProfileColor -Name Link) -NoNewline
+        Write-Host ' ' -NoNewline -ForegroundColor (Get-ProfileColor -Name Neutral)
+        Write-DynamicCell -Segments $Dynamic -DefaultColor $DynamicStyle
     } else {
         Write-Host ""
     }
@@ -763,7 +834,7 @@ function Write-StackRows {
         Write-ProcessRow -Label $r.Name -Running $r.Running -PidVal $r.Pid -Path $r.Path -RunCmd $r.RunCmd
     }
     if ($Rows.Count -gt 0 -and $runningCount -eq 0 -and (Test-Path $ProcsFile)) {
-        Write-FileRow -Label "Process file" -Status "STALE" -Path "runtime/processes.json" -Dynamic "no active PID"
+        Write-FileRow -Label "Process file" -Status "STALE" -Path "runtime/processes.json" -Dynamic "No Active PID"
     }
 }
 
@@ -908,7 +979,7 @@ function Get-HeartbeatAgeSec {
 }
 
 function Show-Status {
-    Lsh-Banner -Title "SPREAD HUNTER - STATUS" -Subtitle "Execution engine: $ProjectPath"
+    Lsh-Banner -Title "SPREAD HUNTER - STATUS" -Subtitle "Execution engine: $(Split-Path $ProjectPath -Leaf)"
 
     # ── 1 · DASHBOARD ──
     $inst = Get-DashInstance
@@ -920,11 +991,11 @@ function Show-Status {
     } elseif ($portUp) {
         Write-SectionHeader -Number "1" -Title "DASHBOARD" -Status "LISTENING" -StatusStyle "Warning"
         Write-FileRow -Label "Dashboard" -Status "LISTENING" -Path $StackPaths["dash"] -Dynamic ("PID {0} on port {1} (external)" -f (Get-PortPid), $LivePort)
-        Write-FileRow -Label "PID file" -Status "MISSING" -Path "runtime/live-dash.pids.json" -Dynamic "not owned by menu"
+        Write-FileRow -Label "PID file" -Status "MISSING" -Path "runtime/live-dash.pids.json" -Dynamic "Not Owned by Menu"
     } else {
         Write-SectionHeader -Number "1" -Title "DASHBOARD" -Status "OFF" -StatusStyle "Error"
         Write-ProcessRow -Label "Dashboard" -Running $false -Path $StackPaths["dash"] -RunCmd ("python -m dashboard.server --port {0}" -f $LivePort)
-        Write-FileRow -Label "PID file" -Status "MISSING" -Path "runtime/live-dash.pids.json" -Dynamic "no PID file"
+        Write-FileRow -Label "PID file" -Status "MISSING" -Path "runtime/live-dash.pids.json" -Dynamic "No PID File"
     }
 
     # ── 1b · SHADOW DASHBOARD ──
@@ -933,13 +1004,20 @@ function Show-Status {
         Write-SectionHeader -Number "1b" -Title "SHADOW DASHBOARD" -Status "ON" -StatusStyle "Success"
         $dbInfo = if ($shadowInst -and $shadowInst.db) { $shadowInst.db } elseif ($sess -and $sess.shadow_db) { $sess.shadow_db } else { $ShadowDbPath }
         if (-not $dbInfo) { $dbInfo = "per-run shadow_*.db" }
-        Write-ProcessRow -Label "Shadow Dashboard" -Running $true -PidVal $shadowInst.pid -Path $StackPaths["shadowDash"] -ExtraInfo "$ShadowDashUrl (db=$dbInfo)"
+        $dbRel = if ($dbInfo -like "per-run*") { $dbInfo } else { ConvertTo-RelativePath $dbInfo }
+        $extraInfo = @(
+            @{ t = $ShadowDashUrl; c = 'Link' },
+            @{ t = " (db="; c = 'Neutral' },
+            @{ t = $dbRel; c = 'Link' },
+            @{ t = ")"; c = 'Neutral' }
+        )
+        Write-ProcessRow -Label "Shadow Dashboard" -Running $true -PidVal $shadowInst.pid -Path $StackPaths["shadowDash"] -ExtraInfo $extraInfo
         Write-FileRow -Label "PID file" -Status "FOUND" -Path "runtime/shadow-dash.pids.json" -Dynamic ("PID {0} recorded" -f $shadowInst.pid)
     } elseif ($shadowInst -eq $null -and (Test-Path $ShadowPidFile)) {
         # has pidfile but not alive — stale
         Write-SectionHeader -Number "1b" -Title "SHADOW DASHBOARD" -Status "STALE" -StatusStyle "Warning"
         Write-ProcessRow -Label "Shadow Dashboard" -Running $false -Path $StackPaths["shadowDash"] -RunCmd $StackCmds["shadowDash"]
-        Write-FileRow -Label "PID file" -Status "STALE" -Path "runtime/shadow-dash.pids.json" -Dynamic "no active PID"
+        Write-FileRow -Label "PID file" -Status "STALE" -Path "runtime/shadow-dash.pids.json" -Dynamic "No Active PID"
     } else {
         Write-SectionHeader -Number "1b" -Title "SHADOW DASHBOARD" -Status "OFF" -StatusStyle "Error"
         Write-ProcessRow -Label "Shadow Dashboard" -Running $false -Path $StackPaths["shadowDash"] -RunCmd $StackCmds["shadowDash"]
@@ -953,16 +1031,26 @@ function Show-Status {
         Write-SectionHeader -Number "1c" -Title "SHADOW RUN" -Status "RECORDED" -StatusStyle "Info"
         foreach ($key in @(@{k="screener";l="Shadow Screener"}, @{k="loop";l="Rehearsal Loop"}, @{k="observer";l="Statistics Observer"}, @{k="watcher";l="Stop-loss Watcher"})) {
             $ent = $sess.($key.k)
-            $alive = $false
-            if ($ent -and $ent.pid) {
-                $p = Get-Process -Id $ent.pid -ErrorAction SilentlyContinue
-                $alive = ($null -ne $p) -and ($null -ne $ent.started_ticks) -and ($null -ne $p.StartTime) -and ($p.StartTime.ToUniversalTime().Ticks -eq [int64]$ent.started_ticks)
-            }
-            Write-ProcessRow -Label $key.l -Running $alive -PidVal $(if ($alive) { $ent.pid } else { $null }) -Path $StackPaths["shadowDash"] -RunCmd "python -m core_brain.shadow_run"
+            $p = Get-ProcessRecord -Entry $ent
+            $alive = $null -ne $p
+            $runCmd = if ($key.k -eq "observer") { "python -m core_brain.statistics_observer" }
+                      elseif ($key.k -eq "watcher") { "python -m scripts.global_stop_loss" }
+                      elseif ($key.k -eq "screener") { "python -m scripts.filter_loop" }
+                      else { "python -m core_brain.shadow_run" }
+            Write-ProcessRow -Label $key.l -Running $alive -PidVal $(if ($alive) { $ent.pid } else { $null }) -Path $StackPaths["shadowDash"] -RunCmd $runCmd
         }
-        $dbRow = if ($sess.shadow_db) { "shadow_db=$($sess.shadow_db)" } else { "no shadow_db" }
-        $statsRow = if ($sess.stats_db) { "stats_db=$($sess.stats_db)" } else { "no stats_db" }
-        Write-FileRow -Label "Session file" -Status "FOUND" -Path "runtime/shadow-session.json" -Dynamic "started $(Format-Uptime (Get-Date $sess.started)); $dbRow; $statsRow"
+        $sessSegs = @()
+        $sessSegs += @{ t = "Started {0}; " -f (Format-Uptime (Get-Date $sess.started)); c = 'Neutral' }
+        if ($sess.shadow_db) {
+            $sessSegs += @{ t = "shadow_db="; c = 'Neutral' }
+            $sessSegs += @{ t = (ConvertTo-RelativePath $sess.shadow_db); c = 'Link' }
+        } else { $sessSegs += @{ t = "No Shadow DB"; c = 'Neutral' } }
+        $sessSegs += @{ t = "; "; c = 'Neutral' }
+        if ($sess.stats_db) {
+            $sessSegs += @{ t = "stats_db="; c = 'Neutral' }
+            $sessSegs += @{ t = (ConvertTo-RelativePath $sess.stats_db); c = 'Link' }
+        } else { $sessSegs += @{ t = "No Stats DB"; c = 'Neutral' } }
+        Write-FileRow -Label "Session file" -Status "FOUND" -Path "runtime/shadow-session.json" -Dynamic $sessSegs
     }
 
     # ── 2 · BOT STACK (dashboard API when up, processes.json otherwise) ──
@@ -1011,13 +1099,13 @@ function Show-Status {
         if ($gh.running) {
             Write-SectionHeader -Number "3" -Title "GLOBAL STOP LOSS" -Status "ON" -StatusStyle "Success"
             Write-ProcessRow -Label "Global Stop Loss" -Running $true -PidVal $gh.pid -Path $StackPaths["guardrail"]
-            Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec ([int]$gh.age_s)))
-            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic ("{0} alert(s)" -f $gh.alerts_total)
+            Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic ("{0} Old" -f (Format-AgeSec ([int]$gh.age_s)))
+            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic ("{0} Alerts" -f $gh.alerts_total)
         } else {
             Write-SectionHeader -Number "3" -Title "GLOBAL STOP LOSS" -Status "OFF" -StatusStyle "Error"
             Write-ProcessRow -Label "Global Stop Loss" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.global_stop_loss"
-            Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec ([int]$gh.age_s)))
-            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic ("{0} alert(s)" -f $gh.alerts_total)
+            Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic ("{0} Old" -f (Format-AgeSec ([int]$gh.age_s)))
+            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic ("{0} Alerts" -f $gh.alerts_total)
         }
     } elseif (Test-Path $HbFile) {
         try {
@@ -1026,25 +1114,25 @@ function Show-Status {
             if ($null -ne $age -and $age -le 30) {
                 Write-SectionHeader -Number "3" -Title "GLOBAL STOP LOSS" -Status "ON" -StatusStyle "Success"
                 Write-ProcessRow -Label "Global Stop Loss" -Running $true -PidVal $hb.pid -Path $StackPaths["guardrail"]
-                Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec $age))
-                Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic "0 alerts"
+                Write-FileRow -Label "Heartbeat file" -Status "FOUND" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic ("{0} Old" -f (Format-AgeSec $age))
+                Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic "0 Alerts"
             } else {
                 Write-SectionHeader -Number "3" -Title "GLOBAL STOP LOSS" -Status "OFF" -StatusStyle "Error"
                 Write-ProcessRow -Label "Global Stop Loss" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.global_stop_loss"
-                Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic ("{0} old" -f (Format-AgeSec $age))
-                Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic "0 alerts"
+                Write-FileRow -Label "Heartbeat file" -Status "STALE" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic ("{0} Old" -f (Format-AgeSec $age))
+                Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic "0 Alerts"
             }
         } catch {
             Write-SectionHeader -Number "3" -Title "GLOBAL STOP LOSS" -Status "OFF" -StatusStyle "Error"
             Write-ProcessRow -Label "Global Stop Loss" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.global_stop_loss"
-            Write-FileRow -Label "Heartbeat file" -Status "ERROR" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic "unreadable"
-            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic "0 alerts"
+            Write-FileRow -Label "Heartbeat file" -Status "ERROR" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic "Unreadable"
+            Write-FileRow -Label "Alerts log" -Status "FOUND" -Path "runtime/global_stop_loss_alerts.log" -Dynamic "0 Alerts"
         }
     } else {
         Write-SectionHeader -Number "3" -Title "GLOBAL STOP LOSS" -Status "OFF" -StatusStyle "Error"
         Write-ProcessRow -Label "Global Stop Loss" -Running $false -Path $StackPaths["guardrail"] -RunCmd "python -m scripts.global_stop_loss"
-        Write-FileRow -Label "Heartbeat file" -Status "MISSING" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic "no file"
-        Write-FileRow -Label "Alerts log" -Status "MISSING" -Path "runtime/global_stop_loss_alerts.log" -Dynamic "no file"
+        Write-FileRow -Label "Heartbeat file" -Status "MISSING" -Path "runtime/global_stop_loss_heartbeat.json" -Dynamic "No File"
+        Write-FileRow -Label "Alerts log" -Status "MISSING" -Path "runtime/global_stop_loss_alerts.log" -Dynamic "No File"
     }
 
     # ── 4 · MARKET FILTER & UNIVERSE FEED (what the stack depends on) ──
@@ -1077,14 +1165,19 @@ function Show-ScreenerAndFeed {
     Write-SectionHeader -Number "4" -Title "MARKET FILTER & UNIVERSE FEED" -Status $hdrStatus
 
     $stRerank = if (Test-Path $rerank) { "FOUND" } else { "MISSING" }
-    Write-FileRow -Label "Filter loop" -Status $stRerank -Path "scripts/filter_loop.py" -Dynamic "runs every 10 min"
+    Write-FileRow -Label "Filter loop" -Status $stRerank -Path "scripts/filter_loop.py" -Dynamic "Runs Every 10 Min"
 
     $stRanker = if (Test-Path $ranker) { "FOUND" } else { "MISSING" }
-    Write-FileRow -Label "Filter engine" -Status $stRanker -Path "scripts/filter_markets.py" -Dynamic "fetch & filter"
+    Write-FileRow -Label "Filter engine" -Status $stRanker -Path "scripts/filter_markets.py" -Dynamic "Fetch & Filter"
 
-    $feedDetail = if (-not $feedExists) { "Run: python -m scripts.filter_loop" }
-                  elseif ($feedStatus -eq "STALE") { "{0} market(s) · {1} old · Run: python -m scripts.filter_loop" -f $count, (Format-AgeSec $ageSec) }
-                  else { "{0} market(s) · {1} old" -f $count, (Format-AgeSec $ageSec) }
+    $runSegs = @(
+        @{ t = 'Run: '; c = 'Neutral' },
+        @{ t = 'python'; c = 'Command' },
+        @{ t = ' -m scripts.filter_loop'; c = 'Argument' }
+    )
+    $feedDetail = if (-not $feedExists) { $runSegs }
+                  elseif ($feedStatus -eq "STALE") { @(@{ t = "{0} Markets · {1} Old · " -f $count, (Format-AgeSec $ageSec); c = 'Neutral' }) + $runSegs }
+                  else { "{0} Markets · {1} Old" -f $count, (Format-AgeSec $ageSec) }
     # Show the path actually read, so a pre-rename run/markets.json is visible.
     $feedRel = ($feed.Substring($ProjectPath.Length).Trim("\", "/")) -replace "\\", "/"
     Write-FileRow -Label "Universe feed" -Status $feedStatus -Path $feedRel -Dynamic $feedDetail
@@ -1162,6 +1255,8 @@ function Test-OrphanStackProcess {
     $markers = @(
         "core_brain.trader_loop",
         "core_brain.shadow_run",
+        "core_brain.statistics_observer",
+        "statistical_validation_run",
         "core_brain.order_manager poll",
         "scripts.filter_loop",
         "scripts.global_stop_loss",
@@ -1271,6 +1366,8 @@ function Clear-RuntimeState {
     }
     Get-ChildItem (Join-Path $ProjectPath "data") -Directory -Filter "shadow_stat_*" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     Get-ChildItem (Join-Path $ProjectPath "data") -File -Filter "stats_*.db*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    Get-ChildItem (Join-Path $ProjectPath "data") -File -Filter "*.db*" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(overnight_validation_|\d{2}-\d{2}_\d{2}-\d{2}_shadow-\d+)' } | Remove-Item -Force -ErrorAction SilentlyContinue
+    Get-ChildItem $ProjectPath -File -Filter "stats_*.db*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     Get-ChildItem (Join-Path $ProjectPath "reports") -File -Filter "*_statistics_report*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
     Lsh-Ok "Runtime state wiped ($removed artifact(s) removed). data/orders.db untouched."
@@ -1295,6 +1392,17 @@ function Kill-RecordedPid {
         Lsh-Warn "$Name PID $TargetPid unavailable; not killed."
         return $false
     }
+}
+
+function Get-ProcessRecord {
+    param([Parameter(Mandatory)]$Entry)
+    if (-not $Entry -or -not $Entry.pid) { return $null }
+    try { $p = Get-Process -Id $Entry.pid -ErrorAction Stop } catch { return $null }
+    if ($null -eq $Entry.started_ticks) { return $null }
+    try {
+        if ($p.StartTime.ToUniversalTime().Ticks -ne [int64]$Entry.started_ticks) { return $null }
+    } catch { return $null }
+    return $p
 }
 
 function Stop-ShadowSession {
@@ -1328,6 +1436,7 @@ function Reset-Environment {
     Lsh-Banner -Title "RESET & FRESH START" -Subtitle "verify -> stop -> wipe -> start ($Mode)"
 
     # 1 · VERIFY: what is alive right now
+    Lsh-Phase -Text "PHASE 1 · VERIFY"
     $found = @()
     if (Test-Port) { $found += "port :$LivePort (PID $(Get-PortPid))" }
     $dash = Get-DashInstance;  if ($dash) { $found += "live dashboard PID $($dash.pid)" }
@@ -1351,6 +1460,7 @@ function Reset-Environment {
     else                   { Lsh-Ok "Nothing spread-hunter is running (port free, no stack PIDs, no guardrail)." }
 
     # 2 · STOP (API stop when a dashboard answers; recorded PIDs otherwise)
+    Lsh-Phase -Text "PHASE 2 · STOP"
     if (Test-StackAlive) {
         Stop-BotStack
         Stop-ShadowSession   # recorded rehearsal loop + watcher + viewer
@@ -1363,16 +1473,19 @@ function Reset-Environment {
     }
 
     # 3 · VERIFY STOPPED before wiping (never wipe beside a live stack)
+    Lsh-Phase -Text "PHASE 3 · VERIFY STOPPED"
     if (Test-StackAlive) {
         Lsh-Fail "Refusing to wipe: a spread-hunter process is still alive. Re-run reset, or free :$LivePort manually."
         return $false
     }
 
     # 4 · WIPE
+    Lsh-Phase -Text "PHASE 4 · WIPE"
     Clear-RuntimeState
 
     # 5 · VERIFY CLEAN (pidfiles are gone by construction; still guard against
     # an unregistered orphan service so we never declare clean beside one)
+    Lsh-Phase -Text "PHASE 5 · VERIFY CLEAN"
     if (Test-Port) {
         Lsh-Fail "Port $LivePort is still LISTENING (PID $(Get-PortPid)) and not owned by this menu. Free it, then start."
         return $false
@@ -1384,6 +1497,7 @@ function Reset-Environment {
     Lsh-Ok "Environment verified clean - no blockers, no contradictions."
 
     # 6 · START
+    Lsh-Phase -Text "PHASE 6 · START ($Mode)"
     switch ($Mode) {
         "shadow" {
             $ts = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -1433,7 +1547,7 @@ function Reset-Environment {
                         -RedirectStandardError (Join-Path $RunDir "shadow_run.err.log")
                     Lsh-Ok "Rehearsal loop running (PID $($shadowRun.Id), $Minutes minute(s)) - dashboard updates live from $ShadowDbPath."
                     $observer = Start-Process -FilePath "python" `
-                        -ArgumentList "-m", "core_brain.statistics_observer", "--mode", "shadow", "--watch", $ShadowDbPath, "--run-id", $ShadowRunId, "--interval", "5", "--max-hours", (($Minutes / 60) + 0.08) `
+                        -ArgumentList "-m", "core_brain.statistics_observer", "--mode", "shadow", "--watch", $ShadowDbPath, "--run-id", $ShadowRunId, "--data-dir", $ProjectPath, "--interval", "5", "--max-hours", (($Minutes / 60) + 0.08) `
                         -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
                         -RedirectStandardOutput (Join-Path $RunDir "statistics_observer.out.log") `
                         -RedirectStandardError (Join-Path $RunDir "statistics_observer.err.log")
@@ -1500,6 +1614,59 @@ function Reset-Environment {
                 return $false
             }
         }
+        "statistical" {
+            # Short, readable run names: DD-MM_HH-mm_shadow-NN where NN is the
+            # next free sequence (01..99) across every shadow db in data/.
+            $stamp = Get-Date -Format "dd-MM_HH-mm"
+            $ShadowRunId = "shadow-" + (Get-NextShadowSeq)
+            $ShadowDbPath = Join-Path $ProjectPath "data/${stamp}_${ShadowRunId}.db"
+            $StatsDbPath = Join-Path $ProjectPath "data/stats_${stamp}_${ShadowRunId}.db"
+            $reportPath = Join-Path $ProjectPath "reports/validation_${stamp}_${ShadowRunId}"
+            $runHours = if ($Hours -gt 0) { $Hours } else { 12.0 }
+            Lsh-Ok "Run id:   $ShadowRunId"
+            Lsh-Ok "Database: $ShadowDbPath"
+            Lsh-Ok "Report:   $reportPath"
+            if (Start-ShadowDashboard) {
+                Start-Process $ShadowDashUrl
+                Lsh-Ok "Opened $ShadowDashUrl in default browser (validation db=$ShadowDbPath)."
+                Lsh-Step "Running the market ranker before starting the validation loop..."
+                & python -m scripts.rank_markets
+                if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $ProjectPath "runtime/markets.json"))) {
+                    Lsh-Fail "Market ranking failed; validation loop was not started. See runtime/rerank.log or ranker output."
+                    return $false
+                }
+                Lsh-Ok "Market feed ready (runtime/markets.json)."
+                $screener = Start-Process -FilePath "python" -ArgumentList "-m", "scripts.filter_loop" -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
+                    -RedirectStandardOutput (Join-Path $RunDir "validation_screener.out.log") -RedirectStandardError (Join-Path $RunDir "validation_screener.err.log")
+                Lsh-Ok "Market screener started (PID $($screener.Id))."
+                $validation = Start-Process -FilePath "python" -ArgumentList "-m", "statistical_validation_run", "--max-hours", "$runHours", "--db", $ShadowDbPath, "--report", $reportPath, "--run-id", $ShadowRunId `
+                    -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
+                    -RedirectStandardOutput (Join-Path $RunDir "statistical_validation.out.log") -RedirectStandardError (Join-Path $RunDir "statistical_validation.err.log")
+                Lsh-Ok "Validation loop started (PID $($validation.Id), $runHours hour(s))."
+                $observer = Start-Process -FilePath "python" -ArgumentList "-m", "core_brain.statistics_observer", "--mode", "shadow", "--watch", $ShadowDbPath, "--run-id", $ShadowRunId, "--data-dir", (Join-Path $ProjectPath "data"), "--interval", "5", "--max-hours", ($runHours + 0.08) -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
+                    -RedirectStandardOutput (Join-Path $RunDir "validation_observer.out.log") -RedirectStandardError (Join-Path $RunDir "validation_observer.err.log")
+                Lsh-Ok "Statistics observer started (PID $($observer.Id))."
+                # The loop names its ring shadow-<run_id>.jsonl (the id is
+                # already shadow-prefixed; the runner never double-prefixes).
+                $ring = Join-Path $RunDir ("shadow-{0}.jsonl" -f ($ShadowRunId -replace "^shadow-", ""))
+                $guardrail = Start-Process -FilePath "python" -ArgumentList "-m", "scripts.global_stop_loss", "--db", $ShadowDbPath, "--ring", $ring -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
+                    -RedirectStandardOutput (Join-Path $RunDir "validation_guardrail.out.log") -RedirectStandardError (Join-Path $RunDir "validation_guardrail.err.log")
+                Lsh-Ok "Stop-loss watcher started (PID $($guardrail.Id))."
+                $session = [ordered]@{ started=(Get-Date).ToString("o"); run_id=$ShadowRunId; shadow_db=$ShadowDbPath; stats_db=$StatsDbPath; report_path=$reportPath; loop=[ordered]@{pid=$validation.Id; started_ticks=$validation.StartTime.ToUniversalTime().Ticks}; screener=[ordered]@{pid=$screener.Id; started_ticks=$screener.StartTime.ToUniversalTime().Ticks}; observer=[ordered]@{pid=$observer.Id; started_ticks=$observer.StartTime.ToUniversalTime().Ticks}; watcher=[ordered]@{pid=$guardrail.Id; started_ticks=$guardrail.StartTime.ToUniversalTime().Ticks}; ring=$ring }
+                $session | ConvertTo-Json -Depth 5 | Set-Content -Path $ShadowSessionFile -Encoding UTF8
+                Write-Host ""
+                Write-ProfileRuleWithText -Text "OVERNIGHT STATISTICS RUNNING" -Style "Success"
+                Write-ProfileSuccess -Message "Validation loop" -Detail "(PID $($validation.Id)) - rotates for $runHours hour(s)"
+                Write-ProfileSuccess -Message "Market screener" -Detail "(PID $($screener.Id)) - refreshes the market feed"
+                Write-ProfileSuccess -Message "Statistics observer" -Detail "(PID $($observer.Id)) - snapshots every 5s"
+                Write-ProfileSuccess -Message "Stop-loss watcher" -Detail "(PID $($guardrail.Id)) - flags repeat-exit / over-cap pairs"
+                Write-ProfileSuccess -Message "Dashboard" -Detail "$ShadowDashUrl (db=$ShadowDbPath)"
+                Write-ProfileInfo -Message "Report lands at" -Detail $reportPath
+                Write-ProfileInfo -Message "Check it" -Detail ".\scripts\spread-hunter-menu.ps1 status"
+                Write-ProfileInfo -Message "Stop it early" -Detail ".\scripts\spread-hunter-menu.ps1 stop-shadow"
+                Write-Host ""
+            } else { return $false }
+        }
         "live" {
             if (-not $Force) {
                 Lsh-Fail "Live start requires explicit confirmation: use -Yes (CLI) or the typed START confirm (menu)."
@@ -1508,7 +1675,7 @@ function Reset-Environment {
             if (Start-Dashboard) { Start-BotStack }
         }
         default {
-            Lsh-Ok "Ready. Options: 1 live start, 4 shadow run, 7 global stop & clean, 8 status."
+            Lsh-Ok "Ready. Options: 1 live start, 4 shadow run, 7 global stop & clean, 8 status, 9 statistical shadow."
         }
     }
     return $true
@@ -1542,6 +1709,7 @@ function Show-MenuGrid {
         @{ Header = "MAINTENANCE & STATUS"; Items = @(
             @{ K = "7"; Icon = "⎚"; IconColor = "Warning"; V = "Global Stop & Clean";       D = "Kills all bot processes/dashboards, wipes data, verifies" }
             @{ K = "8"; Icon = "≡"; IconColor = "Info";    V = "Check System Status";        D = "Static Status page" }
+            @{ K = "9"; Icon = "▣"; IconColor = "Info";    V = "Overnight Statistics";         D = "Run shadow + statistics + dashboard for hours" }
         ) }
     )
 
@@ -1592,6 +1760,15 @@ function Invoke-LiveAction {
             $script:Minutes = [int]$mins
             $null = Reset-Environment -Mode "shadow"
         }
+        "9" {
+            $hrs = if ($Hours -gt 0) { $Hours } else { 12.0 }
+            if ($Action -eq "") {
+                $confirm = Read-Host "  Start a $hrs-hour statistical shadow run with its own database and dashboard? [y/N]"
+                if ($confirm -notmatch '^[yY]') { Lsh-Warn "Statistical run cancelled."; return }
+            }
+            $script:Hours = $hrs
+            $null = Reset-Environment -Mode "statistical"
+        }
         "5" {
             Stop-ShadowSession
             Lsh-Ok "Shadow session stopped."
@@ -1609,7 +1786,7 @@ function Invoke-LiveAction {
         "8" { Show-Status }
         "q" { Write-Host "Exiting Spread Hunter Live menu." -ForegroundColor (Get-ProfileColor -Name Neutral); exit 0 }
         default {
-            Lsh-Warn "Invalid selection: $Key (choose 1-8, or q)."
+            Lsh-Warn "Invalid selection: $Key (choose 1-9, or q)."
             Start-Sleep -Seconds 1
         }
     }
@@ -1640,6 +1817,10 @@ if ($Action -ne "") {
         "clean"        = "7"
         "get"          = "7"
         "status"       = "8"
+        "statistical"  = "9"
+        "stats"        = "9"
+        "overnight"    = "9"
+        "statistical-run" = "9"
     }
     $key = $Action.Trim().ToLower()
     if ($actionMap.ContainsKey($key)) { $key = $actionMap[$key] }
@@ -1658,7 +1839,8 @@ if ($Action -ne "") {
 Lsh-Banner -Title "SPREAD HUNTER LIVE - CONTROL CENTER"
 Show-MenuGrid
 Write-Host "  Select " -ForegroundColor Gray -NoNewline
-Write-Host "[1-8, q]" -ForegroundColor Cyan -NoNewline
+Write-Host "[1-9, q]" -ForegroundColor Cyan -NoNewline
+
 Write-Host " › " -ForegroundColor Yellow -NoNewline
 $choice = Read-Host
 if ($null -eq $choice) { exit 0 }

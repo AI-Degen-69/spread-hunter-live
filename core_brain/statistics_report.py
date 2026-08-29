@@ -56,7 +56,7 @@ def write_statistics_report(
         threshold_pct=cfg.stat_gate_threshold_pct,
     )
 
-    timestamp = _datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = _datetime.datetime.now().strftime("%d-%m_%H-%M")
     destination = Path(out_dir) if out_dir is not None else Path("reports")
     destination.mkdir(parents=True, exist_ok=True)
     safe_run_id = re.sub(r"[^A-Za-z0-9.-]+", "_", run_id).strip("._") or "run"

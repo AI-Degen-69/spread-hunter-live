@@ -276,6 +276,13 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         help="isolated shadow database path (default: data/shadow_stat_<ts>_<run_id>.db)",
     )
     ap.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="explicit run id shared with the launcher's observer/watcher "
+             "(default: mint a fresh shadow-<hex> id)",
+    )
+    ap.add_argument(
         "--report",
         type=str,
         default=None,
@@ -316,8 +323,8 @@ def main(
 
     a = _parse_args(argv)
 
-    run_id = shadow_run_id()
-    ts_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = a.run_id or shadow_run_id()
+    ts_str = datetime.datetime.now().strftime("%d-%m_%H-%M")
     db_path = Path(a.db) if a.db else Path(f"data/shadow_stat_{ts_str}_{run_id}.db")
 
     # Fail fast if production registry is passed
@@ -370,6 +377,19 @@ def main(
         clock=clock,
         sleep=sleep,
     )
+
+    # Validate the feed before entering the long-running shadow loop. The
+    # launcher seeds this file automatically; direct CLI users get a concise
+    # remediation instead of a nested trader traceback.
+    if markets_fn is None:
+        from core_brain.market_feed import MarketFeedError, load_graduated_markets
+        try:
+            load_graduated_markets()
+        except MarketFeedError as exc:
+            raise RuntimeError(
+                "graduated markets feed is unavailable; run "
+                "scripts/rank_markets.py first (or use the overnight launcher)"
+            ) from exc
 
     result: ShadowResult = run_shadow(
         minutes=float(a.max_hours) * 60.0,

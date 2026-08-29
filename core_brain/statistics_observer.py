@@ -29,7 +29,7 @@ def observe(
     watch_path = Path(watch)
     if mode == "shadow":
         assert_not_production_registry(watch_path)
-    store = StatisticsStore.create(data_dir, datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), run_id)
+    store = StatisticsStore.create(data_dir, datetime.datetime.now().strftime("%d-%m_%H-%M"), run_id)
     started = time.monotonic()
     count = 0
     try:
@@ -58,8 +58,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--interval", type=float, default=5.0)
     parser.add_argument("--max-hours", type=float, default=24.0)
     parser.add_argument("--stop-file", type=str, default=None)
+    parser.add_argument("--data-dir", type=str, default="data")
     args = parser.parse_args(argv)
-    observe(args.watch, args.run_id, args.mode, "data", interval=args.interval, max_hours=args.max_hours, stop_file=args.stop_file)
+    observe(args.watch, args.run_id, args.mode, args.data_dir, interval=args.interval, max_hours=args.max_hours, stop_file=args.stop_file)
     return 0
 
 

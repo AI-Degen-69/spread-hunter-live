@@ -12,16 +12,16 @@ them → wipe runtime state → verify nothing blocks → start the chosen mode*
 
 | Option | What one choice covers | Safe to run |
 | --- | --- | --- |
-| `reset` | Stop all spread-hunter processes → wipe `runtime/` + shadow stores → verify clean (**no start**) | Yes |
-| `reset-shadow` | Stop all → wipe → verify clean → start **shadow dashboard** on :8799 + open browser | Yes (spends nothing) |
-| `reset-shadow -Minutes 5` | Same, plus launch a 5-minute `shadow_run` rehearsal detached — the dashboard updates live from `data/shadow.db` while it runs | Yes (spends nothing) |
-| `reset-live -Yes` | Stop all → wipe → verify clean → start **dashboard + live bot stack** (Market Filter, Order Manager, Trader) | **No — rests REAL maker bids; requires `-Yes`** |
-| `start -Yes` | Start live dashboard + bot stack (no wipe) | **No — real bids; requires `-Yes`** |
-| `stop` | Stop bot stack, then dashboard | Yes |
-| `open` | Start bare live dashboard (no bot) + account sweep + open browser | Yes |
-| `shadow` | Start shadow dashboard + open browser (no run) | Yes (spends nothing) |
-| `stop-shadow` | Stop the shadow dashboard on :8799 | Yes |
-| `status` | Read-only: dashboard + every stack process + feed + repo identity | Yes |Interactive menu equivalents, grouped in the grid: **LIVE** `1` start live / `2` reset + live (both type `START`), `3` stop, `4` open dashboard; **SHADOW** `5` open / `6` reset + shadow / `7` stop shadow; **RESET / STATUS** `8` reset state only, `9` status.
+| `start -Yes` | **1 · LIVE Start**: preflight-stop everything, wipe data, verify clean, then start the live dashboard + bot stack (Market Filter, Order Manager, Trader). Rests real bids | **No — real bids; requires `-Yes`** |
+| `stop` | **2 · LIVE Stop**: stop the live bot stack, then the dashboard | Yes |
+| `host` | **3 · LIVE Host**: kill whatever holds :8799 (no wipe), host the live dashboard (`data/orders.db`) & open browser | Yes |
+| `shadow-run [-Minutes N]` | **4 · SHADOW Start**: preflight-stop everywhere, wipe data, verify clean, then the shadow dashboard + rehearsal loop (`shadow_run`) + a stop-loss watcher scoped to that session's ring (self-stops after N minutes). Prompts for minutes interactively; default 5 | Yes (spends nothing) |
+| `stop-shadow` | **5 · SHADOW Stop**: stop the rehearsal loop (if still running), watcher, and viewer | Yes (spends nothing) |
+| `open-shadow` | **6 · SHADOW Host**: kill whatever holds :8799 (no wipe), host the shadow dashboard (`data/shadow.db`) & open browser | Yes (spends nothing) |
+| `clean` | **7 · Global Stop & Clean**: kill all bot processes/dashboards, wipe data, verify clean — starts nothing | Yes |
+| `status` | **8 · Status**: dashboard + every stack process + feed + repo identity | Yes |
+
+Interactive menu equivalents, grouped in the grid: **🟢 LIVE** `1` start / `2` stop / `3` host dashboard; **🥷 SHADOW** `4` start (prompts minutes) / `5` stop / `6` host; **MAINTENANCE & STATUS** `7` global stop & clean / `8` status.
 
 ### What the reset refuses to do
 
@@ -54,7 +54,7 @@ Remove-Item run -Recurse -Force -ErrorAction SilentlyContinue
 
 # Verify clean, then start your mode:
 .\scripts\spread-hunter-menu.ps1 status
-.\scripts\spread-hunter-menu.ps1 shadow        # or reset-shadow / reset-live -Yes
+.\scripts\spread-hunter-menu.ps1 shadow-run   # or stop / open-shadow / clean (see table above)
 ```
 
 ## The full run — five background processes

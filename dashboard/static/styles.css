@@ -1022,8 +1022,27 @@ td { font-size: 13px; }
 .rp-verdict.profit { color: var(--signal); }
 .rp-verdict.loss { color: #fca5a5; }
 .rp-verdict.neutral { color: var(--text-secondary); }
-.rp-details { font-size: 11px; color: var(--text-secondary); margin-top: 6px; line-height: 1.5; }
-.rp-venue { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
+.rp-details { font-size: 11px; color: var(--text-secondary); line-height: 1.5; }
+.rp-venue { font-size: 10px; color: var(--text-muted); }
+/* Each card line lays the text beside an inline info bubble, reusing the
+   .info-bubble/.info-tooltip pattern the service cards use. */
+.rp-line { display: flex; align-items: flex-start; gap: 8px; position: relative; }
+.rp-line + .rp-line { margin-top: 8px; }
+.rp-header { align-items: center; }
+.rp-header .font-display { flex: 1; }
+.rp-line > .rp-verdict, .rp-line > .rp-details, .rp-line > .rp-venue { flex: 1; }
+.rp-tip { flex: 0 0 auto; margin-top: 1px; }
+/* The bubble wrapper is only ~20px wide; an absolutely positioned tooltip left
+   inside it would inherit that tiny containing block and wrap one word per line
+   no matter how short the text. Anchor each tooltip to the full-width card line
+   (the nearest positioned ancestor) and give it an explicit width so it renders
+   as a normal multi-word box. */
+.rp-tip .info-tooltip {
+  top: 100%;
+  right: 0;
+  width: min(300px, 70vw);
+  margin-top: 6px;
+}
 
 .sr-only {
   position: absolute;

@@ -74,10 +74,34 @@
   <section id="tab-2" role="tabpanel" aria-labelledby="tab-btn-2" hidden>
     <!-- Run Profitability Banner — answers "was this run profitable?" -->
     <div id="run-profitability" class="card run-profitability" style="display:none;margin-bottom:16px" role="status" aria-live="polite">
-      <div class="font-display" style="font-size:12px;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:8px">RUN PROFITABILITY — <span id="rp-run-id" class="mono"></span></div>
-      <div id="rp-verdict" class="rp-verdict"></div>
-      <div id="rp-details" class="mono rp-details"></div>
-      <div id="rp-venue" class="mono rp-venue"></div>
+      <div class="rp-line rp-header">
+        <div class="font-display" style="font-size:12px;letter-spacing:0.08em;color:var(--text-muted)">RUN PROFITABILITY — <span id="rp-run-id" class="mono"></span></div>
+        <div class="rp-tip">
+          <button class="info-bubble" type="button" aria-label="About this card">?</button>
+          <div class="info-tooltip">Bottom line for this run. RUN ID = which run these numbers belong to.</div>
+        </div>
+      </div>
+      <div class="rp-line">
+        <div id="rp-verdict" class="rp-verdict"></div>
+        <div class="rp-tip">
+          <button class="info-bubble" type="button" aria-label="Verdict explained">?</button>
+          <div class="info-tooltip">Profit, loss, break-even, or no-trades for the run. After &quot;·&quot; = still-open portion. Border: green profit, red loss, gray neutral.</div>
+        </div>
+      </div>
+      <div class="rp-line">
+        <div id="rp-details" class="mono rp-details"></div>
+        <div class="rp-tip">
+          <button class="info-bubble" type="button" aria-label="Details explained">?</button>
+          <div class="info-tooltip">fills = completed orders, quotes = bids rested, closes = finished. Win rate = % profitable; expectancy = avg P&amp;L per close; merges = pairs hedged back to $1.00.</div>
+        </div>
+      </div>
+      <div class="rp-line">
+        <div id="rp-venue" class="mono rp-venue"></div>
+        <div class="rp-tip">
+          <button class="info-bubble" type="button" aria-label="Venue line explained">?</button>
+          <div class="info-tooltip">Wallet start &rarr; end during the run. Open orders: still resting; 0 = flat.</div>
+        </div>
+      </div>
     </div>
     <!-- Hero KPIs -->
     <div class="kpi-grid" id="kpi-grid">

@@ -620,13 +620,20 @@ function renderRunProfitability(kpi) {
   runEl.textContent = rp.run_id || '--';
   verdictEl.className = 'rp-verdict ' + (rp.verdict_level || 'neutral');
   verdictEl.textContent = rp.verdict || '--';
-  // Details line: fills/quotes/closes + expectancy
+  // Details line: fills/quotes/closes + expectancy. Everything is escaped, so
+  // building innerHTML is safe and lets the all-naked warning render in red.
   const detParts = [];
   detParts.push(`${rp.fills} fills / ${rp.quotes} quotes / ${rp.closes_count} closes`);
   if (rp.win_rate !== null && rp.win_rate !== undefined) detParts.push(`win rate ${(rp.win_rate*100).toFixed(1)}%`);
   if (rp.expectancy_usd !== null && rp.expectancy_usd !== undefined) detParts.push(`expectancy ${fmtUSD(rp.expectancy_usd)}`);
   if (rp.merge_closes !== undefined) detParts.push(`${rp.merge_closes} merges`);
-  detailsEl.textContent = detParts.join(' · ');
+  let detailsHtml = esc(detParts.join(' · '));
+  const allNaked = rp.closes_count > 0 && rp.merge_closes === 0
+    && rp.single_buy_exits === rp.closes_count && rp.single_buy_exits > 0;
+  if (allNaked) {
+    detailsHtml += '<span class="rp-warn"> · ALL exits were naked — no hedged pair captured</span>';
+  }
+  detailsEl.innerHTML = detailsHtml;
   // Venue line: scoped to same run window, plus open-order flat check
   const venueParts = [];
   if (rp.venue_measured) {

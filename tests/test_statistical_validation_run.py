@@ -471,3 +471,4 @@ class TestEndToEndHarness:
         md = (report_dir / "report.md").read_text(encoding="utf-8")
         assert "**INCONCLUSIVE**" in md
         assert "**GO**" not in md
+        assert "**NO-GO**" not in md

@@ -45,6 +45,7 @@ from typing import Any, Callable, Optional
 
 log = logging.getLogger("shadow_run")
 
+# Deprecated compatibility alias; operational callers must provide a per-run path.
 DEFAULT_SHADOW_DB = Path("data/shadow.db")
 
 
@@ -321,6 +322,8 @@ def build_shadow_seam(
     )
     from core_brain.trader_loop import VenueSeam, _make_inventory_fn, _make_open_orders_fn
 
+    if not db_path:
+        raise ValueError("shadow runs require an explicit per-run db_path")
     assert_not_production_registry(db_path)
     ensure_shadow_tables(db_path)
 
@@ -502,6 +505,8 @@ def run_shadow(
     from core_brain.trader_loop import run as loop_run
 
     # Between argv and any database handle.
+    if not db_path:
+        raise ValueError("shadow runs require an explicit per-run db_path")
     assert_not_production_registry(db_path)
 
     # A rehearsal names itself, before a single row is written. Without this
@@ -714,9 +719,8 @@ def _parse_args(argv: Optional[list[str]] = None):
                     help="time box in minutes (default: 5.0)")
     ap.add_argument("--interval", type=float, default=5.0,
                     help="rotation cadence in seconds (default: 5.0)")
-    ap.add_argument("--db", default=str(DEFAULT_SHADOW_DB),
-                    help="shadow store path (default: data/shadow.db). "
-                         "data/orders.db is refused.")
+    ap.add_argument("--db", default=None,
+                    help="explicit per-run shadow store path; data/orders.db is refused")
     ap.add_argument("--max-markets", type=int, default=None,
                     help="cap the number of markets rotated (default: all)")
     ap.add_argument("--funder", default=None,
@@ -743,6 +747,8 @@ def main(
 
     a = _parse_args(argv)
 
+    if not a.db:
+        raise ValueError("shadow runs require an explicit per-run --db path")
     db = Path(a.db)
     log.warning(
         "SHADOW RUN starting: mode=shadow minutes=%s interval=%ss store=%s "

@@ -55,6 +55,15 @@ agent-run output, not the impression. Rules and examples:
   or "How to verify" step.
 - **Never tell, ask, or suggest the operator to run `pytest`** (or any `/pytest` prompt) to
   validate work. Report the agent-run results instead.
+- **Owner Standing Directive 2026-08-29 — tests are not verification for the Owner.**
+  The Owner has stated explicitly: asking to "check tests" or citing "tests passed" as proof
+  means nothing was built — tests have passed before while the feature was still buggy.
+  Tests are background-only, run silently by the agent. For the Owner, verification is
+  **hands-on surface behavior only**: launch the menu/stack, run a shadow rehearsal, open
+  `http://127.0.0.1:8799`, check the report file in `reports/`, observe the feature working.
+  Never present `pytest` counts, `pytest -q` output, or "4 passed" as "meat to check."
+  When something has meat to verify, point to the file/screen/command the Owner can touch
+  and what value should differ — not to test results.
 - **The "How to verify" block is hands-on only.** It steers the operator to *use* the change
   — launch the script/stack, open the dashboard, click through, observe behavior — not to
   audit tooling. It must NOT include:

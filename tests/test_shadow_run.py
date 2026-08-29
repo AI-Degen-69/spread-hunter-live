@@ -632,7 +632,7 @@ class TestMain:
 
         assert a.minutes == 5.0
         assert a.interval == 5.0
-        assert Path(a.db) == Path("data/shadow.db")
+        assert a.db is None
         assert a.max_markets is None
 
     def test_main_refuses_the_production_registry_via__db(self):
@@ -1004,3 +1004,20 @@ class TestPairsWindowWiring:
         )
 
         assert seen == [123.0]
+
+
+class TestExplicitDb:
+    def test_shadow_run_requires_explicit_db(self):
+        from core_brain.shadow_run import run_shadow
+
+        import pytest
+
+        with pytest.raises((TypeError, ValueError), match="explicit|per-run"):
+            run_shadow(minutes=0.0, db_path=None)
+
+    def test_pipeline_sourced_dbs_excludes_shared(self):
+        from pathlib import Path
+
+        from core_brain.kpi import _pipeline_sourced_dbs
+
+        assert Path("data/shadow.db").resolve() not in _pipeline_sourced_dbs()

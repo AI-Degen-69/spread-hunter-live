@@ -578,13 +578,13 @@ function renderExposure(kpi) {
   const text = document.getElementById('exposure-text');
   const fill = document.getElementById('exposure-fill');
 
-  const committed = kpi?.portfolio?.open_committed_usd || 0;
-  const accountVal = kpi?.portfolio?.account?.account_value_usd || kpi?.portfolio?.starting_capital;
-  const cap = accountVal ? (accountVal * 0.90) : (kpi?.bankroll || 100);
+  const committed = kpi?.portfolio?.open_committed_usd;
   if (committed === null || committed === undefined) {
     bar.style.display = 'none';
     return;
   }
+  const accountVal = kpi?.portfolio?.account?.account_value_usd ?? kpi?.portfolio?.starting_capital;
+  const cap = accountVal ? (accountVal * 0.90) : (kpi?.bankroll || 100);
   bar.style.display = 'flex';
   const pct = Math.min(100, (committed / cap) * 100);
   text.textContent = `$${committed.toFixed(2)}/$${cap.toFixed(0)}`;
@@ -647,6 +647,55 @@ function renderRunProfitability(kpi) {
 }
 
  /* ── Render: KPI Tiles (DT2: empty states) ── */
+function renderAnalyticsSurface(kpi, status) {
+  const totals = document.getElementById('analytics-totals');
+  const grid = document.getElementById('kpi-grid');
+  const charts = document.getElementById('analytics-charts');
+  const gates = document.getElementById('analytics-gates');
+  if (!totals || !grid || !charts || !gates) return;
+  const p = kpi?.portfolio || {};
+  const ta = kpi?.trade_analytics || {};
+  const start = status?.starting_capital ?? p.starting_capital;
+  const value = p.account?.account_value_usd ?? p.total_value;
+  const realized = p.realized_pnl ?? ta.total_realized_pnl;
+  const pct = p.pnl_pct ?? ta.total_return_pct;
+  totals.innerHTML = `<div class="analytics-total"><div class="kpi-label">Total Portfolio Value</div><div class="kpi-value">${esc(fmtUSD(value))}</div></div><div class="analytics-total"><div class="kpi-label">Total Realized PnL</div><div class="kpi-value ${Number(realized) >= 0 ? 'positive' : 'negative'}">${esc(fmtUSD(realized))} <span class="small">(${esc(fmtPct(pct))})</span></div></div>`;
+  const nRaw = ta.n_closes != null ? ta.n_closes : ta.closes_count;
+  const n = nRaw != null ? nRaw : null;
+  const wins = ta.wins != null ? ta.wins : null;
+  const losses = ta.losses != null ? ta.losses : (n != null && wins != null ? Math.max(0, n - wins) : null);
+  const required = ta.required_observations != null ? ta.required_observations : 120;
+  const winRate = ta.win_rate == null ? null : ta.win_rate * 100;
+  const lower = ta.ci90_lower_pct != null ? ta.ci90_lower_pct : ta.confidence_lower_bound_pct;
+  const chip = (label, val, cls='') => `<span class="analytics-chip${cls ? ` ${cls}` : ''}"><span>${label}</span><b>${val}</b></span>`;
+  grid.innerHTML = `<div class="analytics-chip-row"><div class="analytics-chip-row-line">${chip('Required Observations', n == null ? 'unmeasured' : `${n} / ${required}`, n != null && n >= required ? 'live' : 'warn')}${chip('Price Band', '$0.10 – $0.90')}</div><div class="analytics-chip-row-line">${chip('Win Rate', winRate == null ? 'unmeasured' : `${winRate.toFixed(1)}%`, winRate != null && winRate > 50 ? 'live' : 'bad')}${chip('90% Confidence Lower Bound', lower == null ? 'unmeasured' : `${Number(lower).toFixed(2)}%`, lower != null && lower > 1 ? 'live' : 'bad')}</div></div><div class="kpi-tile"><div class="kpi-label">Average Profit Per Close</div>${fmtVal(ta.expectancy_usd == null ? null : fmtUSD(ta.expectancy_usd), ta.expectancy_usd >= 0 ? ' positive' : ' negative')}<div class="hint">Inclusive of every close</div></div><div class="kpi-tile"><div class="kpi-label">Average Return</div>${fmtVal(ta.mean_return_pct == null ? null : fmtPct(ta.mean_return_pct), ta.mean_return_pct >= 0 ? ' positive' : ' negative')}<div class="hint">± ${ta.stdev_return_pct == null ? '--' : Number(ta.stdev_return_pct).toFixed(2) + '%'}</div></div><div class="kpi-tile"><div class="kpi-label">Win Rate</div>${fmtVal(winRate == null ? null : winRate.toFixed(1) + '%')}<div class="hint">${esc(ta.win_rate_ci95 ? `[${(ta.win_rate_ci95[0]*100).toFixed(0)}%–${(ta.win_rate_ci95[1]*100).toFixed(0)}%]` : 'Wilson interval unavailable')}</div></div><div class="kpi-tile"><div class="kpi-label">Observations</div>${fmtVal(n == null ? 'unmeasured' : `${n} (${wins == null ? '--' : wins} Wins / ${losses == null ? '--' : losses} Losses)`)}<div class="hint">Target: ${required}</div></div>`;
+  const distribution = Array.isArray(ta.pnl_distribution) ? ta.pnl_distribution : null;
+  const bars = distribution && distribution.length ? distribution.map(bucket => Number(bucket.count != null ? bucket.count : bucket.value != null ? bucket.value : 0)) : null;
+  const maxBar = bars ? Math.max(...bars, 1) : 1;
+  const histogram = bars ? bars.map((h,i) => `<i style="height:${(h / maxBar) * 100}%;background:${i < Math.ceil(bars.length / 3) ? 'var(--loss)' : 'var(--signal)'}></i>`).join('') : '<span class="analytics-unmeasured">PnL distribution unmeasured</span>';
+  charts.querySelector('#analytics-histogram-card').innerHTML = `<div class="analytics-chart-head"><h3>Inclusive PnL Histogram</h3><small>Every close counts</small></div><div class="analytics-hist-wrap"><div class="analytics-hist">${histogram}</div><div class="analytics-rail"><div class="analytics-rail-track"><span class="analytics-rail-zero" style="left:33%"></span><i class="analytics-rail-band ci-95" style="left:20%;width:58%;background:linear-gradient(90deg,rgba(59,130,246,.20),rgba(59,130,246,.58),rgba(59,130,246,.20))"></i><i class="analytics-rail-band ci-90" style="left:26%;width:46%;background:linear-gradient(90deg,var(--signal),var(--open))"></i><i class="analytics-rail-band ci-99" style="left:17%;width:66%;background:linear-gradient(90deg,rgba(248,113,113,.18),rgba(248,113,113,.5),rgba(248,113,113,.18))"></i><span class="analytics-rail-mean" style="left:48%"></span></div><small>90% CI · negative inclusion: ${lower != null && lower <= 0 ? 'Yes' : 'No'}</small></div></div><div class="analytics-ci-buttons" role="group" aria-label="Confidence interval selection"><button class="active" type="button" data-ci="90" aria-pressed="true">90% Confidence</button><button type="button" data-ci="95" aria-pressed="false">95% Confidence</button><button type="button" data-ci="99" aria-pressed="false">99% Confidence</button></div>`;
+  const ciButtons = charts.querySelectorAll('.analytics-ci-buttons button');
+  ciButtons.forEach(button => button.addEventListener('click', () => {
+    ciButtons.forEach(candidate => {
+      const active = candidate === button;
+      candidate.classList.toggle('active', active);
+      candidate.setAttribute('aria-pressed', String(active));
+    });
+    const rail = charts.querySelector('.analytics-rail-track');
+    if (rail) rail.dataset.confidence = button.dataset.ci || '90';
+  }));
+  const portfolioSeries = ta.portfolio_values || ta.portfolio_history || [];
+  const hasMeasuredPortfolio = Array.isArray(portfolioSeries) && portfolioSeries.length >= 2;
+  const fallbackSeries = Array.from({ length: 10 }, (_, i) => Number(start || value || 0) + i * (Number(realized || 0) / 9));
+  const points = (hasMeasuredPortfolio ? portfolioSeries : fallbackSeries).slice(-10).map(Number);
+  const minPoint = Math.min(...points);
+  const maxPoint = Math.max(...points);
+  const span = Math.max(maxPoint - minPoint, 1);
+  const line = points.map((point, i) => `${i ? 'L' : 'M'}${i * 10 + 2},${110 - ((point - minPoint) / span) * 82}`).join(' ');
+  charts.querySelector('#analytics-portfolio-card').innerHTML = `<div class="analytics-chart-head"><h3>Portfolio Net Value Over Time</h3><small>${hasMeasuredPortfolio ? 'Latest observations' : 'Unmeasured trend'} · ${esc(fmtUSD(start))} starting value</small></div><svg id="portfolioLine" class="analytics-line${hasMeasuredPortfolio ? '' : ' analytics-line-unmeasured'}" viewBox="0 0 95 125" role="img" aria-label="${hasMeasuredPortfolio ? 'Portfolio net value · latest observations' : 'Portfolio net value · unmeasured trend'}"><path d="M2,110 L92,110 L92,20 L2,20" fill="none" stroke="var(--border-strong)"/><path d="${line} L92,110 L2,110 Z" fill="var(--signal)" opacity=".12"/><path d="${line}" fill="none" stroke="var(--signal)" stroke-width="1.5"/><text x="2" y="123" fill="var(--text-muted)" font-size="3">${hasMeasuredPortfolio ? 'Start' : '--'}</text><text x="42" y="123" fill="var(--text-muted)" font-size="3">${hasMeasuredPortfolio ? 'Mid' : '--'}</text><text x="78" y="123" fill="var(--text-muted)" font-size="3">${hasMeasuredPortfolio ? 'Now' : '--'}</text><text x="2" y="18" fill="var(--text-muted)" font-size="3">$${esc(value == null ? '--' : Number(value).toFixed(0))}</text></svg>`;
+  gates.innerHTML = `<h3>Decision Gates</h3><table><thead><tr><th>Gate</th><th>What It Measures</th><th>Needs</th><th>This Run</th><th>Result</th></tr></thead><tbody><tr><td>Total Profit Stays Above 1% — 90% Confidence Lower Bound Is ${lower == null ? '--' : Number(lower).toFixed(2) + '%'}</td><td>Whether the observed return clears the confidence threshold</td><td>Above 1.00%</td><td>${lower == null ? '--' : Number(lower).toFixed(2) + '%'}</td><td><span class="analytics-gate-badge ${lower == null ? 'inconclusive' : lower > 1 ? 'go' : 'nogo'}">${lower == null ? 'Inconclusive' : lower > 1 ? 'GO' : 'NO-GO'}</span></td></tr><tr><td>Win Rate</td><td>Profitable closes</td><td>More Than Half Wins</td><td>${winRate == null ? '--' : winRate.toFixed(1) + '%'}</td><td><span class="analytics-gate-badge ${winRate == null ? 'inconclusive' : winRate > 50 ? 'go' : 'nogo'}">${winRate == null ? 'Inconclusive' : winRate > 50 ? 'GO' : 'NO-GO'}</span></td></tr><tr><td>Observations</td><td>Statistical power</td><td>More Than 120 Observations</td><td>${n == null ? '--' : n}</td><td><span class="analytics-gate-badge ${n == null ? 'inconclusive' : n >= 120 ? 'go' : 'inconclusive'}">${n == null ? 'Inconclusive' : n >= 120 ? 'GO' : 'Inconclusive'}</span></td></tr><tr><td>Markout Maturity</td><td>Adverse-selection evidence</td><td>At Least 25 Matured Samples</td><td>${ta.markout_samples ?? '--'}</td><td><span class="analytics-gate-badge ${(ta.markout_samples != null ? ta.markout_samples : 0) >= 25 ? 'go' : 'inconclusive'}">${(ta.markout_samples != null ? ta.markout_samples : 0) >= 25 ? 'GO' : 'Inconclusive'}</span></td></tr><tr><td>Realized Profit</td><td>Closed dollar outcome</td><td>Above $0.00</td><td>${realized == null ? '--' : fmtUSD(realized)}</td><td><span class="analytics-gate-badge ${realized == null ? 'inconclusive' : Number(realized) > 0 ? 'go' : 'nogo'}">${realized == null ? 'Inconclusive' : Number(realized) > 0 ? 'GO' : 'NO-GO'}</span></td></tr><tr><td>Run Return</td><td>Profit relative to starting value</td><td>Above 0.00%</td><td>${pct == null ? '--' : fmtPct(pct)}</td><td><span class="analytics-gate-badge ${pct == null ? 'inconclusive' : Number(pct) > 0 ? 'go' : 'nogo'}">${pct == null ? 'Inconclusive' : Number(pct) > 0 ? 'GO' : 'NO-GO'}</span></td></tr></tbody></table>`;
+}
+
 function renderKPIs(kpi, status) {
   renderRunProfitability(kpi);
   const grid = document.getElementById('kpi-grid');
@@ -655,6 +704,17 @@ function renderKPIs(kpi, status) {
       <div class="empty-state-title">No trading data yet</div>
       <div class="empty-state-msg">KPIs will appear when the bot makes its first spread capture.</div>
     </div>`;
+    const _totals = document.getElementById('analytics-totals');
+    const _charts = document.getElementById('analytics-charts');
+    const _gates = document.getElementById('analytics-gates');
+    if (_totals) _totals.innerHTML = '';
+    if (_charts) {
+      const _h = _charts.querySelector('#analytics-histogram-card');
+      const _p = _charts.querySelector('#analytics-portfolio-card');
+      if (_h) _h.innerHTML = '';
+      if (_p) _p.innerHTML = '';
+    }
+    if (_gates) _gates.innerHTML = '';
     return;
   }
 
@@ -703,6 +763,7 @@ function renderKPIs(kpi, status) {
       ${fmtVal(kpi.fills || 0)}
     </div>
   `;
+  renderAnalyticsSurface(kpi, status);
 }
 
 /* ── Render: Market Table (expandable rows — click to inspect individual orders) ── */

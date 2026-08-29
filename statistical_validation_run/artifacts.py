@@ -525,6 +525,10 @@ def rows_to_csv(rows: list[dict[str, Any]]) -> str:
     return buf.getvalue()
 
 
+# Public helper implementations remain here for compatibility. The promoted
+# mode-aware reporter imports and delegates to these helpers.
+
+
 def write_artifacts(
     artifact_dir: Path | str,
     *,

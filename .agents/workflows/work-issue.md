@@ -51,6 +51,7 @@ Delegate the actual coding to the specific orchestration workflow that fits the 
 
 Once the orchestration workflow completes and local tests pass, run a final sanity check.
 - Run the `/review` skill to self-audit the local diff for structural issues, LLM boundary violations, or performance regressions before committing.
+- Tests are an internal gate only — never present `pytest` output or counts as Owner verification (per `AGENTS.md` Owner Directive 2026-08-29). Owner verification is hands-on: launch the stack, open the dashboard, observe the report.
 
 ## Step 5: Shipping
 

@@ -61,7 +61,9 @@ function Resolve-RuntimeFile {
 # not resolved: a stale pre-rename copy only ever meant "not owned by menu".
 $DashPidFile = Join-Path $RunDir "live-dash.pids.json"
 $ShadowPidFile = Join-Path $RunDir "shadow-dash.pids.json"
-$ShadowDbPath  = Join-Path $ProjectPath "data/shadow.db"
+$ShadowDbPath  = $null
+$StatsDbPath   = $null
+$ShadowRunId   = $null
 $ShadowPort    = 8799
 $ShadowDashUrl = "http://127.0.0.1:$ShadowPort"
 $ShadowOutLog  = Join-Path $RunDir "shadow_dash.out.log"
@@ -120,7 +122,7 @@ $StackCmds = @{
     decide     = "python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5"
     guardrail  = "python -m scripts.global_stop_loss"
     dash       = "python -m dashboard.server --port 8799"
-    shadowDash = "python -m dashboard.server --db data/shadow.db --port 8799"
+    shadowDash = "python -m dashboard.server --db <per-run-shadow-db> --port 8799"
 }
 
 # ── Theme system (shared profile templates, self-contained fallback) ──
@@ -397,7 +399,7 @@ function Stop-Dashboard {
     return $true
 }
 
-# ── Shadow dashboard (data/shadow.db, same port 8799) ──
+# ── Shadow dashboard (per-run shadow_*.db, same port 8799) ──
 function Get-ShadowDashInstance {
     <# The recorded SHADOW dashboard that is still our process (start-ticks checked). #>
     if (-not (Test-Path $ShadowPidFile)) { return $null }
@@ -424,7 +426,7 @@ function Save-ShadowDashInstance {
             started_ticks = $DashProcess.StartTime.ToUniversalTime().Ticks
             started       = $DashProcess.StartTime.ToString("o")
             port          = $ShadowPort
-            db            = "data/shadow.db"
+            db            = $ShadowDbPath
         }
     }
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
@@ -439,7 +441,7 @@ function Save-ShadowDashInstance {
 function Test-ShadowDashboardServer {
     <# True when whatever is on :ShadowPort answers as a SHADOW dashboard
     (services.dash present AND db_is_production false — i.e. it serves
-    data/shadow.db). Guards shadow adoption so a live dashboard squatting on
+    a per-run shadow_*.db). Guards shadow adoption so a live dashboard squatting on
     the port is never recorded as shadow nor later stopped as one.
     #>
     try {
@@ -459,7 +461,7 @@ function Adopt-ShadowDashboardInstance {
 }
 
 function Start-ShadowDashboard {
-    <# Launch shadow dashboard detached: python -m dashboard.server --db data/shadow.db --port 8799 #>
+    <# Launch shadow dashboard detached with the current per-run shadow database. #>
     $inst = Get-ShadowDashInstance
     if ($null -ne $inst) {
         Lsh-Ok "Shadow dashboard already running (PID $($inst.pid), up $(Format-Uptime $inst.proc.StartTime))."
@@ -502,9 +504,9 @@ function Start-ShadowDashboard {
             return $true
         }
     }
-    Lsh-Step "Launching shadow dashboard (python -m dashboard.server --db data/shadow.db --port $ShadowPort)..."
+    Lsh-Step "Launching shadow dashboard (python -m dashboard.server --db $ShadowDbPath --port $ShadowPort)..."
     $dash = Start-Process -FilePath "python" `
-        -ArgumentList "-m", "dashboard.server", "--db", "data/shadow.db", "--port", "$ShadowPort" `
+        -ArgumentList "-m", "dashboard.server", "--db", $ShadowDbPath, "--port", "$ShadowPort" `
         -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $ShadowOutLog `
         -RedirectStandardError  $ShadowErrLog
@@ -521,7 +523,7 @@ function Start-ShadowDashboard {
         Remove-Item $ShadowPidFile -ErrorAction SilentlyContinue
         return $false
     }
-    Lsh-Ok "Shadow dashboard serving on $ShadowDashUrl (PID $($dash.Id), db=data/shadow.db)."
+    Lsh-Ok "Shadow dashboard serving on $ShadowDashUrl (PID $($dash.Id), db=$ShadowDbPath)."
     return $true
 }
 
@@ -551,7 +553,7 @@ function Stop-ShadowDashboard {
 function Stop-ShadowRun {
     <# Kill the shadow rehearsal bot (shadow_run) plus its scoped stop-loss
     watcher, matched by command line inside THIS repo. Live processes never pass
-    --db data/shadow.db, so the production stack is never matched. Used by the
+    --db <per-run-shadow-db>, so the production stack is never matched. Used by the
     shadow Stop action and by every global stop / reset wipe. #>
     try {
         $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop |
@@ -559,7 +561,7 @@ function Stop-ShadowRun {
                 $_.Name -match '^python' -and $_.CommandLine -and `
                 ($_.CommandLine -like "*$ProjectPath*") -and `
                 (($_.CommandLine -like "*core_brain.shadow_run*") -or `
-                 ($_.CommandLine -like "*scripts.global_stop_loss*" -and $_.CommandLine -like "*shadow.db*"))
+                 ($_.CommandLine -like "*scripts.global_stop_loss*" -and ($_.CommandLine -like "*shadow_*.db*" -or $_.CommandLine -like "*shadow.db*")))
             })
     } catch { return }
     if ($procs.Count -eq 0) { return }
@@ -601,7 +603,7 @@ function Open-Dashboard {
         $ok = Start-ShadowDashboard
         if ($ok) {
             Start-Process $ShadowDashUrl
-            Lsh-Ok "Opened $ShadowDashUrl (shadow db=data/shadow.db) in default browser."
+            Lsh-Ok "Opened $ShadowDashUrl (shadow db=$ShadowDbPath) in default browser."
         }
     }
     return $ok
@@ -917,7 +919,9 @@ function Show-Status {
     $shadowInst = Get-ShadowDashInstance
     if ($shadowInst) {
         Write-SectionHeader -Number "1b" -Title "SHADOW DASHBOARD" -Status "ON" -StatusStyle "Success"
-        Write-ProcessRow -Label "Shadow Dashboard" -Running $true -PidVal $shadowInst.pid -Path $StackPaths["shadowDash"] -ExtraInfo "$ShadowDashUrl (db=shadow.db)"
+        $dbInfo = if ($shadowInst -and $shadowInst.db) { $shadowInst.db } elseif ($sess -and $sess.shadow_db) { $sess.shadow_db } else { $ShadowDbPath }
+        if (-not $dbInfo) { $dbInfo = "per-run shadow_*.db" }
+        Write-ProcessRow -Label "Shadow Dashboard" -Running $true -PidVal $shadowInst.pid -Path $StackPaths["shadowDash"] -ExtraInfo "$ShadowDashUrl (db=$dbInfo)"
         Write-FileRow -Label "PID file" -Status "FOUND" -Path "runtime/shadow-dash.pids.json" -Dynamic ("PID {0} recorded" -f $shadowInst.pid)
     } elseif ($shadowInst -eq $null -and (Test-Path $ShadowPidFile)) {
         # has pidfile but not alive — stale
@@ -935,7 +939,7 @@ function Show-Status {
     if (Test-Path $ShadowSessionFile) { try { $sess = Get-Content $ShadowSessionFile -Raw | ConvertFrom-Json } catch {} }
     if ($sess -and $sess.screener -and $sess.screener.pid) {
         Write-SectionHeader -Number "1c" -Title "SHADOW RUN" -Status "RECORDED" -StatusStyle "Info"
-        foreach ($key in @(@{k="screener";l="Shadow Screener"}, @{k="loop";l="Rehearsal Loop"}, @{k="watcher";l="Stop-loss Watcher"})) {
+        foreach ($key in @(@{k="screener";l="Shadow Screener"}, @{k="loop";l="Rehearsal Loop"}, @{k="observer";l="Statistics Observer"}, @{k="watcher";l="Stop-loss Watcher"})) {
             $ent = $sess.($key.k)
             $alive = $false
             if ($ent -and $ent.pid) {
@@ -944,7 +948,9 @@ function Show-Status {
             }
             Write-ProcessRow -Label $key.l -Running $alive -PidVal $(if ($alive) { $ent.pid } else { $null }) -Path $StackPaths["shadowDash"] -RunCmd "python -m core_brain.shadow_run"
         }
-        Write-FileRow -Label "Session file" -Status "FOUND" -Path "runtime/shadow-session.json" -Dynamic "started $(Format-Uptime (Get-Date $sess.started))"
+        $dbRow = if ($sess.shadow_db) { "shadow_db=$($sess.shadow_db)" } else { "no shadow_db" }
+        $statsRow = if ($sess.stats_db) { "stats_db=$($sess.stats_db)" } else { "no stats_db" }
+        Write-FileRow -Label "Session file" -Status "FOUND" -Path "runtime/shadow-session.json" -Dynamic "started $(Format-Uptime (Get-Date $sess.started)); $dbRow; $statsRow"
     }
 
     # ── 2 · BOT STACK (dashboard API when up, processes.json otherwise) ──
@@ -1243,7 +1249,7 @@ function Clear-RuntimeState {
     # Shadow rehearsal artifacts, resolved through $ProjectPath so reset always
     # targets repository state regardless of the caller's working directory
     # (data/orders.db is never touched)
-    foreach ($relative in @("data/shadow.db", "data/shadow.db-wal", "data/shadow.db-shm",
+    foreach ($relative in @("data/shadow.db", "data/shadow.db-wal", "data/shadow.db-shm", # legacy cleanup: old shared per-run predecessor
                             "data/shadow_stat_verify.db", "data/shadow_stat_verify.db-wal", "data/shadow_stat_verify.db-shm",
                             "data/_preview_seed.db", "data/_preview_seed.db-wal", "data/_preview_seed.db-shm",
                             "data/_smoke_fleet.db", "data/_smoke_fleet.db-wal", "data/_smoke_fleet.db-shm",
@@ -1252,6 +1258,8 @@ function Clear-RuntimeState {
         if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue; $removed++ }
     }
     Get-ChildItem (Join-Path $ProjectPath "data") -Directory -Filter "shadow_stat_*" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    Get-ChildItem (Join-Path $ProjectPath "data") -File -Filter "stats_*.db*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    Get-ChildItem (Join-Path $ProjectPath "reports") -File -Filter "*_statistics_report*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
     Lsh-Ok "Runtime state wiped ($removed artifact(s) removed). data/orders.db untouched."
 }
@@ -1288,6 +1296,7 @@ function Stop-ShadowSession {
             if ($s.screener.pid)   { $null = Kill-RecordedPid -Name "shadow screener" -TargetPid $s.screener.pid   -StartedTicks $s.screener.started_ticks }
             if ($s.loop.pid)       { $null = Kill-RecordedPid -Name "shadow loop"      -TargetPid $s.loop.pid       -StartedTicks $s.loop.started_ticks }
             if ($s.watcher.pid)    { $null = Kill-RecordedPid -Name "shadow watcher"   -TargetPid $s.watcher.pid    -StartedTicks $s.watcher.started_ticks }
+            if ($s.observer.pid)   { $null = Kill-RecordedPid -Name "statistics observer" -TargetPid $s.observer.pid -StartedTicks $s.observer.started_ticks }
         }
         Remove-Item $ShadowSessionFile -ErrorAction SilentlyContinue
     }
@@ -1365,9 +1374,13 @@ function Reset-Environment {
     # 6 · START
     switch ($Mode) {
         "shadow" {
+            $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+            $ShadowRunId = "shadow-" + ([guid]::NewGuid().ToString("N").Substring(0, 12))
+            $ShadowDbPath = Join-Path $ProjectPath "data/shadow_${ts}_${ShadowRunId}.db"
+            $StatsDbPath = Join-Path $ProjectPath "data/stats_${ts}_${ShadowRunId}.db"
             if (Start-ShadowDashboard) {
                 Start-Process $ShadowDashUrl
-                Lsh-Ok "Opened $ShadowDashUrl in default browser (shadow db=data/shadow.db)."
+                Lsh-Ok "Opened $ShadowDashUrl in default browser (shadow db=$ShadowDbPath)."
                 if ($Minutes -gt 0) {
                     # Ordered rehearsal boot (no signer is ever loaded, so it
                     # spends nothing):
@@ -1400,13 +1413,19 @@ function Reset-Environment {
                     Lsh-Ok "Market screener loop running (PID $($screener.Id))."
                     # The rehearsal loop (the executor) - started now that the
                     # universe exists.
-                    Lsh-Step "Starting the rehearsal loop (python -m core_brain.shadow_run --minutes $Minutes --db data/shadow.db)..."
+                    Lsh-Step "Starting the rehearsal loop (python -m core_brain.shadow_run --minutes $Minutes --db $ShadowDbPath)..."
                     $shadowRun = Start-Process -FilePath "python" `
-                        -ArgumentList "-m", "core_brain.shadow_run", "--minutes", "$Minutes", "--db", "data/shadow.db" `
+                        -ArgumentList "-m", "core_brain.shadow_run", "--minutes", "$Minutes", "--db", $ShadowDbPath, "--run-id", $ShadowRunId `
                         -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
                         -RedirectStandardOutput (Join-Path $RunDir "shadow_run.out.log") `
                         -RedirectStandardError (Join-Path $RunDir "shadow_run.err.log")
-                    Lsh-Ok "Rehearsal loop running (PID $($shadowRun.Id), $Minutes minute(s)) - dashboard updates live from data/shadow.db."
+                    Lsh-Ok "Rehearsal loop running (PID $($shadowRun.Id), $Minutes minute(s)) - dashboard updates live from $ShadowDbPath."
+                    $observer = Start-Process -FilePath "python" `
+                        -ArgumentList "-m", "core_brain.statistics_observer", "--mode", "shadow", "--watch", $ShadowDbPath, "--run-id", $ShadowRunId, "--interval", "5", "--max-hours", (($Minutes / 60) + 0.08) `
+                        -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
+                        -RedirectStandardOutput (Join-Path $RunDir "statistics_observer.out.log") `
+                        -RedirectStandardError (Join-Path $RunDir "statistics_observer.err.log")
+                    Lsh-Ok "Statistics observer running (PID $($observer.Id), db=$StatsDbPath)."
                     # Scope the stop-loss watcher to this rehearsal's ring (the
                     # newest shadow-*.jsonl the loop just began writing). No
                     # run-scoped id is forced, so the dashboard resolves the run
@@ -1423,7 +1442,7 @@ function Reset-Environment {
                     $guardrail = $null
                     if ($ring) {
                         $guardrail = Start-Process -FilePath "python" `
-                            -ArgumentList "-m", "scripts.global_stop_loss", "--db", "data/shadow.db", "--ring", $ring `
+                            -ArgumentList "-m", "scripts.global_stop_loss",                            "--db", $ShadowDbPath, "--ring", $ring `
                             -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
                             -RedirectStandardOutput (Join-Path $RunDir "guardrail.out.log") `
                             -RedirectStandardError (Join-Path $RunDir "guardrail.err.log")
@@ -1434,13 +1453,23 @@ function Reset-Environment {
                     # Session record so option 5 stops every process; screener
                     # and watcher self-stop at the wall clock via a detached timer
                     # (the loop self-exits at $Minutes).
-                    [pscustomobject]@{
-                        screener = [pscustomobject]@{ pid = $screener.Id; started_ticks = $screener.StartTime.ToUniversalTime().Ticks }
-                        loop     = [pscustomobject]@{ pid = $shadowRun.Id; started_ticks = $shadowRun.StartTime.ToUniversalTime().Ticks }
-                        watcher  = $(if ($guardrail) { [pscustomobject]@{ pid = $guardrail.Id; started_ticks = $guardrail.StartTime.ToUniversalTime().Ticks } } else { $null })
-                        ring     = $ring
-                        started  = (Get-Date).ToString("o")
-                    } | ConvertTo-Json -Depth 5 | Set-Content -Path $ShadowSessionFile -Encoding UTF8
+                    $session = [ordered]@{
+                        started = (Get-Date).ToString("o")
+                        started_ticks = (Get-Date).ToUniversalTime().Ticks
+                        run_id = $ShadowRunId
+                        ShadowRunId = $ShadowRunId
+                        shadow_db = $ShadowDbPath
+                        ShadowDbPath = $ShadowDbPath
+                        stats_db = $StatsDbPath
+                        StatsDbPath = $StatsDbPath
+                        report_path = (Join-Path $ProjectPath "reports")
+                        screener = [ordered]@{ pid = $screener.Id; started_ticks = $screener.StartTime.ToUniversalTime().Ticks }
+                        loop = [ordered]@{ pid = $shadowRun.Id; started_ticks = $shadowRun.StartTime.ToUniversalTime().Ticks }
+                        observer = [ordered]@{ pid = $observer.Id; started_ticks = $observer.StartTime.ToUniversalTime().Ticks }
+                        watcher = if ($guardrail) { [ordered]@{ pid = $guardrail.Id; started_ticks = $guardrail.StartTime.ToUniversalTime().Ticks } } else { $null }
+                        ring = $ring
+                    }
+                    $session | ConvertTo-Json -Depth 5 | Set-Content -Path $ShadowSessionFile -Encoding UTF8
                     $killSec = [int]($Minutes * 60)
                     $timerTargets = @(@{ id = [int]$screener.Id; ticks = $screener.StartTime.ToUniversalTime().Ticks })
                     if ($guardrail) { $timerTargets += @{ id = [int]$guardrail.Id; ticks = $guardrail.StartTime.ToUniversalTime().Ticks } }

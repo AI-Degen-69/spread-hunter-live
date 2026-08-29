@@ -74,10 +74,34 @@
   <section id="tab-2" role="tabpanel" aria-labelledby="tab-btn-2" hidden>
     <!-- Run Profitability Banner — answers "was this run profitable?" -->
     <div id="run-profitability" class="card run-profitability" style="display:none;margin-bottom:16px" role="status" aria-live="polite">
-      <div class="font-display" style="font-size:12px;letter-spacing:0.08em;color:var(--text-muted);margin-bottom:8px">RUN PROFITABILITY — <span id="rp-run-id" class="mono"></span></div>
-      <div id="rp-verdict" class="rp-verdict"></div>
-      <div id="rp-details" class="mono rp-details"></div>
-      <div id="rp-venue" class="mono rp-venue"></div>
+      <div class="rp-line rp-header">
+        <div class="font-display" style="font-size:12px;letter-spacing:0.08em;color:var(--text-muted)">RUN PROFITABILITY — <span id="rp-run-id" class="mono"></span></div>
+        <div class="rp-tip">
+          <button class="info-bubble" type="button" aria-label="About this card">?</button>
+          <div class="info-tooltip">This card gives the bottom line for one run: did it make or lose money? RUN ID is the run these numbers belong to — everything on the card is scoped to that run, not your whole history.</div>
+        </div>
+      </div>
+      <div class="rp-line">
+        <div id="rp-verdict" class="rp-verdict"></div>
+        <div class="rp-tip">
+          <button class="info-bubble" type="button" aria-label="Verdict explained">?</button>
+          <div class="info-tooltip">The run's bottom line. Green border = made money, red border = lost, gray = no trades or break-even. If money is still in an open position that can move, the amount in parentheses is included so the headline reflects total (closed + open) P&amp;L.</div>
+        </div>
+      </div>
+      <div class="rp-line">
+        <div id="rp-details" class="mono rp-details"></div>
+        <div class="rp-tip">
+          <button class="info-bubble" type="button" aria-label="Details explained">?</button>
+          <div class="info-tooltip">Counts behind the verdict: fills are legs bought, quotes are bids rested, closes are finished positions. Win rate is the share of closes that profited. Expectancy is average P&amp;L per close (positive means it nets on average). Merges are pairs closed the proper way, hedged back to $1.00.</div>
+        </div>
+      </div>
+      <div class="rp-line">
+        <div id="rp-venue" class="mono rp-venue"></div>
+        <div class="rp-tip">
+          <button class="info-bubble" type="button" aria-label="Venue line explained">?</button>
+          <div class="info-tooltip">Ground truth from your Polymarket wallet during this run's window: account value at the start, at the end, and the difference. If unmeasured, no wallet sweep landed inside the window. The open-order count shows whether the run ended flat or left money resting on the book.</div>
+        </div>
+      </div>
     </div>
     <!-- Hero KPIs -->
     <div class="kpi-grid" id="kpi-grid">

@@ -1395,34 +1395,27 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         # One-line verdict for the banner. No new numbers beyond what is already
         # computed above — just a pre-formatted string so the dashboard never
         # has to re-derive the same conditional.
+        # Plain bottom-line verdict. W/L, merge count and the open-order tally
+        # live on the card's own lines (details + venue), so this bold headline
+        # is a single profitability statement and no fact is shown twice.
         if not closes and not fills:
-            _verdict = "NO TRADES — no fills, no closes, nothing to mark."
+            _verdict = "No trades yet — no fills or closes to mark."
             _verdict_level = "neutral"
         elif _profit_basis > 0:
-            _verdict = f"PROFITABLE: +${abs(realized_pnl):.2f} realized"
-            if unrealized_usd is not None and unrealized_usd != 0:
-                _verdict += f" ({total_pnl:+.2f} inc. unrealized)"
-            _verdict += f" · {len(wins)}W/{len(losses)}L"
+            _verdict = f"+${_profit_basis:.2f} net profit · ${realized_pnl:+.2f} realized"
             _verdict_level = "profit"
         elif _profit_basis < 0:
-            _verdict = f"LOSS: -${abs(realized_pnl):.2f} realized"
-            if unrealized_usd is not None and unrealized_usd != 0:
-                _verdict += f" ({total_pnl:+.2f} inc. unrealized)"
-            _verdict += f" · {len(wins)}W/{len(losses)}L"
+            _verdict = f"-${abs(_profit_basis):.2f} net loss · ${realized_pnl:+.2f} realized"
             _verdict_level = "loss"
         else:
-            _verdict = f"FLAT: ${realized_pnl:.2f} realized · {len(wins)}W/{len(losses)}L"
+            _verdict = "Break-even"
             _verdict_level = "neutral"
-        # Append open-order warning when relevant
-        if _open_orders > 0:
-            _verdict += f" · {_open_orders} open order(s) still resting"
-        # Surface whether the loss was all single-buy dumps vs real pair work
+        if unrealized_usd is not None and unrealized_usd != 0:
+            _verdict += f" · ${unrealized_usd:+.2f} open"
+        # Exit-shape counts (merges vs one-sided dumps) feed the card's details
+        # line, which owns the "all exits were naked" warning.
         _merge_closes = sum(1 for c in closes if c.get("method") == "merge")
         _single_exits = sum(1 for c in closes if c.get("method") in ("single_buy_exit", "naked_exit"))
-        if closes and _merge_closes == 0 and _single_exits == len(closes):
-            _verdict += " — no hedged pairs, all exits were naked"
-        elif _merge_closes > 0:
-            _verdict += f" — {_merge_closes} merge(s) captured"
 
         run_profitability = {
             "run_id": active_run_id,

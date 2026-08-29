@@ -1771,6 +1771,22 @@ def get_parameters(registry=None):
         am = reg.get_latest_account_mark()
         if am and am.get("account_value_usd") is not None and float(am["account_value_usd"]) > 0:
             portfolio_usd = float(am["account_value_usd"])
+        # Run-scoped lookup returns None after a restart until the new run writes
+        # its first sweep. Fall back to the most recent global mark so the
+        # Strategy Parameters tile and the Total Portfolio Value tile never
+        # diverge — both should read the same venue account value.
+        if portfolio_usd is None:
+            try:
+                all_marks = reg.get_all_account_marks()
+                if all_marks:
+                    # get_all_account_marks is ordered ASC by ts; last is newest
+                    for m in reversed(all_marks):
+                        v = m.get("account_value_usd")
+                        if v is not None and float(v) > 0:
+                            portfolio_usd = float(v)
+                            break
+            except BaseException:
+                pass
     except BaseException as exc:
         logger.debug("get_parameters: using bankroll fallback (%s)", exc)
 

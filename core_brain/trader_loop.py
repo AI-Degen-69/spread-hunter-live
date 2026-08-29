@@ -715,20 +715,26 @@ def _submit_intents(client, registry, market, intents, cfg) -> int:
     if not intents:
         return 0
 
+    # Dynamic caps scale with live account value (AGENTS.md). When the trader
+    # loop has already merged the latest venue account_value into base_cfg via
+    # _fleet_state, use those; otherwise fall back to the static venue constants.
+    max_order_usd = float(getattr(cfg, "max_order_usd", MAX_ORDER_USD)) if cfg is not None else MAX_ORDER_USD
+    max_total_usd = float(getattr(cfg, "max_total_usd", MAX_TOTAL_USD)) if cfg is not None else MAX_TOTAL_USD
+
     total_cost = sum(i.price * i.size for i in intents)
     for i in intents:
-        if i.price * i.size > MAX_ORDER_USD:
+        if i.price * i.size > max_order_usd:
             raise RuntimeError(
                 f"leg {i.side} ${i.price * i.size:.2f} exceeds "
-                f"MAX_ORDER_USD ${MAX_ORDER_USD:.2f}")
+                f"MAX_ORDER_USD ${max_order_usd:.2f}")
     already = open_notional(client)
     if already is None:
         raise RuntimeError(
             "Cannot check MAX_TOTAL_USD cap: venue open_orders unreachable")
-    if already + total_cost > MAX_TOTAL_USD:
+    if already + total_cost > max_total_usd:
         raise RuntimeError(
             f"open ${already:.2f} + ${total_cost:.2f} exceeds "
-            f"MAX_TOTAL_USD ${MAX_TOTAL_USD:.2f}")
+            f"MAX_TOTAL_USD ${max_total_usd:.2f}")
 
     now_ms = int(time.time() * 1000)
     pair_id = f"pair-{uuid.uuid4().hex[:12]}"
@@ -942,6 +948,19 @@ def _fleet_state(registry, cfg) -> dict:
                 am = registry.get_latest_account_mark()
                 if am and am.get("account_value_usd") is not None and float(am["account_value_usd"]) > 0:
                     portfolio_usd = float(am["account_value_usd"])
+                # Fallback to global latest when run-scoped mark is absent
+                # (new run_id with no sweep yet — same fix as dashboard get_parameters)
+                if portfolio_usd is None and hasattr(registry, "get_all_account_marks"):
+                    try:
+                        all_marks = registry.get_all_account_marks()
+                        if all_marks:
+                            for m in reversed(all_marks):
+                                v = m.get("account_value_usd")
+                                if v is not None and float(v) > 0:
+                                    portfolio_usd = float(v)
+                                    break
+                    except Exception:
+                        pass
             except Exception:
                 pass
         if portfolio_usd is None and hasattr(registry, "get_all_float_marks"):
@@ -951,6 +970,9 @@ def _fleet_state(registry, cfg) -> dict:
                     from core_brain.order_registry import get_run_id
                     active_rid = get_run_id()
                     run_fms = [fm for fm in fms if (not fm.get("run_id") or fm.get("run_id") == active_rid)] if active_rid else fms
+                    # Fallback to most recent global mark when filtered set is empty
+                    if not run_fms:
+                        run_fms = fms
                     if run_fms:
                         latest = run_fms[-1]
                         unrealized = latest.get("unrealized_usd")

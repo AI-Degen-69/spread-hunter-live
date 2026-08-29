@@ -49,6 +49,6 @@ operator can already see on their own.
 5. The operator runs the order-placing commands. Agents run read-only and closing
    commands, and may run an opening command only when the operator says so in that
    session.
-6. No verification/CI/reporting commands. Never use `pytest`, `gh issue/pr view`, `git`, or
+6. No verification/CI/reporting commands. Never use `pytest`, `gh issue view`, `gh pr view`, `git`, or
    "confirm merged / closed / green" as a step. The block proves the change by having the
    operator launch, open, click, and observe — not by re-reading state they already see.

@@ -640,6 +640,50 @@ function Stop-ShadowRun {
     }
 }
 
+function Start-TsBridge {
+    <# Launch the TypeScript dashboard bridge (server.ts) detached on :8800.
+       It reverse-proxies GET /api/* to the Python dashboard on :8799 and
+       injects the live control token into the HTML it serves. #>
+    param([string]$LogPrefix = "ts-bridge")
+    $log = Join-Path $RunDir "$LogPrefix.log"
+    $err = Join-Path $RunDir "$LogPrefix.err.log"
+    # Stop any orphaned bridge (only node running server.ts in this repo).
+    Stop-TsBridge
+    Start-Sleep -Milliseconds 500
+    # cmd.exe redirects node's stdout/stderr to the per-session log files while
+    # the bridge stays fully detached (no stream readers to buffer or block).
+    $cmd = "set PORT=8800&& set PY_DASH_URL=$ShadowDashUrl&& node server.ts >""" + $log + """ 2>""" + $err + """"
+    $proc = Start-Process -FilePath "cmd.exe" -ArgumentList "/c", $cmd `
+        -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru
+    $deadline = (Get-Date).AddSeconds(8)
+    $ok = $false
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 400
+        try { if ((Invoke-WebRequest -Uri "http://127.0.0.1:8800/" -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200) { $ok = $true; break } } catch {}
+        $proc.Refresh()
+        if ($proc.HasExited) { break }
+    }
+    if (-not $ok) { throw "TS bridge did not come up on :8800 (see $err)" }
+    return @{ pid = $proc.Id; port = 8800 }
+}
+
+function Stop-TsBridge {
+    <# Stop the TS bridge (and any orphaned node/cmd running server.ts from
+       this repo). The node process command line is just `node server.ts` (no
+       full path), so we match on the `server.ts` token, which is unique to
+       this project's bridge — the dev MCP processes never run server.ts. #>
+    try {
+        $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                $_.Name -match '^(node|cmd)\.exe$' -and `
+                $_.CommandLine -and $_.CommandLine -match 'server\.ts'
+            })
+        foreach ($p in $procs) {
+            taskkill /F /T /PID $p.ProcessId 2>$null | Out-Null
+        }
+    } catch {}
+}
+
 function Open-Dashboard {
     <# "Host & Open Dashboard": claim :8799 for the requested store and open
     the dashboard in the browser WITHOUT wiping any trading or runtime state.
@@ -999,6 +1043,8 @@ function Show-Status {
     }
 
     # ── 1b · SHADOW DASHBOARD ──
+    $sess = $null
+    if (Test-Path $ShadowSessionFile) { try { $sess = Get-Content $ShadowSessionFile -Raw | ConvertFrom-Json } catch {} }
     $shadowInst = Get-ShadowDashInstance
     if ($shadowInst) {
         Write-SectionHeader -Number "1b" -Title "SHADOW DASHBOARD" -Status "ON" -StatusStyle "Success"
@@ -1013,6 +1059,9 @@ function Show-Status {
         )
         Write-ProcessRow -Label "Shadow Dashboard" -Running $true -PidVal $shadowInst.pid -Path $StackPaths["shadowDash"] -ExtraInfo $extraInfo
         Write-FileRow -Label "PID file" -Status "FOUND" -Path "runtime/shadow-dash.pids.json" -Dynamic ("PID {0} recorded" -f $shadowInst.pid)
+        $tsPid = if ($sess -and $sess.ts_bridge -and $sess.ts_bridge.pid) { $sess.ts_bridge.pid } else { $null }
+        $tsAlive = $null -ne $tsPid -and (Get-Process -Id $tsPid -ErrorAction SilentlyContinue)
+        Write-ProcessRow -Label "TS Bridge" -Running $tsAlive -PidVal $(if ($tsAlive) { $tsPid } else { $null }) -Path "server.ts" -ExtraInfo @(@{ t = "http://127.0.0.1:8800"; c = 'Link' }, @{ t = " -> :8799"; c = 'Neutral' })
     } elseif ($shadowInst -eq $null -and (Test-Path $ShadowPidFile)) {
         # has pidfile but not alive — stale
         Write-SectionHeader -Number "1b" -Title "SHADOW DASHBOARD" -Status "STALE" -StatusStyle "Warning"
@@ -1025,8 +1074,6 @@ function Show-Status {
     }
 
     # ── 1c · SHADOW RUN (recorded session: screener + rehearsal loop + scoped watcher) ──
-    $sess = $null
-    if (Test-Path $ShadowSessionFile) { try { $sess = Get-Content $ShadowSessionFile -Raw | ConvertFrom-Json } catch {} }
     if ($sess -and $sess.screener -and $sess.screener.pid) {
         Write-SectionHeader -Number "1c" -Title "SHADOW RUN" -Status "RECORDED" -StatusStyle "Info"
         foreach ($key in @(@{k="screener";l="Shadow Screener"}, @{k="loop";l="Rehearsal Loop"}, @{k="observer";l="Statistics Observer"}, @{k="watcher";l="Stop-loss Watcher"})) {
@@ -1420,6 +1467,7 @@ function Stop-ShadowSession {
         }
         Remove-Item $ShadowSessionFile -ErrorAction SilentlyContinue
     }
+    $null = Stop-TsBridge
     $null = Stop-ShadowDashboard
 }
 
@@ -1653,6 +1701,13 @@ function Reset-Environment {
                     -RedirectStandardOutput (Join-Path $RunDir "validation_guardrail.out.log") -RedirectStandardError (Join-Path $RunDir "validation_guardrail.err.log")
                 Lsh-Ok "Stop-loss watcher started (PID $($guardrail.Id))."
                 $session = [ordered]@{ started=(Get-Date).ToString("o"); run_id=$ShadowRunId; shadow_db=$ShadowDbPath; stats_db=$StatsDbPath; report_path=$reportPath; loop=[ordered]@{pid=$validation.Id; started_ticks=$validation.StartTime.ToUniversalTime().Ticks}; screener=[ordered]@{pid=$screener.Id; started_ticks=$screener.StartTime.ToUniversalTime().Ticks}; observer=[ordered]@{pid=$observer.Id; started_ticks=$observer.StartTime.ToUniversalTime().Ticks}; watcher=[ordered]@{pid=$guardrail.Id; started_ticks=$guardrail.StartTime.ToUniversalTime().Ticks}; ring=$ring }
+                try {
+                    $tsBridge = Start-TsBridge -LogPrefix "ts-bridge-$ShadowRunId"
+                    $session.ts_bridge = [ordered]@{ pid = $tsBridge.pid; port = $tsBridge.port }
+                    Lsh-Ok "TS dashboard bridge on http://127.0.0.1:8800 (PID $($tsBridge.pid)) -> proxies :8799"
+                } catch {
+                    Lsh-Warn ".TS bridge did not start: $($_.Exception.Message). Dashboard still available at $ShadowDashUrl."
+                }
                 $session | ConvertTo-Json -Depth 5 | Set-Content -Path $ShadowSessionFile -Encoding UTF8
                 Write-Host ""
                 Write-ProfileRuleWithText -Text "OVERNIGHT STATISTICS RUNNING" -Style "Success"

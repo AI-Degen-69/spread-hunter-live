@@ -930,6 +930,23 @@ function Show-Status {
         Write-FileRow -Label "PID file" -Status "MISSING" -Path "runtime/shadow-dash.pids.json" -Dynamic "no PID file"
     }
 
+    # ── 1c · SHADOW RUN (recorded session: screener + rehearsal loop + scoped watcher) ──
+    $sess = $null
+    if (Test-Path $ShadowSessionFile) { try { $sess = Get-Content $ShadowSessionFile -Raw | ConvertFrom-Json } catch {} }
+    if ($sess -and $sess.screener -and $sess.screener.pid) {
+        Write-SectionHeader -Number "1c" -Title "SHADOW RUN" -Status "RECORDED" -StatusStyle "Info"
+        foreach ($key in @(@{k="screener";l="Shadow Screener"}, @{k="loop";l="Rehearsal Loop"}, @{k="watcher";l="Stop-loss Watcher"})) {
+            $ent = $sess.($key.k)
+            $alive = $false
+            if ($ent -and $ent.pid) {
+                $p = Get-Process -Id $ent.pid -ErrorAction SilentlyContinue
+                $alive = ($null -ne $p) -and ($null -ne $ent.started_ticks) -and ($null -ne $p.StartTime) -and ($p.StartTime.ToUniversalTime().Ticks -eq [int64]$ent.started_ticks)
+            }
+            Write-ProcessRow -Label $key.l -Running $alive -PidVal $(if ($alive) { $ent.pid } else { $null }) -Path $StackPaths["shadowDash"] -RunCmd "python -m core_brain.shadow_run"
+        }
+        Write-FileRow -Label "Session file" -Status "FOUND" -Path "runtime/shadow-session.json" -Dynamic "started $(Format-Uptime (Get-Date $sess.started))"
+    }
+
     # ── 2 · BOT STACK (dashboard API when up, processes.json otherwise) ──
     $status = $null
     if ($portUp) {

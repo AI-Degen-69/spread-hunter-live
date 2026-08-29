@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as _datetime
+import re
 from pathlib import Path
 from typing import Any
 
@@ -58,7 +59,8 @@ def write_statistics_report(
     timestamp = _datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     destination = Path(out_dir) if out_dir is not None else Path("reports")
     destination.mkdir(parents=True, exist_ok=True)
-    report_path = destination / f"{timestamp}_{mode}_statistics_report.md"
+    safe_run_id = re.sub(r"[^A-Za-z0-9.-]+", "_", run_id).strip("._") or "run"
+    report_path = destination / f"{timestamp}_{mode}_{safe_run_id}_statistics_report.md"
     text = render_report_md(
         run_id=run_id,
         db_path=db,

@@ -380,12 +380,12 @@ header {
 .analytics-chip.warn { color:#fbbf24; background:var(--amber-bg); border-color:var(--amber-border); }
 .analytics-chip.bad { color:#fca5a5; background:var(--red-bg); border-color:var(--red-border); }
 .analytics-chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:stretch; }
-.analytics-chart-card { min-width:0; min-height:160px; }
+.analytics-chart-card { min-width:0; min-height:280px; aspect-ratio:1; height:auto; }
 .analytics-chart-card h3 { font-size:14px; margin:0; letter-spacing:.04em; }
 .analytics-chart-head { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:10px; }
 .analytics-chart-head small { color:var(--text-muted); font:11px 'JetBrains Mono',monospace; }
-.analytics-hist-wrap { border:1px solid var(--border-subtle); border-radius:10px; overflow:hidden; }
-.analytics-hist { height:140px; display:grid; grid-template-columns:repeat(14,1fr); align-items:end; gap:5px; padding:12px 12px 0; background:rgba(255,255,255,.02); border-radius:10px 10px 0 0; }
+.analytics-hist-wrap { border:1px solid var(--border-subtle); border-radius:10px; overflow:hidden; aspect-ratio:1; min-height:320px; }
+.analytics-hist { height:280px; display:grid; grid-template-columns:repeat(14,1fr); align-items:end; gap:5px; padding:12px 12px 0; background:rgba(255,255,255,.02); border-radius:10px 10px 0 0; }
 .analytics-hist i { min-height:4px; border-radius:6px 6px 0 0; }
 .analytics-rail { height:34px; display:flex; align-items:center; gap:10px; padding:0 12px; margin-top:0; border-top:1px solid var(--border-subtle); background:rgba(255,255,255,.04); border-radius:0 0 10px 10px; }
 .analytics-rail-track { flex:1; height:8px; position:relative; background:rgba(255,255,255,.1); border-radius:999px; }
@@ -404,7 +404,9 @@ header {
 .analytics-ci-buttons { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
 .analytics-ci-buttons button { min-height:36px; padding:7px 10px; border:1px solid var(--border-strong); border-radius:7px; background:var(--bg-surface-raised); color:var(--text-secondary); font:600 11px Inter,sans-serif; cursor:pointer; }
 .analytics-ci-buttons button.active { color:var(--text-primary); border-color:var(--signal); }
-.analytics-line { width:100%; min-height:150px; display:block; }
+.analytics-line { width:100%; min-height:150px; height:calc(100% - 38px); display:block; }
+.analytics-line-unmeasured { stroke-dasharray:4 3; }
+.analytics-unmeasured { color:var(--text-muted); font:600 12px Inter,sans-serif; align-self:center; justify-self:center; }
 .analytics-gates { overflow:auto; }
 .analytics-gates h3 { margin:0 0 8px; font-size:14px; }
 .analytics-gates table { min-width:700px; }

@@ -919,7 +919,7 @@ function Show-Status {
     $shadowInst = Get-ShadowDashInstance
     if ($shadowInst) {
         Write-SectionHeader -Number "1b" -Title "SHADOW DASHBOARD" -Status "ON" -StatusStyle "Success"
-        $dbInfo = if ($sess -and $sess.shadow_db) { $sess.shadow_db } else { $ShadowDbPath }
+        $dbInfo = if ($shadowInst -and $shadowInst.db) { $shadowInst.db } elseif ($sess -and $sess.shadow_db) { $sess.shadow_db } else { $ShadowDbPath }
         if (-not $dbInfo) { $dbInfo = "per-run shadow_*.db" }
         Write-ProcessRow -Label "Shadow Dashboard" -Running $true -PidVal $shadowInst.pid -Path $StackPaths["shadowDash"] -ExtraInfo "$ShadowDashUrl (db=$dbInfo)"
         Write-FileRow -Label "PID file" -Status "FOUND" -Path "runtime/shadow-dash.pids.json" -Dynamic ("PID {0} recorded" -f $shadowInst.pid)
@@ -1374,14 +1374,14 @@ function Reset-Environment {
     # 6 · START
     switch ($Mode) {
         "shadow" {
+            $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+            $ShadowRunId = "shadow-" + ([guid]::NewGuid().ToString("N").Substring(0, 12))
+            $ShadowDbPath = Join-Path $ProjectPath "data/shadow_${ts}_${ShadowRunId}.db"
+            $StatsDbPath = Join-Path $ProjectPath "data/stats_${ts}_${ShadowRunId}.db"
             if (Start-ShadowDashboard) {
                 Start-Process $ShadowDashUrl
                 Lsh-Ok "Opened $ShadowDashUrl in default browser (shadow db=$ShadowDbPath)."
                 if ($Minutes -gt 0) {
-                    $ts = Get-Date -Format "yyyyMMdd_HHmmss"
-                    $ShadowRunId = "shadow-" + ([guid]::NewGuid().ToString("N").Substring(0, 12))
-                    $ShadowDbPath = Join-Path $ProjectPath "data/shadow_${ts}_${ShadowRunId}.db"
-                    $StatsDbPath = Join-Path $ProjectPath "data/stats_${ts}_${ShadowRunId}.db"
                     # Ordered rehearsal boot (no signer is ever loaded, so it
                     # spends nothing):
                     #  1. MARKET SCREENER fills the universe feed first, so the
@@ -1450,18 +1450,26 @@ function Reset-Environment {
                     } else {
                         Lsh-Warn "Could not resolve the rehearsal ring; stop-loss watcher not engaged."
                     }
-                    $session = [ordered]@{ started = (Get-Date).ToString("o"); run_id = $ShadowRunId; shadow_db = $ShadowDbPath; stats_db = $StatsDbPath; report_path = (Join-Path $ProjectPath "reports") ; screener = @{ pid = $screener.Id }; loop = @{ pid = $shadowRun.Id }; observer = @{ pid = $observer.Id }; watcher = if ($guardrail) { @{ pid = $guardrail.Id } } else { $null } }
-                    $session | ConvertTo-Json -Depth 5 | Set-Content $ShadowSessionFile -Encoding UTF8
                     # Session record so option 5 stops every process; screener
                     # and watcher self-stop at the wall clock via a detached timer
                     # (the loop self-exits at $Minutes).
-                    [pscustomobject]@{
-                        screener = [pscustomobject]@{ pid = $screener.Id; started_ticks = $screener.StartTime.ToUniversalTime().Ticks }
-                        loop     = [pscustomobject]@{ pid = $shadowRun.Id; started_ticks = $shadowRun.StartTime.ToUniversalTime().Ticks }
-                        watcher  = $(if ($guardrail) { [pscustomobject]@{ pid = $guardrail.Id; started_ticks = $guardrail.StartTime.ToUniversalTime().Ticks } } else { $null })
-                        ring     = $ring
-                        started  = (Get-Date).ToString("o")
-                    } | ConvertTo-Json -Depth 5 | Set-Content -Path $ShadowSessionFile -Encoding UTF8
+                    $session = [ordered]@{
+                        started = (Get-Date).ToString("o")
+                        started_ticks = (Get-Date).ToUniversalTime().Ticks
+                        run_id = $ShadowRunId
+                        ShadowRunId = $ShadowRunId
+                        shadow_db = $ShadowDbPath
+                        ShadowDbPath = $ShadowDbPath
+                        stats_db = $StatsDbPath
+                        StatsDbPath = $StatsDbPath
+                        report_path = (Join-Path $ProjectPath "reports")
+                        screener = [ordered]@{ pid = $screener.Id; started_ticks = $screener.StartTime.ToUniversalTime().Ticks }
+                        loop = [ordered]@{ pid = $shadowRun.Id; started_ticks = $shadowRun.StartTime.ToUniversalTime().Ticks }
+                        observer = [ordered]@{ pid = $observer.Id; started_ticks = $observer.StartTime.ToUniversalTime().Ticks }
+                        watcher = if ($guardrail) { [ordered]@{ pid = $guardrail.Id; started_ticks = $guardrail.StartTime.ToUniversalTime().Ticks } } else { $null }
+                        ring = $ring
+                    }
+                    $session | ConvertTo-Json -Depth 5 | Set-Content -Path $ShadowSessionFile -Encoding UTF8
                     $killSec = [int]($Minutes * 60)
                     $timerTargets = @(@{ id = [int]$screener.Id; ticks = $screener.StartTime.ToUniversalTime().Ticks })
                     if ($guardrail) { $timerTargets += @{ id = [int]$guardrail.Id; ticks = $guardrail.StartTime.ToUniversalTime().Ticks } }

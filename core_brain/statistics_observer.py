@@ -27,7 +27,8 @@ def observe(
     if mode not in {"shadow", "live"}:
         raise ValueError("mode must be shadow or live")
     watch_path = Path(watch)
-    assert_not_production_registry(watch_path)
+    if mode == "shadow":
+        assert_not_production_registry(watch_path)
     store = StatisticsStore.create(data_dir, datetime.datetime.now().strftime("%Y%m%d_%H%M%S"), run_id)
     started = time.monotonic()
     count = 0

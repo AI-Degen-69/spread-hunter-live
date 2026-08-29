@@ -55,5 +55,5 @@ def test_shadow_vs_live_disclaimer(tmp_path: Path):
     live_text = Path(live["report_path"]).read_text(encoding="utf-8")
     assert "rehearsal, not results" in shadow_text
     assert "observational, read-only, live caveats" in live_text
-    assert Path(shadow["report_path"]).name.endswith("_shadow_statistics_report.md")
-    assert Path(live["report_path"]).name.endswith("_live_statistics_report.md")
+    assert Path(shadow["report_path"]).name.endswith("_shadow_run-1_statistics_report.md")
+    assert Path(live["report_path"]).name.endswith("_live_run-1_statistics_report.md")

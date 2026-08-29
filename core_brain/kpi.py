@@ -583,6 +583,11 @@ def _funnel_from_pipeline(
     }
 
 
+def _is_pipeline_shadow_db(db_path: Path | str) -> bool:
+    path = Path(db_path).resolve()
+    return path.name.startswith("shadow_") and path.suffix == ".db"
+
+
 def _pipeline_sourced_dbs() -> set[Path]:
     """Databases whose funnel may be sourced from the screener's own snapshot.
 
@@ -596,13 +601,7 @@ def _pipeline_sourced_dbs() -> set[Path]:
     screener funnel, and the constant is imported rather than restated so the
     two modules cannot drift apart.
     """
-    from core_brain.shadow_run import DEFAULT_SHADOW_DB
-
-    return {
-        DEFAULT_DB_PATH.resolve(),
-        Path(DEFAULT_SHADOW_DB).resolve(),
-        (REPO_ROOT / DEFAULT_SHADOW_DB).resolve(),
-    }
+    return {DEFAULT_DB_PATH.resolve()}
 
 
 # The pessimistic report variant (Issue #55) charges a conversion gas the base
@@ -1060,7 +1059,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # fall back to runtime market-event telemetry when the ranker hasn't written
     # a snapshot, or when serving a non-production db (a test/smoke db), where
     # the repo's snapshot would misrepresent that db's own telemetry.
-    if db_path is None or Path(db_path).resolve() in _pipeline_sourced_dbs():
+    if db_path is None or Path(db_path).resolve() in _pipeline_sourced_dbs() or _is_pipeline_shadow_db(db_path):
         pipeline_funnel = _funnel_from_pipeline(by_mkt)
     else:
         pipeline_funnel = None

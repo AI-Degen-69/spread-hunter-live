@@ -17,7 +17,7 @@ This document defines my core responsibilities, default job, and operating princ
 * `/orch-add-feature` - Builds brand-new features end-to-end using strict TDD.
 * `/orch-change-feature` - Alters existing, working features to new behaviors by updating tests first.
 * `/orch-fix-defect` - Systematically reproduces bugs in tests before attempting to fix them.
-* `verification-before-completion` - Proves code works locally before claiming a task is finished.
+* `verification-before-completion` - Proves code works locally before claiming a task is finished. Tests are run silently by the agent; Owner verification is hands-on (menu/dashboard/report), never `pytest` (Owner Directive 2026-08-29).
 * `doubt-driven-development` - Performs an adversarial review of critical logic to catch blind spots and assumptions.
 
 ## Git and Pull Request Management

@@ -159,12 +159,12 @@ def test_funnel_from_pipeline_defaults_to_repo_run_dir(monkeypatch, tmp_path):
     assert f["graduated"][0]["condition_id"] == "0x1"
 
 
-def test_report_funnel_allowed_for_default_shadow_db(monkeypatch, tmp_path):
-    """The default shadow database path resolves to pipeline snapshot funnel."""
+def test_report_funnel_allowed_for_explicit_shadow_db(monkeypatch, tmp_path):
+    """An explicit per-run shadow database resolves to pipeline snapshot funnel."""
     import core_brain.kpi as kpi_mod
     from core_brain.order_registry import init_db
 
-    shadow_db = tmp_path / "data" / "shadow.db"
+    shadow_db = tmp_path / "data" / "shadow_20260829_120000_run-a.db"
     shadow_db.parent.mkdir(parents=True, exist_ok=True)
     init_db(shadow_db)
 
@@ -212,20 +212,12 @@ def test_report_funnel_excluded_for_custom_db_path(monkeypatch, tmp_path):
     assert rep["funnel"]["filters"][0]["n"] == 1
 
 
-def test_report_funnel_allowed_for_shadow_db_resolved_from_cwd(monkeypatch, tmp_path):
-    """A shadow run started outside the repo still gets the screener funnel.
-
-    `shadow_run.DEFAULT_SHADOW_DB` is repo-relative, so its real location follows
-    the process CWD. Hard-coding `REPO_ROOT / "data" / "shadow.db"` in the
-    allowlist misses that db and silently downgrades the report to runtime
-    telemetry.
-    """
+def test_report_funnel_allowed_for_explicit_shadow_db_from_cwd(monkeypatch, tmp_path):
+    """An explicit per-run shadow database started outside the repo still gets the screener funnel."""
     import core_brain.kpi as kpi_mod
     from core_brain.order_registry import init_db
-    from core_brain.shadow_run import DEFAULT_SHADOW_DB
-
     workdir = tmp_path / "elsewhere"
-    shadow_db = workdir / DEFAULT_SHADOW_DB
+    shadow_db = workdir / "data" / "shadow_20260829_120000_run-a.db"
     shadow_db.parent.mkdir(parents=True, exist_ok=True)
     init_db(shadow_db)
 

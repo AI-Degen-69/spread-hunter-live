@@ -2,6 +2,12 @@
 
 Every change ships with two proofs. Both are required before reporting the work done.
 
+> **Owner Standing Directive 2026-08-29:** For the Owner, the automated proof is
+> background-only and is never "meat to check." The Owner has seen green tests while the
+> feature remained buggy, so a passed suite proves nothing to him. The only verification
+> that matters is hands-on surface behavior (§2). Never instruct the Owner to run `pytest`
+> or present test counts as evidence — run them silently yourself.
+
 ## 1. Automated — run it yourself
 
 `python -m pytest -q` green, and every changed behaviour covered by a test that fails

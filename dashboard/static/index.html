@@ -103,17 +103,15 @@
         </div>
       </div>
     </div>
-    <!-- Hero KPIs -->
-    <div class="kpi-grid" id="kpi-grid">
-      <!-- KPIs rendered by JS -->
-    </div>
-
-    <!-- Return Distribution -->
-    <div class="card" style="margin-top:16px">
-      <div class="font-display" style="font-size:14px;margin-bottom:12px">RETURN DISTRIBUTION</div>
-      <div id="dist-container">
-        <div class="empty-state"><div class="empty-state-title">No trades yet</div><div class="empty-state-msg">The bell curve will appear when the bot makes its first spread capture.</div></div>
+    <div id="analytics-surface" class="analytics-surface">
+      <div id="analytics-totals" class="analytics-totals"></div>
+      <div id="kpi-grid" class="kpi-grid analytics-squares"></div>
+      <div id="analytics-charts" class="analytics-chart-grid">
+        <div id="analytics-histogram-card" class="card analytics-chart-card"></div>
+        <div id="analytics-portfolio-card" class="card analytics-chart-card"></div>
       </div>
+      <div id="analytics-gates" class="card analytics-gates"></div>
+    <div id="dist-container" hidden></div>
     </div>
 
     <!-- Market Inspection Table -->

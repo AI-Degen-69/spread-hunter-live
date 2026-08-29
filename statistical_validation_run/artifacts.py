@@ -563,12 +563,25 @@ def write_artifacts(
         closes, threshold_pct=cfg.stat_gate_threshold_pct,
     )
 
+    # Issue #55: GO must survive pessimism, so the headline verdict is the thing
+    # the sensitivity gate can veto. When the primary verdict is GO but the
+    # sensitivity gate is not, a GO on the cover of the same report would say the
+    # opposite of the ticket -- downgrade it to the sensitivity verdict. A
+    # primary NO-GO or INCONCLUSIVE already fails, so it is left untouched (it
+    # never upgrades on a weaker gate).
+    if verdict == "GO" and sensitivity["verdict"] != "GO":
+        effective_verdict = sensitivity["verdict"]
+        effective_reason = sensitivity["verdict_reason"]
+    else:
+        effective_verdict = verdict
+        effective_reason = verdict_reason
+
     report = dict(kpi)
     report["sensitivity"] = sensitivity
     report["stat_validation"] = {
         "run_id": run_id,
-        "verdict": verdict,
-        "verdict_reason": verdict_reason,
+        "verdict": effective_verdict,
+        "verdict_reason": effective_reason,
         "gates": gate_rows,
         "primary_gate": f"ci90_lower_pct > {cfg.stat_gate_threshold_pct} inclusive",
         "threshold_pct": cfg.stat_gate_threshold_pct,
@@ -597,8 +610,8 @@ def write_artifacts(
                 kpi=kpi,
                 cfg=cfg,
                 gate_rows=gate_rows,
-                verdict=verdict,
-                verdict_reason=verdict_reason,
+                verdict=effective_verdict,
+                verdict_reason=effective_reason,
                 run_result=run_result,
                 closes=closes,
                 target_closes=target_closes,

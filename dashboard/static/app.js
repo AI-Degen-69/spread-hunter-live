@@ -578,13 +578,13 @@ function renderExposure(kpi) {
   const text = document.getElementById('exposure-text');
   const fill = document.getElementById('exposure-fill');
 
-  const committed = kpi?.portfolio?.open_committed_usd || 0;
-  const accountVal = kpi?.portfolio?.account?.account_value_usd || kpi?.portfolio?.starting_capital;
-  const cap = accountVal ? (accountVal * 0.90) : (kpi?.bankroll || 100);
+  const committed = kpi?.portfolio?.open_committed_usd;
   if (committed === null || committed === undefined) {
     bar.style.display = 'none';
     return;
   }
+  const accountVal = kpi?.portfolio?.account?.account_value_usd ?? kpi?.portfolio?.starting_capital;
+  const cap = accountVal ? (accountVal * 0.90) : (kpi?.bankroll || 100);
   bar.style.display = 'flex';
   const pct = Math.min(100, (committed / cap) * 100);
   text.textContent = `$${committed.toFixed(2)}/$${cap.toFixed(0)}`;
@@ -692,8 +692,8 @@ function renderAnalyticsSurface(kpi, status) {
   const maxPoint = Math.max(...points);
   const span = Math.max(maxPoint - minPoint, 1);
   const line = points.map((point, i) => `${i ? 'L' : 'M'}${i * 10 + 2},${110 - ((point - minPoint) / span) * 82}`).join(' ');
-  charts.querySelector('#analytics-portfolio-card').innerHTML = `<div class="analytics-chart-head"><h3>Portfolio Net Value Over Time</h3><small>Calendar dates · ${esc(fmtUSD(start))} starting value${hasMeasuredPortfolio ? '' : ' · Unmeasured trend'}</small></div><svg id="portfolioLine" class="analytics-line${hasMeasuredPortfolio ? '' : ' analytics-line-unmeasured'}" viewBox="0 0 95 125" role="img" aria-label="Portfolio net value from Aug 20 through Aug 29"><path d="M2,110 L92,110 L92,20 L2,20" fill="none" stroke="var(--border-strong)"/><path d="${line} L92,110 L2,110 Z" fill="var(--signal)" opacity=".12"/><path d="${line}" fill="none" stroke="var(--signal)" stroke-width="1.5"/><text x="2" y="123" fill="var(--text-muted)" font-size="3">Aug 20</text><text x="42" y="123" fill="var(--text-muted)" font-size="3">Aug 25</text><text x="78" y="123" fill="var(--text-muted)" font-size="3">Aug 29</text><text x="2" y="18" fill="var(--text-muted)" font-size="3">$${esc(value == null ? '--' : Number(value).toFixed(0))}</text></svg>`;
-  gates.innerHTML = `<h3>Decision Gates</h3><table><thead><tr><th>Gate</th><th>What It Measures</th><th>Needs</th><th>This Run</th><th>Result</th></tr></thead><tbody><tr><td>Total Profit Stays Above 1% — 90% Confidence Lower Bound Is ${lower == null ? '--' : Number(lower).toFixed(2) + '%'}</td><td>Whether the observed return clears the confidence threshold</td><td>Above 1.00%</td><td>${lower == null ? '--' : Number(lower).toFixed(2) + '%'}</td><td><span class="analytics-gate-badge ${lower > 1 ? 'go' : 'nogo'}">${lower > 1 ? 'GO' : 'NO-GO'}</span></td></tr><tr><td>Win Rate</td><td>Profitable closes</td><td>More Than Half Wins</td><td>${winRate == null ? '--' : winRate.toFixed(1) + '%'}</td><td><span class="analytics-gate-badge ${winRate > 50 ? 'go' : 'nogo'}">${winRate > 50 ? 'GO' : 'NO-GO'}</span></td></tr><tr><td>Observations</td><td>Statistical power</td><td>More Than 120 Observations</td><td>${n}</td><td><span class="analytics-gate-badge ${n >= 120 ? 'go' : 'inconclusive'}">${n >= 120 ? 'GO' : 'Inconclusive'}</span></td></tr><tr><td>Markout Maturity</td><td>Adverse-selection evidence</td><td>At Least 25 Matured Samples</td><td>${ta.markout_samples ?? '--'}</td><td><span class="analytics-gate-badge ${(ta.markout_samples != null ? ta.markout_samples : 0) >= 25 ? 'go' : 'inconclusive'}">${(ta.markout_samples != null ? ta.markout_samples : 0) >= 25 ? 'GO' : 'Inconclusive'}</span></td></tr><tr><td>Realized Profit</td><td>Closed dollar outcome</td><td>Above $0.00</td><td>${realized == null ? '--' : fmtUSD(realized)}</td><td><span class="analytics-gate-badge ${Number(realized) > 0 ? 'go' : 'nogo'}">${Number(realized) > 0 ? 'GO' : 'NO-GO'}</span></td></tr><tr><td>Run Return</td><td>Profit relative to starting value</td><td>Above 0.00%</td><td>${pct == null ? '--' : fmtPct(pct)}</td><td><span class="analytics-gate-badge ${Number(pct) > 0 ? 'go' : 'nogo'}">${Number(pct) > 0 ? 'GO' : 'NO-GO'}</span></td></tr></tbody></table>`;
+  charts.querySelector('#analytics-portfolio-card').innerHTML = `<div class="analytics-chart-head"><h3>Portfolio Net Value Over Time</h3><small>${hasMeasuredPortfolio ? 'Latest observations' : 'Unmeasured trend'} · ${esc(fmtUSD(start))} starting value</small></div><svg id="portfolioLine" class="analytics-line${hasMeasuredPortfolio ? '' : ' analytics-line-unmeasured'}" viewBox="0 0 95 125" role="img" aria-label="${hasMeasuredPortfolio ? 'Portfolio net value · latest observations' : 'Portfolio net value · unmeasured trend'}"><path d="M2,110 L92,110 L92,20 L2,20" fill="none" stroke="var(--border-strong)"/><path d="${line} L92,110 L2,110 Z" fill="var(--signal)" opacity=".12"/><path d="${line}" fill="none" stroke="var(--signal)" stroke-width="1.5"/><text x="2" y="123" fill="var(--text-muted)" font-size="3">${hasMeasuredPortfolio ? 'Start' : '--'}</text><text x="42" y="123" fill="var(--text-muted)" font-size="3">${hasMeasuredPortfolio ? 'Mid' : '--'}</text><text x="78" y="123" fill="var(--text-muted)" font-size="3">${hasMeasuredPortfolio ? 'Now' : '--'}</text><text x="2" y="18" fill="var(--text-muted)" font-size="3">$${esc(value == null ? '--' : Number(value).toFixed(0))}</text></svg>`;
+  gates.innerHTML = `<h3>Decision Gates</h3><table><thead><tr><th>Gate</th><th>What It Measures</th><th>Needs</th><th>This Run</th><th>Result</th></tr></thead><tbody><tr><td>Total Profit Stays Above 1% — 90% Confidence Lower Bound Is ${lower == null ? '--' : Number(lower).toFixed(2) + '%'}</td><td>Whether the observed return clears the confidence threshold</td><td>Above 1.00%</td><td>${lower == null ? '--' : Number(lower).toFixed(2) + '%'}</td><td><span class="analytics-gate-badge ${lower == null ? 'inconclusive' : lower > 1 ? 'go' : 'nogo'}">${lower == null ? 'Inconclusive' : lower > 1 ? 'GO' : 'NO-GO'}</span></td></tr><tr><td>Win Rate</td><td>Profitable closes</td><td>More Than Half Wins</td><td>${winRate == null ? '--' : winRate.toFixed(1) + '%'}</td><td><span class="analytics-gate-badge ${winRate == null ? 'inconclusive' : winRate > 50 ? 'go' : 'nogo'}">${winRate == null ? 'Inconclusive' : winRate > 50 ? 'GO' : 'NO-GO'}</span></td></tr><tr><td>Observations</td><td>Statistical power</td><td>More Than 120 Observations</td><td>${n == null ? '--' : n}</td><td><span class="analytics-gate-badge ${n == null ? 'inconclusive' : n >= 120 ? 'go' : 'inconclusive'}">${n == null ? 'Inconclusive' : n >= 120 ? 'GO' : 'Inconclusive'}</span></td></tr><tr><td>Markout Maturity</td><td>Adverse-selection evidence</td><td>At Least 25 Matured Samples</td><td>${ta.markout_samples ?? '--'}</td><td><span class="analytics-gate-badge ${(ta.markout_samples != null ? ta.markout_samples : 0) >= 25 ? 'go' : 'inconclusive'}">${(ta.markout_samples != null ? ta.markout_samples : 0) >= 25 ? 'GO' : 'Inconclusive'}</span></td></tr><tr><td>Realized Profit</td><td>Closed dollar outcome</td><td>Above $0.00</td><td>${realized == null ? '--' : fmtUSD(realized)}</td><td><span class="analytics-gate-badge ${realized == null ? 'inconclusive' : Number(realized) > 0 ? 'go' : 'nogo'}">${realized == null ? 'Inconclusive' : Number(realized) > 0 ? 'GO' : 'NO-GO'}</span></td></tr><tr><td>Run Return</td><td>Profit relative to starting value</td><td>Above 0.00%</td><td>${pct == null ? '--' : fmtPct(pct)}</td><td><span class="analytics-gate-badge ${pct == null ? 'inconclusive' : Number(pct) > 0 ? 'go' : 'nogo'}">${pct == null ? 'Inconclusive' : Number(pct) > 0 ? 'GO' : 'NO-GO'}</span></td></tr></tbody></table>`;
 }
 
 function renderKPIs(kpi, status) {
@@ -704,6 +704,17 @@ function renderKPIs(kpi, status) {
       <div class="empty-state-title">No trading data yet</div>
       <div class="empty-state-msg">KPIs will appear when the bot makes its first spread capture.</div>
     </div>`;
+    const _totals = document.getElementById('analytics-totals');
+    const _charts = document.getElementById('analytics-charts');
+    const _gates = document.getElementById('analytics-gates');
+    if (_totals) _totals.innerHTML = '';
+    if (_charts) {
+      const _h = _charts.querySelector('#analytics-histogram-card');
+      const _p = _charts.querySelector('#analytics-portfolio-card');
+      if (_h) _h.innerHTML = '';
+      if (_p) _p.innerHTML = '';
+    }
+    if (_gates) _gates.innerHTML = '';
     return;
   }
 

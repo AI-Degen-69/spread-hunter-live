@@ -561,7 +561,7 @@ function Stop-ShadowRun {
                 $_.Name -match '^python' -and $_.CommandLine -and `
                 ($_.CommandLine -like "*$ProjectPath*") -and `
                 (($_.CommandLine -like "*core_brain.shadow_run*") -or `
-                 ($_.CommandLine -like "*scripts.global_stop_loss*" -and $_.CommandLine -like "*shadow.db*"))
+                 ($_.CommandLine -like "*scripts.global_stop_loss*" -and ($_.CommandLine -like "*shadow_*.db*" -or $_.CommandLine -like "*shadow.db*")))
             })
     } catch { return }
     if ($procs.Count -eq 0) { return }
@@ -1421,7 +1421,7 @@ function Reset-Environment {
                         -RedirectStandardError (Join-Path $RunDir "shadow_run.err.log")
                     Lsh-Ok "Rehearsal loop running (PID $($shadowRun.Id), $Minutes minute(s)) - dashboard updates live from $ShadowDbPath."
                     $observer = Start-Process -FilePath "python" `
-                        -ArgumentList "-m", "core_brain.statistics_observer", "--mode", "shadow", "--watch", $ShadowDbPath, "--run-id", $ShadowRunId, "--interval", "5", "--max-hours", (($Minutes / 60) + 1) `
+                        -ArgumentList "-m", "core_brain.statistics_observer", "--mode", "shadow", "--watch", $ShadowDbPath, "--run-id", $ShadowRunId, "--interval", "5", "--max-hours", (($Minutes / 60) + 0.08) `
                         -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
                         -RedirectStandardOutput (Join-Path $RunDir "statistics_observer.out.log") `
                         -RedirectStandardError (Join-Path $RunDir "statistics_observer.err.log")

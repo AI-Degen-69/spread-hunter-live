@@ -28,7 +28,8 @@ def test_portfolio_line_dom_layout_contract_is_present():
     css = Path("dashboard/static/styles.css").read_text(encoding="utf-8")
     assert 'svg id="portfolioLine"' in source
     assert source.count('<path d="${line}') >= 2
-    assert 'Aug 20' in source and 'Aug 29' in source
+    assert 'Latest observations' in source and 'Unmeasured trend' in source
+    assert 'hasMeasuredPortfolio' in source
     assert '$${esc' in source
     assert 'points = [100,101,100.5,102,101.8,103,104,103.6,105,106]' not in source
     assert '.analytics-line' in css and 'min-height:150px' in css

@@ -34,6 +34,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Port    = 8799
+$LivePort     = $Port
 $DashUrl     = "http://127.0.0.1:$Port"
 $RunDir      = Join-Path $ProjectPath "runtime"
 $LegacyRunDir = Join-Path $ProjectPath "run"
@@ -285,13 +286,16 @@ function Save-DashInstance {
 }
 
 function Test-DashboardServer {
-    <# True when whatever answers on :LivePort is a spread-hunter dashboard
-    (answers /api/system/status with a services.dash entry). Guards adoption
-    so an unrelated process squatting on the port is never adopted or killed.
+    <# True when whatever answers on :LivePort is a spread-hunter LIVE dashboard
+    (answers /api/system/status with a services.dash entry AND reports the
+    production registry). Guards adoption so a menu-unowned shadow dashboard
+    (or unrelated process) squatting on the port is never adopted as live nor
+    killed. db_is_production fails closed: an unreadable/unknown identity
+    refuses adoption.
     #>
     try {
         $r = Invoke-RestMethod -Uri "$DashUrl/api/system/status" -UseBasicParsing -TimeoutSec 4
-        return ($null -ne $r.services -and $null -ne $r.services.dash)
+        return ($null -ne $r.services -and $null -ne $r.services.dash -and ($r.db_is_production -eq $true))
     } catch {
         return $false
     }
@@ -433,10 +437,14 @@ function Save-ShadowDashInstance {
 }
 
 function Test-ShadowDashboardServer {
-    <# True when whatever is on :ShadowPort answers as dashboard (any db mode). #>
+    <# True when whatever is on :ShadowPort answers as a SHADOW dashboard
+    (services.dash present AND db_is_production false — i.e. it serves
+    data/shadow.db). Guards shadow adoption so a live dashboard squatting on
+    the port is never recorded as shadow nor later stopped as one.
+    #>
     try {
         $r = Invoke-RestMethod -Uri "$ShadowDashUrl/api/system/status" -UseBasicParsing -TimeoutSec 4
-        return ($null -ne $r.services -and $null -ne $r.services.dash)
+        return ($null -ne $r.services -and $null -ne $r.services.dash -and ($r.db_is_production -eq $false))
     } catch { return $false }
 }
 
@@ -1417,10 +1425,14 @@ function Reset-Environment {
                         started  = (Get-Date).ToString("o")
                     } | ConvertTo-Json -Depth 5 | Set-Content -Path $ShadowSessionFile -Encoding UTF8
                     $killSec = [int]($Minutes * 60)
-                    $timerIds = @([int]$screener.Id)
-                    if ($guardrail) { $timerIds += [int]$guardrail.Id }
+                    $timerTargets = @(@{ id = [int]$screener.Id; ticks = $screener.StartTime.ToUniversalTime().Ticks })
+                    if ($guardrail) { $timerTargets += @{ id = [int]$guardrail.Id; ticks = $guardrail.StartTime.ToUniversalTime().Ticks } }
                     $killCmd = "Start-Sleep -Seconds $killSec"
-                    foreach ($id in $timerIds) { $killCmd += "; Stop-Process -Id $id -Force -ErrorAction SilentlyContinue" }
+                    foreach ($t in $timerTargets) {
+                        # Kill only when the PID still carries the recorded start time, so a
+                        # recycled PID within the window is never force-stopped.
+                        $killCmd += "; `$p = Get-Process -Id $($t.id) -ErrorAction SilentlyContinue; if (`$p -and `$p.StartTime.ToUniversalTime().Ticks -eq $($t.ticks)) { Stop-Process -Id $($t.id) -Force -ErrorAction SilentlyContinue }"
+                    }
                     Start-Process -FilePath "powershell" `
                         -ArgumentList "-NoProfile", "-Command", $killCmd `
                         -WindowStyle Hidden

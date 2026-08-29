@@ -167,6 +167,38 @@ def test_evaluate_stat_gate_fails_when_underpowered_or_loss():
     assert eval_res["ci90_lower_pct"] is not None and eval_res["ci90_lower_pct"] < 1.0
 
 
+def test_inclusive_gate_fails_where_merge_only_passes():
+    """The gate is inclusive of ALL exit methods, so a merge-only slice cannot
+    manufacture a pass.
+
+    Two profitable merges clear the bar in isolation; adding one large naked
+    exit -- all loss, no hedge -- drags the inclusive CI below the threshold.
+    Filtering to merges only would be a tautology. This is the guard that fails
+    if the gate is ever reimplemented over merges alone.
+    """
+    merge_only = [
+        dict(realized_pnl=0.10, cost_basis=5.00, method="merge", ts=1.0),
+        dict(realized_pnl=0.10, cost_basis=5.00, method="merge", ts=2.0),
+    ]
+    inclusive = merge_only + [
+        dict(realized_pnl=-0.50, cost_basis=5.00, method="naked_exit", ts=3.0),
+    ]
+
+    merge_eval = evaluate_stat_gate(merge_only, starting_capital=100.0, threshold_pct=1.0)
+    inc_eval = evaluate_stat_gate(inclusive, starting_capital=100.0, threshold_pct=1.0)
+
+    # Merge-only would pass -- the tautology the inclusive gate rejects.
+    assert merge_eval["passed"] is True
+    assert merge_eval["ci90_lower_pct"] is not None
+    assert merge_eval["ci90_lower_pct"] > 1.0
+    # Including the naked loss flips the inclusive gate to a fail.
+    assert inc_eval["passed"] is False
+    assert inc_eval["ci90_lower_pct"] is not None
+    assert inc_eval["ci90_lower_pct"] < 1.0
+    assert "merge" in inc_eval["methods_present"]
+    assert "naked_exit" in inc_eval["methods_present"]
+
+
 def test_evaluate_stat_gate_empty_or_single_close():
     """Empty or 1-close dataset cannot evaluate dispersion; fails cleanly."""
     assert evaluate_stat_gate([], starting_capital=100.0)["passed"] is False

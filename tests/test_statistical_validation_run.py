@@ -429,3 +429,46 @@ class TestEndToEndHarness:
         md = (report_dir / "report.md").read_text(encoding="utf-8")
         assert "**INCONCLUSIVE**" in md
         assert "Gate table" in md
+
+    def test_zero_fill_minutes_only_run_is_inconclusive_not_go(self, tmp_path, caplog):
+        """Acceptance: a minutes-only run with zero fills exits INCONCLUSIVE, not GO.
+
+        No `--target-closes` is passed, so the run is bounded by `--max-hours`
+        alone. Zero fills means zero matured markouts, which trips the default
+        `min_markouts` floor -> underpowered -> INCONCLUSIVE. The memo must
+        never read GO (or NO-GO) on a run that has nothing to judge.
+        """
+        db = tmp_path / "shadow_stat_minutes_only.db"
+        report_dir = tmp_path / "stat_minutes_only"
+        now = [1000.0]
+
+        def clock():
+            return now[0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        with caplog.at_level(logging.INFO):
+            rc = main(
+                ["--max-hours", "0.001", "--db", str(db),
+                 "--report", str(report_dir)],
+                markets_fn=lambda max_markets=None: [FakeMarket("0xabc")],
+                client_fn=lambda: object(),
+                decide_fn=lambda cfg, up, dn, inv, t_rem, wf: ([], ""),
+                fetch_books=_books,
+                clock=clock,
+                sleep=sleep,
+            )
+
+        assert rc == 0
+        text = caplog.text.lower()
+        assert "inconclusive" in text
+        assert "verdict: go" not in text
+        assert "verdict: no-go" not in text
+
+        data = json.loads((report_dir / "report.json").read_text(encoding="utf-8"))
+        assert data["stat_validation"]["verdict"] == "INCONCLUSIVE"
+        md = (report_dir / "report.md").read_text(encoding="utf-8")
+        assert "**INCONCLUSIVE**" in md
+        assert "**GO**" not in md
+        assert "**NO-GO**" not in md

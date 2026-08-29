@@ -100,6 +100,27 @@ python -m dashboard.server          # http://127.0.0.1:8799
 pytest -q
 ```
 
+## TS Dashboard Bridge
+
+The TypeScript dashboard (`server.ts`) serves the AI Studio frontend from
+`dashboard/static/` on **http://127.0.0.1:8800** and reverse-proxies `/api/*`
+to the live Python backend on **:8799** — real data only, no mocks.
+
+- Start: `\scripts\spread-hunter-menu.ps1 statistical-run -Hours 24` starts the
+  bridge alongside the Python stack (recorded as `ts_bridge` in
+  `runtime/shadow-session.json`; visible as `TS Bridge` in `status`).
+- Stop: `\scripts\spread-hunter-menu.ps1 stop-shadow` tears the bridge down
+  with the rest of the shadow session.
+- Read-only by default: POST control actions return 501 unless the bridge is
+  started with `BRIDGE_CONTROL=1`. Do not enable this during shadow runs.
+- Manual run: `PORT=8800 node server.ts` (Node ≥ 24, no npm install;
+  `PY_DASH_URL` overrides the upstream, default `http://127.0.0.1:8799`).
+- The bridge injects the live control token into the HTML it serves — the same
+  token Python bakes in — so the frontend's control buttons carry a token the
+  engine will accept once control forwarding is enabled.
+
+TS bridge tests: `node --test tests/bridge/token-inject.test.ts tests/bridge/control-gate.test.ts`
+
 ## Operating guide
 
 **CLI** — `python -m core_brain.order_manager <command>`. Live by default; pass `--no-live` for a

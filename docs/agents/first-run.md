@@ -14,10 +14,10 @@ them → wipe runtime state → verify nothing blocks → start the chosen mode*
 | --- | --- | --- |
 | `start -Yes` | **1 · LIVE Start**: preflight-stop everything, wipe data, verify clean, then start the live dashboard + bot stack (Market Filter, Order Manager, Trader). Rests real bids | **No — real bids; requires `-Yes`** |
 | `stop` | **2 · LIVE Stop**: stop the live bot stack, then the dashboard | Yes |
-| `host` | **3 · LIVE Host**: kill whatever holds :8799 (no wipe), host the live dashboard (`data/orders.db`) & open browser | Yes |
+| `host` | **3 · LIVE Host**: release :8799 from the other menu-owned dashboard (no wipe), host the live dashboard (`data/orders.db`) & open browser | Yes |
 | `shadow-run [-Minutes N]` | **4 · SHADOW Start**: preflight-stop everywhere, wipe data, verify clean, then the shadow dashboard + rehearsal loop (`shadow_run`) + a stop-loss watcher scoped to that session's ring (self-stops after N minutes). Prompts for minutes interactively; default 5 | Yes (spends nothing) |
 | `stop-shadow` | **5 · SHADOW Stop**: stop the rehearsal loop (if still running), watcher, and viewer | Yes (spends nothing) |
-| `open-shadow` | **6 · SHADOW Host**: kill whatever holds :8799 (no wipe), host the shadow dashboard (`data/shadow.db`) & open browser | Yes (spends nothing) |
+| `open-shadow` | **6 · SHADOW Host**: release :8799 from the other menu-owned dashboard (no wipe), host the shadow dashboard (`data/shadow.db`) & open browser | Yes (spends nothing) |
 | `clean` | **7 · Global Stop & Clean**: kill all bot processes/dashboards, wipe data, verify clean — starts nothing | Yes |
 | `status` | **8 · Status**: dashboard + every stack process + feed + repo identity | Yes |
 

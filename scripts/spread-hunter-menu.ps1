@@ -6,10 +6,10 @@
 #   .\scripts\spread-hunter-menu.ps1          # interactive menu
 #   .\scripts\spread-hunter-menu.ps1 start -Yes    # 1 · LIVE: preflight-stop + wipe, fresh bot + dashboard (real bids)
 #   .\scripts\spread-hunter-menu.ps1 stop          # 2 · LIVE: stop bot + dashboard
-#   .\scripts\spread-hunter-menu.ps1 host          # 3 · LIVE: kill :8799 (no wipe), host live dashboard & open
+#   .\scripts\spread-hunter-menu.ps1 host          # 3 · LIVE: release :8799 from the other menu-owned dashboard (no wipe), host live & open
 #   .\scripts\spread-hunter-menu.ps1 shadow-run [-Minutes N] # 4 · SHADOW: preflight + wipe, full rehearsal (loop + stop loss)
 #   .\scripts\spread-hunter-menu.ps1 stop-shadow   # 5 · SHADOW: stop loop, watcher and viewer
-#   .\scripts\spread-hunter-menu.ps1 open-shadow   # 6 · SHADOW: kill :8799 (no wipe), host shadow dashboard & open
+#   .\scripts\spread-hunter-menu.ps1 open-shadow   # 6 · SHADOW: release :8799 from the other menu-owned dashboard (no wipe), host shadow & open
 #   .\scripts\spread-hunter-menu.ps1 clean         # 7 · GLOBAL: kill all + wipe data + verify (no start)
 #   .\scripts\spread-hunter-menu.ps1 status        # 8 · status page
 # the same code path as the dashboard's START/STOP buttons (interprocess lock,
@@ -33,8 +33,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProjectPath = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$LivePort    = 8799
-$DashUrl     = "http://127.0.0.1:$LivePort"
+$Port    = 8799
+$DashUrl     = "http://127.0.0.1:$Port"
 $RunDir      = Join-Path $ProjectPath "runtime"
 $LegacyRunDir = Join-Path $ProjectPath "run"
 
@@ -203,14 +203,14 @@ function Test-PidAlive {
     try { Get-Process -Id $ProcessId -ErrorAction Stop | Out-Null; return $true } catch { return $false }
 }
 
-function Test-LivePort {
+function Test-Port {
     <# True when :8799 is in LISTENING state. #>
-    return [bool](netstat -ano | Select-String ":$LivePort\s+.*LISTENING")
+    return [bool](netstat -ano | Select-String ":$Port\s+.*LISTENING")
 }
 
 function Get-PortPid {
     <# PID of the process LISTENING on :8799, or $null. #>
-    $line = netstat -ano | Select-String ":$LivePort\s+.*LISTENING" | Select-Object -First 1
+    $line = netstat -ano | Select-String ":$Port\s+.*LISTENING" | Select-Object -First 1
     if (-not $line) { return $null }
     return [int](($line.ToString() -split "\s+")[-1])
 }
@@ -262,7 +262,7 @@ function Get-DashInstance {
             return $null  # PID recycled; no longer our process
         }
     }
-    return [pscustomobject]@{ pid = $p.Id; proc = $p; port = $LivePort }
+    return [pscustomobject]@{ pid = $p.Id; proc = $p; port = $Port }
 }
 
 function Save-DashInstance {
@@ -273,7 +273,7 @@ function Save-DashInstance {
             pid           = $DashProcess.Id
             started_ticks = $DashProcess.StartTime.ToUniversalTime().Ticks
             started       = $DashProcess.StartTime.ToString("o")
-            port          = $LivePort
+            port          = $Port
         }
     }
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
@@ -328,7 +328,7 @@ function Start-Dashboard {
         Lsh-Ok "Dashboard already running (PID $($inst.pid), up $(Format-Uptime $inst.proc.StartTime))."
         return $true
     }
-    if (Test-LivePort) {
+    if (Test-Port) {
         $portPid = Get-PortPid
         if (Test-DashboardServer) {
             $adopt = $false
@@ -363,11 +363,11 @@ function Start-Dashboard {
     $deadline = (Get-Date).AddSeconds(25)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
-        if (Test-LivePort) { break }
+        if (Test-Port) { break }
         $dash.Refresh()
         if ($dash.HasExited) { break }
     }
-    if (-not (Test-LivePort)) {
+    if (-not (Test-Port)) {
         Lsh-Fail "Dashboard failed to bind port $LivePort. See $ErrLog"
         Remove-Item $DashPidFile -ErrorAction SilentlyContinue
         return $false
@@ -383,10 +383,10 @@ function Stop-Dashboard {
         Lsh-Step "Stopping dashboard PID $($inst.pid)..."
         Stop-Process -Id $inst.pid -Force -ErrorAction SilentlyContinue
         $deadline = (Get-Date).AddSeconds(10)
-        while ((Get-Date) -lt $deadline -and (Test-LivePort)) { Start-Sleep -Milliseconds 300 }
+        while ((Get-Date) -lt $deadline -and (Test-Port)) { Start-Sleep -Milliseconds 300 }
     }
     Remove-Item $DashPidFile -ErrorAction SilentlyContinue
-    if (Test-LivePort) {
+    if (Test-Port) {
         Lsh-Warn "Port $LivePort still LISTENING (PID $(Get-PortPid)) - not owned by this menu, left running."
         return $false
     }
@@ -458,7 +458,7 @@ function Start-ShadowDashboard {
         return $true
     }
     # Live and shadow share :8799 by request — only one can bind at a time.
-    if (Test-LivePort) {
+    if (Test-Port) {
         $portPid = Get-PortPid
         if (Test-ShadowDashboardServer) {
             # Something dashboard-like is already there — adopt it as shadow if live pidfile says otherwise.
@@ -504,11 +504,11 @@ function Start-ShadowDashboard {
     $deadline = (Get-Date).AddSeconds(25)
     while ((Get-Date) -lt $deadline) {
         Start-Sleep -Milliseconds 500
-        if (Test-LivePort) { break }
+        if (Test-Port) { break }
         $dash.Refresh()
         if ($dash.HasExited) { break }
     }
-    if (-not (Test-LivePort)) {
+    if (-not (Test-Port)) {
         Lsh-Fail "Shadow dashboard failed to bind port $ShadowPort. See $ShadowErrLog"
         Remove-Item $ShadowPidFile -ErrorAction SilentlyContinue
         return $false
@@ -524,10 +524,10 @@ function Stop-ShadowDashboard {
         Lsh-Step "Stopping shadow dashboard PID $($inst.pid)..."
         Stop-Process -Id $inst.pid -Force -ErrorAction SilentlyContinue
         $deadline = (Get-Date).AddSeconds(10)
-        while ((Get-Date) -lt $deadline -and (Test-LivePort)) { Start-Sleep -Milliseconds 300 }
+        while ((Get-Date) -lt $deadline -and (Test-Port)) { Start-Sleep -Milliseconds 300 }
     }
     Remove-Item $ShadowPidFile -ErrorAction SilentlyContinue
-    if (Test-LivePort) {
+    if (Test-Port) {
         # If live still occupies the port, that's expected — shadow is down but port stays LISTENING.
         $liveInst = Get-DashInstance
         if ($null -ne $liveInst) {
@@ -561,18 +561,18 @@ function Stop-ShadowRun {
     }
 }
 
-function Host-OpenDashboard {
+function Open-Dashboard {
     <# "Host & Open Dashboard": claim :8799 for the requested store and open
     the dashboard in the browser WITHOUT wiping any trading or runtime state.
     If the other mode's dashboard is holding the port, stop it first; the
     Start-<mode> dashboard handles adopting/killing anything else it owns. #>
     param([Parameter(Mandatory)][string]$Mode)
-    if ($Mode -eq "shadow" -and $null -ne (Get-DashInstance))        { $null = Stop-Dashboard }
-    if ($Mode -eq "live"   -and $null -ne (Get-ShadowDashInstance))  { $null = Stop-ShadowDashboard }
     if ($Mode -ne "live" -and $Mode -ne "shadow") {
-        Lsh-Fail "Host-OpenDashboard: unknown mode '$Mode'."
+        Lsh-Fail "Open-Dashboard: unknown mode '$Mode'."
         return $false
     }
+    if ($Mode -eq "shadow" -and $null -ne (Get-DashInstance))        { $null = Stop-Dashboard }
+    if ($Mode -eq "live"   -and $null -ne (Get-ShadowDashInstance))  { $null = Stop-ShadowDashboard }
     $ok = $false
     if ($Mode -eq "live") {
         $ok = Start-Dashboard
@@ -777,7 +777,7 @@ function Start-BotStack {
         Lsh-Fail "Filter module scripts/filter_loop.py is MISSING in this repo - the dashboard would spawn a phantom process. Add it before starting."
         return
     }
-    if (-not (Test-LivePort)) {
+    if (-not (Test-Port)) {
         Lsh-Fail "Dashboard is not serving on :$LivePort - nothing to drive. Start the dashboard first."
         return
     }
@@ -799,7 +799,7 @@ function Start-BotStack {
 
 function Stop-BotStack {
     <# Stop the stack via the API; if the dashboard is down, kill recorded PIDs directly. #>
-    if (Test-LivePort) {
+    if (Test-Port) {
         Lsh-Step "Requesting bot stack stop..."
         $res = Invoke-Control -Endpoint "/api/system/stop"
         if (-not $res) { return }
@@ -890,7 +890,7 @@ function Show-Status {
 
     # ── 1 · DASHBOARD ──
     $inst = Get-DashInstance
-    $portUp = Test-LivePort
+    $portUp = Test-Port
     if ($inst) {
         Write-SectionHeader -Number "1" -Title "DASHBOARD" -Status "ON" -StatusStyle "Success"
         Write-ProcessRow -Label "Dashboard" -Running $true -PidVal $inst.pid -Path $StackPaths["dash"] -ExtraInfo $DashUrl
@@ -1118,6 +1118,7 @@ function Test-OrphanStackProcess {
     } catch { return $null }
     $markers = @(
         "core_brain.trader_loop",
+        "core_brain.shadow_run",
         "core_brain.order_manager poll",
         "scripts.filter_loop",
         "scripts.global_stop_loss",
@@ -1139,7 +1140,7 @@ function Test-StackAlive {
     a PID with a missing or unreadable start time - or a registry that cannot
     be read at all - is treated as live so a reset never wipes beside a
     process it cannot identify. #>
-    if (Test-LivePort) { return $true }
+    if (Test-Port) { return $true }
     if ($null -ne (Get-DashInstance)) { return $true }
     if ($null -ne (Get-ShadowDashInstance)) { return $true }
     if (Test-Path $ProcsFile) {
@@ -1282,7 +1283,7 @@ function Reset-Environment {
 
     # 1 · VERIFY: what is alive right now
     $found = @()
-    if (Test-LivePort) { $found += "port :$LivePort (PID $(Get-PortPid))" }
+    if (Test-Port) { $found += "port :$LivePort (PID $(Get-PortPid))" }
     $dash = Get-DashInstance;  if ($dash) { $found += "live dashboard PID $($dash.pid)" }
     $sdash = Get-ShadowDashInstance; if ($sdash) { $found += "shadow dashboard PID $($sdash.pid)" }
     if (Test-Path $ProcsFile) {
@@ -1307,6 +1308,7 @@ function Reset-Environment {
     if (Test-StackAlive) {
         Stop-BotStack
         Stop-ShadowSession   # recorded rehearsal loop + watcher + viewer
+        Stop-ShadowRun       # any unrecorded rehearsal loop still running
         Stop-Guardrail
         $null = Stop-Dashboard
         $null = Stop-ShadowDashboard
@@ -1325,7 +1327,7 @@ function Reset-Environment {
 
     # 5 · VERIFY CLEAN (pidfiles are gone by construction; still guard against
     # an unregistered orphan service so we never declare clean beside one)
-    if (Test-LivePort) {
+    if (Test-Port) {
         Lsh-Fail "Port $LivePort is still LISTENING (PID $(Get-PortPid)) and not owned by this menu. Free it, then start."
         return $false
     }
@@ -1460,12 +1462,12 @@ function Show-MenuGrid {
         @{ Header = "🟢 LIVE - real maker bids"; Items = @(
             @{ K = "1"; Icon = "▶"; IconColor = "Success"; V = "Start Bot + Dashboard";     D = "Stops, wipes data & starts fresh bot + dashboard" }
             @{ K = "2"; Icon = "■"; IconColor = "Error";   V = "Stop Bot + Dashboard";      D = "Stops bot processes and dashboard" }
-            @{ K = "3"; Icon = "◉"; IconColor = "Warning"; V = "Host & Open Dashboard";     D = "Kills existing :8799 (no wipe), hosts live DB & opens browser" }
+            @{ K = "3"; Icon = "◉"; IconColor = "Warning"; V = "Host & Open Dashboard";     D = "Releases our other-env :8799 dashboard (no wipe), hosts live DB & opens browser" }
         ) }
         @{ Header = "🥷 SHADOW - rehearsal, spends nothing"; Items = @(
             @{ K = "4"; Icon = "▷"; IconColor = "Info";    V = "Start Bot + Dashboard";     D = "Stops, wipes data & starts fresh rehearsal (loop + stop loss); prompts minutes" }
             @{ K = "5"; Icon = "□"; IconColor = "Neutral"; V = "Stop Bot + Dashboard";      D = "Stops rehearsal loop, watcher and dashboard" }
-            @{ K = "6"; Icon = "◎"; IconColor = "Info";    V = "Host & Open Dashboard";     D = "Kills existing :8799 (no wipe), hosts shadow DB & opens browser" }
+            @{ K = "6"; Icon = "◎"; IconColor = "Info";    V = "Host & Open Dashboard";     D = "Releases our other-env :8799 dashboard (no wipe), hosts shadow DB & opens browser" }
         ) }
         @{ Header = "MAINTENANCE & STATUS"; Items = @(
             @{ K = "7"; Icon = "⎚"; IconColor = "Warning"; V = "Global Stop & Clean";       D = "Kills all bot processes/dashboards, wipes data, verifies" }
@@ -1506,22 +1508,7 @@ function Invoke-LiveAction {
             Lsh-Ok "Live stack is down."
         }
         "3" {
-            # Host LIVE dashboard: free :8799 from any *our* shadow viewer (no
-            # wipe, no bot). Live stack, if running, is untouched.
-            if ($null -ne (Get-ShadowDashInstance)) { $null = Stop-ShadowDashboard }
-            if (Start-Dashboard) {
-                try {
-                    Lsh-Step "Sweeping Polymarket account balance to sync live starting capital..."
-                    & python -m core_brain.order_manager account-sweep --quiet
-                    if ($LASTEXITCODE -ne 0) {
-                        Lsh-Warn "Initial account sweep exited with code $LASTEXITCODE; using local registry marks."
-                    }
-                } catch {
-                    Lsh-Warn "Initial account sweep skipped: $_"
-                }
-                Start-Process $DashUrl
-                Lsh-Ok "Opened $DashUrl in default browser."
-            }
+            $null = Open-Dashboard -Mode "live"
         }
         "4" {
             $mins = $Minutes
@@ -1540,13 +1527,7 @@ function Invoke-LiveAction {
             Lsh-Ok "Shadow session stopped."
         }
         "6" {
-            # Host SHADOW dashboard: free :8799 from any *our* live viewer (no
-            # wipe, no run). A running session is untouched.
-            if ($null -ne (Get-DashInstance)) { $null = Stop-Dashboard }
-            if (Start-ShadowDashboard) {
-                Start-Process $ShadowDashUrl
-                Lsh-Ok "Opened $ShadowDashUrl in default browser (shadow db=data/shadow.db)."
-            }
+            $null = Open-Dashboard -Mode "shadow"
         }
         "7" {
             if ($Action -eq "") {

@@ -42,9 +42,28 @@ Operator-facing commands are PowerShell; sequence with `;`, never `&&`.
 
 ## Done means
 
-`python -m pytest -q` green, every changed behaviour covered by a test that fails without
-the change, and a **How to verify** block written for the operator. Report the output, not
-the impression. Rules and examples: [docs/agents/verifying.md](docs/agents/verifying.md).
+`python -m pytest -q` green (run by the agent, never delegated to the operator), every changed
+behaviour covered by a test that fails without the change, and a **How to verify** block
+written for the operator that lists only non-pytest, operator-actionable steps. Report the
+agent-run output, not the impression. Rules and examples:
+[docs/agents/verifying.md](docs/agents/verifying.md).
+
+## Model conduct — verification
+
+- **The agent runs the test suite itself.** `python -m pytest -q` is an internal gate the
+  agent executes and reports on. It is never handed to the operator as a prompt, suggestion,
+  or "How to verify" step.
+- **Never tell, ask, or suggest the operator to run `pytest`** (or any `/pytest` prompt) to
+  validate work. Report the agent-run results instead.
+- **The "How to verify" block is hands-on only.** It steers the operator to *use* the change
+  — launch the script/stack, open the dashboard, click through, observe behavior — not to
+  audit tooling. It must NOT include:
+  - running the test suite (`pytest`);
+  - `gh issue view` / `gh pr view` or `git status`, or any "confirm the issue is closed /
+    PR is merged / checks are green" step — the operator reads GitHub and CI themselves, so
+    don't narrate the agent's own git hygiene back as a verify step;
+  - anything that only re-states state the operator can already see.
+  Point the operator to touch, experience, and exercise the feature.
 
 ## Pushing and merging
 You are managing repo actions and work with the remote GitHub repo. Keep organized work and branch names. Use best convention globally that supports clarity, ease of use, and harmony with the CodeRabbit AI reviewer.

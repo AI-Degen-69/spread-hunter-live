@@ -1205,16 +1205,6 @@ function Test-StackAlive {
             if ((Test-RecordLive -ProcessId $hb.pid -StartedAt $hb.started_at) -ne $false) { return $true }
         }
     }
-    if (Test-Path $ShadowSessionFile) {
-        $sess = $null
-        try { $sess = Get-Content $ShadowSessionFile -Raw | ConvertFrom-Json } catch {}
-        if ($sess -and $sess.observer -and $sess.observer.pid -and $sess.observer.started_ticks) {
-            $observerProc = Get-Process -Id $sess.observer.pid -ErrorAction SilentlyContinue
-            if ($observerProc -and $observerProc.StartTime -and $observerProc.StartTime.ToUniversalTime().Ticks -eq [int64]$sess.observer.started_ticks) {
-                return $true
-            }
-        }
-    }
     if ((Test-OrphanStackProcess) -ne $false) { return $true }
     return $false
 }
@@ -1319,30 +1309,7 @@ function Stop-ShadowSession {
             if ($s.screener.pid)   { $null = Kill-RecordedPid -Name "shadow screener" -TargetPid $s.screener.pid   -StartedTicks $s.screener.started_ticks }
             if ($s.loop.pid)       { $null = Kill-RecordedPid -Name "shadow loop"      -TargetPid $s.loop.pid       -StartedTicks $s.loop.started_ticks }
             if ($s.watcher.pid)    { $null = Kill-RecordedPid -Name "shadow watcher"   -TargetPid $s.watcher.pid    -StartedTicks $s.watcher.started_ticks }
-            if ($s.observer.pid) {
-                $obsStop = $null
-                if ($s.observer_stop_file) { $obsStop = [string]$s.observer_stop_file }
-                elseif ($s.ObserverStopFile) { $obsStop = [string]$s.ObserverStopFile }
-                if ($obsStop) {
-                    try { New-Item -ItemType File -Force -Path $obsStop | Out-Null } catch {}
-                    $deadline = (Get-Date).AddSeconds(10)
-                    while ((Get-Date) -lt $deadline) {
-                        $proc = Get-Process -Id $s.observer.pid -ErrorAction SilentlyContinue
-                        if (-not $proc) { break }
-                        if ($proc.StartTime.ToUniversalTime().Ticks -ne [int64]$s.observer.started_ticks) { break }
-                        Start-Sleep -Milliseconds 500
-                    }
-                    $still = Get-Process -Id $s.observer.pid -ErrorAction SilentlyContinue
-                    if ($still -and $still.StartTime.ToUniversalTime().Ticks -eq [int64]$s.observer.started_ticks) {
-                        $null = Kill-RecordedPid -Name "statistics observer" -TargetPid $s.observer.pid -StartedTicks $s.observer.started_ticks
-                    } else {
-                        Lsh-Ok "Statistics observer stopped gracefully."
-                    }
-                    Remove-Item $obsStop -Force -ErrorAction SilentlyContinue
-                } else {
-                    $null = Kill-RecordedPid -Name "statistics observer" -TargetPid $s.observer.pid -StartedTicks $s.observer.started_ticks
-                }
-            }
+            if ($s.observer.pid)   { $null = Kill-RecordedPid -Name "statistics observer" -TargetPid $s.observer.pid -StartedTicks $s.observer.started_ticks }
         }
         Remove-Item $ShadowSessionFile -ErrorAction SilentlyContinue
     }
@@ -1466,14 +1433,12 @@ function Reset-Environment {
                         -RedirectStandardOutput (Join-Path $RunDir "shadow_run.out.log") `
                         -RedirectStandardError (Join-Path $RunDir "shadow_run.err.log")
                     Lsh-Ok "Rehearsal loop running (PID $($shadowRun.Id), $Minutes minute(s)) - dashboard updates live from $ShadowDbPath."
-                    $ObserverStopFile = Join-Path $RunDir "observer_${ts}_${ShadowRunId}.stop"
-                    if (Test-Path $ObserverStopFile) { Remove-Item $ObserverStopFile -Force -ErrorAction SilentlyContinue }
                     $observer = Start-Process -FilePath "python" `
-                        -ArgumentList "-m", "core_brain.statistics_observer", "--mode", "shadow", "--watch", $ShadowDbPath, "--run-id", $ShadowRunId, "--interval", "5", "--max-hours", (($Minutes / 60) + 0.08), "--stop-file", $ObserverStopFile `
+                        -ArgumentList "-m", "core_brain.statistics_observer", "--mode", "shadow", "--watch", $ShadowDbPath, "--run-id", $ShadowRunId, "--data-dir", $ProjectPath, "--interval", "5", "--max-hours", (($Minutes / 60) + 0.08) `
                         -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
                         -RedirectStandardOutput (Join-Path $RunDir "statistics_observer.out.log") `
                         -RedirectStandardError (Join-Path $RunDir "statistics_observer.err.log")
-                    Lsh-Ok "Statistics observer running (PID $($observer.Id), db=$StatsDbPath, stop-file=$ObserverStopFile)."
+                    Lsh-Ok "Statistics observer running (PID $($observer.Id), db=$StatsDbPath)."
                     # Scope the stop-loss watcher to this rehearsal's ring (the
                     # newest shadow-*.jsonl the loop just began writing). No
                     # run-scoped id is forced, so the dashboard resolves the run
@@ -1510,8 +1475,6 @@ function Reset-Environment {
                         ShadowDbPath = $ShadowDbPath
                         stats_db = $StatsDbPath
                         StatsDbPath = $StatsDbPath
-                        observer_stop_file = $ObserverStopFile
-                        ObserverStopFile = $ObserverStopFile
                         report_path = (Join-Path $ProjectPath "reports")
                         screener = [ordered]@{ pid = $screener.Id; started_ticks = $screener.StartTime.ToUniversalTime().Ticks }
                         loop = [ordered]@{ pid = $shadowRun.Id; started_ticks = $shadowRun.StartTime.ToUniversalTime().Ticks }

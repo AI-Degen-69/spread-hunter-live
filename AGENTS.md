@@ -68,6 +68,7 @@ A `PreToolUse` hook (`scripts/hooks/git_workflow_guard.py`) puts these rules at 
 | [docs/agents/safety.md](docs/agents/safety.md) | Before running any command that could reach the venue |
 | [docs/agents/verifying.md](docs/agents/verifying.md) | Before reporting any change done |
 | [docs/agents/architecture.md](docs/agents/architecture.md) | Finding the module that owns a behaviour; runtime state files |
+| [docs/agents/first-run.md](docs/agents/first-run.md) | Resetting a stale runtime to first-run state; every run command and its arguments; what each menu option covers |
 | [docs/agents/glossary.md](docs/agents/glossary.md) | Naming anything in code, commits, issues or dashboard copy |
 | [docs/agents/strategy.md](docs/agents/strategy.md) | Changing quoting, sizing, market selection or pricing mode |
 | [docs/agents/python-conventions.md](docs/agents/python-conventions.md) | Writing or reviewing Python in this repo |

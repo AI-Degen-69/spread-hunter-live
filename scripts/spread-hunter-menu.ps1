@@ -10,6 +10,9 @@
 #   .\scripts\spread-hunter-menu.ps1 open     # start LIVE dashboard in background (no bot) & open in browser
 #   .\scripts\spread-hunter-menu.ps1 shadow   # start SHADOW dashboard (--db data/shadow.db --port 8799) & open
 #   .\scripts\spread-hunter-menu.ps1 stop-shadow # stop shadow dashboard (close :8799)
+#   .\scripts\spread-hunter-menu.ps1 reset        # stop all, wipe runtime state, verify clean (no start)
+#   .\scripts\spread-hunter-menu.ps1 reset-shadow # ...then start SHADOW dashboard (add -Minutes N for a rehearsal run)
+#   .\scripts\spread-hunter-menu.ps1 reset-live -Yes # ...then start the LIVE stack (rests REAL maker bids)
 #
 # The bot stack (Market Filter / Query Polymarket / Decide & Execute) is started
 # and stopped through the dashboard's own /api/system/start|stop endpoints --
@@ -28,7 +31,8 @@
 param(
     [Parameter(Position = 0)]
     [string]$Action = "",
-    [switch]$Yes
+    [switch]$Yes,
+    [int]$Minutes = 0
 )
 
 $ErrorActionPreference = "Stop"
@@ -1027,35 +1031,292 @@ function Show-CheckoutIdentity {
     }
 }
 
+# ── Reset & fresh start ──
+function Test-RecordLive {
+    <# True when PID is alive and its start time matches the recorded
+    started_at (within 60s). $null when the PID is alive but the record's
+    start time is missing or unreadable - callers treat that as
+    conservatively live so a reset never wipes beside a process it cannot
+    identify. Mirrors the start-time validation in Stop-BotStack and
+    Stop-Guardrail. #>
+    param([int]$ProcessId, $StartedAt)
+    if (-not (Test-PidAlive -ProcessId $ProcessId)) { return $false }
+    $recordedStart = ConvertTo-RecordedStart -StartedAt $StartedAt
+    if ($null -eq $recordedStart) { return $null }
+    try {
+        $proc = Get-Process -Id $ProcessId -ErrorAction Stop
+        return ([math]::Abs(($proc.StartTime - $recordedStart).TotalSeconds) -le 60)
+    } catch { return $null }
+}
+
+function Test-OrphanStackProcess {
+    <# True when a running python inside THIS repo launches a stack service
+    (Trader, Order Manager poll, Market Filter loop, Global Stop Loss,
+    dashboard) that no pidfile records - an orphan left behind by a crashed
+    supervisor. Reset refuses to wipe beside it. $null (unknown) when the
+    process table cannot be read, which callers treat as live. Scoped to
+    $ProjectPath so an unrelated checkout or tool never blocks a reset. #>
+    try {
+        $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop |
+            Where-Object { $_.Name -match '^python' -and $_.CommandLine -and ($_.CommandLine -like "*$ProjectPath*") })
+    } catch { return $null }
+    $markers = @(
+        "core_brain.trader_loop",
+        "core_brain.order_manager poll",
+        "scripts.filter_loop",
+        "scripts.global_stop_loss",
+        "dashboard.server"
+    )
+    foreach ($p in $procs) {
+        foreach ($m in $markers) {
+            if ($p.CommandLine -like "*$m*") { return $true }
+        }
+    }
+    return $false
+}
+
+function Test-StackAlive {
+    <# True when ANY spread-hunter process is alive: dashboards, stack PIDs,
+    the guardrail heartbeat, or an orphaned stack service. Used by reset to
+    decide whether a stop is needed and to prove the environment is clean
+    before starting. A recorded PID is live only when its start time matches;
+    a PID with a missing or unreadable start time - or a registry that cannot
+    be read at all - is treated as live so a reset never wipes beside a
+    process it cannot identify. #>
+    if (Test-LivePort) { return $true }
+    if ($null -ne (Get-DashInstance)) { return $true }
+    if ($null -ne (Get-ShadowDashInstance)) { return $true }
+    if (Test-Path $ProcsFile) {
+        $saved = $null
+        try { $saved = Get-Content $ProcsFile -Raw | ConvertFrom-Json } catch {}
+        if ($null -eq $saved) { return $true }  # unreadable registry -> cannot rule out a live stack
+        foreach ($name in @("filter", "query", "decide")) {
+            $info = Get-ServiceEntry -Saved $saved -Key $name
+            if (-not $info -or -not $info.pid) { continue }
+            if ((Test-RecordLive -ProcessId $info.pid -StartedAt $info.started_at) -ne $false) { return $true }
+        }
+    }
+    if (Test-Path $HbFile) {
+        $hb = $null
+        try { $hb = @(Get-Content $HbFile -Raw | ConvertFrom-Json)[0] } catch {}
+        if ($null -eq $hb) { return $true }  # unreadable heartbeat -> cannot rule out a live watcher
+        if ($hb -and $hb.pid) {
+            if ((Test-RecordLive -ProcessId $hb.pid -StartedAt $hb.started_at) -ne $false) { return $true }
+        }
+    }
+    if ((Test-OrphanStackProcess) -ne $false) { return $true }
+    return $false
+}
+
+function Stop-Guardrail {
+    <# Stop the global stop loss watcher via its heartbeat record (pid +
+    started_at), matching the start-time tolerance used for stack PIDs. A
+    stale or unreadable record is never trusted to kill a PID. #>
+    if (-not (Test-Path $HbFile)) { return }
+    $hb = $null
+    try { $hb = @(Get-Content $HbFile -Raw | ConvertFrom-Json)[0] } catch {}
+    if (-not $hb -or -not $hb.pid) {
+        Remove-Item $HbFile -ErrorAction SilentlyContinue
+        return
+    }
+    if (-not (Test-PidAlive -ProcessId $hb.pid)) {
+        Remove-Item $HbFile -ErrorAction SilentlyContinue
+        return
+    }
+    $recordedStart = ConvertTo-RecordedStart -StartedAt $hb.started_at
+    if ($null -eq $recordedStart) {
+        Lsh-Warn "Guardrail (PID $($hb.pid)) has an unreadable started_at; skipping kill, keeping $HbFile"
+        return
+    }
+    try {
+        $proc = Get-Process -Id $hb.pid -ErrorAction Stop
+        $tolerance = [timespan]::FromSeconds(60)
+        if ([math]::Abs(($proc.StartTime - $recordedStart).TotalSeconds) -gt $tolerance.TotalSeconds) {
+            Lsh-Warn "Guardrail (PID $($hb.pid)) start time mismatch; skipping kill, keeping $HbFile"
+            return
+        }
+        Lsh-Step "Stopping guardrail PID $($hb.pid)..."
+        taskkill /F /T /PID $hb.pid 2>$null | Out-Null
+        Remove-Item $HbFile -ErrorAction SilentlyContinue
+        Lsh-Ok "Guardrail stopped."
+    } catch {
+        Lsh-Warn "Guardrail PID $($hb.pid) unavailable; keeping $HbFile"
+    }
+}
+
+function Clear-RuntimeState {
+    <# Wipe every regenerable runtime artifact for a first-run feel.
+
+    NEVER touches data/orders.db (the production registry) or anything
+    git-tracked: only gitignored state that processes recreate (runtime/*,
+    run/, shadow stores, run-id markers). Call it only after Test-StackAlive
+    reports nothing running. #>
+    $removed = 0
+    $files = @(Get-ChildItem $RunDir -File -ErrorAction SilentlyContinue)
+    if ($files.Count -gt 0) { $files | Remove-Item -Force -ErrorAction SilentlyContinue; $removed += $files.Count }
+    if (Test-Path $LegacyRunDir) {
+        Remove-Item $LegacyRunDir -Recurse -Force -ErrorAction SilentlyContinue
+        $removed++
+    }
+    # Shadow rehearsal artifacts, resolved through $ProjectPath so reset always
+    # targets repository state regardless of the caller's working directory
+    # (data/orders.db is never touched)
+    foreach ($relative in @("data/shadow.db", "data/shadow.db-wal", "data/shadow.db-shm",
+                            "data/shadow_stat_verify.db", "data/shadow_stat_verify.db-wal", "data/shadow_stat_verify.db-shm",
+                            "data/_preview_seed.db", "data/_preview_seed.db-wal", "data/_preview_seed.db-shm",
+                            "data/_smoke_fleet.db", "data/_smoke_fleet.db-wal", "data/_smoke_fleet.db-shm",
+                            "runtime/.current_run_id", "data/.current_run_id")) {
+        $p = Join-Path $ProjectPath $relative
+        if (Test-Path $p) { Remove-Item $p -Force -ErrorAction SilentlyContinue; $removed++ }
+    }
+    Get-ChildItem (Join-Path $ProjectPath "data") -Directory -Filter "shadow_stat_*" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
+    Lsh-Ok "Runtime state wiped ($removed artifact(s) removed). data/orders.db untouched."
+}
+
+function Reset-Environment {
+    <# Full fresh-start reset: verify -> stop -> wipe -> verify clean ->
+    start the requested mode. Mode "none" stops after the clean proof;
+    "shadow" also brings up the shadow dashboard (and a rehearsal run when
+    -Minutes > 0); "live" starts the live stack and REQUIRES $Force because
+    Decide & Execute rests real maker bids. #>
+    param(
+        [Parameter(Mandatory)][string]$Mode,
+        [switch]$Force
+    )
+    Lsh-Banner -Title "RESET & FRESH START" -Subtitle "verify -> stop -> wipe -> start ($Mode)"
+
+    # 1 · VERIFY: what is alive right now
+    $found = @()
+    if (Test-LivePort) { $found += "port :$LivePort (PID $(Get-PortPid))" }
+    $dash = Get-DashInstance;  if ($dash) { $found += "live dashboard PID $($dash.pid)" }
+    $sdash = Get-ShadowDashInstance; if ($sdash) { $found += "shadow dashboard PID $($sdash.pid)" }
+    if (Test-Path $ProcsFile) {
+        try {
+            $saved = Get-Content $ProcsFile -Raw | ConvertFrom-Json
+            foreach ($name in @("filter", "query", "decide")) {
+                $info = Get-ServiceEntry -Saved $saved -Key $name
+                if ($info -and $info.pid -and (Test-PidAlive -ProcessId $info.pid)) { $found += "$name PID $($info.pid)" }
+            }
+        } catch { Lsh-Warn "Could not read $ProcsFile; stop will keep it in place if unreadable." }
+    }
+    if (Test-Path $HbFile) {
+        try {
+            $hb = @(Get-Content $HbFile -Raw | ConvertFrom-Json)[0]
+            if ($hb -and $hb.pid -and (Test-PidAlive -ProcessId $hb.pid)) { $found += "guardrail PID $($hb.pid)" }
+        } catch {}
+    }
+    if ($found.Count -gt 0) { Lsh-Step "Alive: $(($found -join ', ')) - stopping, then wiping." }
+    else                   { Lsh-Ok "Nothing spread-hunter is running (port free, no stack PIDs, no guardrail)." }
+
+    # 2 · STOP (API stop when a dashboard answers; recorded PIDs otherwise)
+    if (Test-StackAlive) {
+        Stop-BotStack
+        Stop-Guardrail
+        $null = Stop-Dashboard
+        $null = Stop-ShadowDashboard
+    } else {
+        Stop-Guardrail  # clears a stale heartbeat record even when nothing is alive
+    }
+
+    # 3 · VERIFY STOPPED before wiping (never wipe beside a live stack)
+    if (Test-StackAlive) {
+        Lsh-Fail "Refusing to wipe: a spread-hunter process is still alive. Re-run reset, or free :$LivePort manually."
+        return $false
+    }
+
+    # 4 · WIPE
+    Clear-RuntimeState
+
+    # 5 · VERIFY CLEAN (pidfiles are gone by construction; still guard against
+    # an unregistered orphan service so we never declare clean beside one)
+    if (Test-LivePort) {
+        Lsh-Fail "Port $LivePort is still LISTENING (PID $(Get-PortPid)) and not owned by this menu. Free it, then start."
+        return $false
+    }
+    if ((Test-StackAlive) -ne $false) {
+        Lsh-Fail "Refusing to declare the environment clean: an unregistered spread-hunter service is still alive. Stop it, then start."
+        return $false
+    }
+    Lsh-Ok "Environment verified clean - no blockers, no contradictions."
+
+    # 6 · START
+    switch ($Mode) {
+        "shadow" {
+            if (Start-ShadowDashboard) {
+                Start-Process $ShadowDashUrl
+                Lsh-Ok "Opened $ShadowDashUrl in default browser (shadow db=data/shadow.db)."
+                if ($Minutes -gt 0) {
+                    Lsh-Step "Launching shadow rehearsal (python -m core_brain.shadow_run --minutes $Minutes --db data/shadow.db)..."
+                    $shadowRun = Start-Process -FilePath "python" `
+                        -ArgumentList "-m", "core_brain.shadow_run", "--minutes", "$Minutes", "--db", "data/shadow.db" `
+                        -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
+                        -RedirectStandardOutput (Join-Path $RunDir "shadow_run.out.log") `
+                        -RedirectStandardError (Join-Path $RunDir "shadow_run.err.log")
+                    Lsh-Ok "Shadow rehearsal running (PID $($shadowRun.Id), $Minutes minute(s)) - dashboard updates live from data/shadow.db."
+                }
+            } else {
+                return $false
+            }
+        }
+        "live" {
+            if (-not $Force) {
+                Lsh-Fail "Live start requires explicit confirmation: use -Yes (CLI) or the typed START confirm (menu)."
+                return $false
+            }
+            if (Start-Dashboard) { Start-BotStack }
+        }
+        default {
+            Lsh-Ok "Reset complete. Next: 'shadow' for a risk-free rehearsal, 'open' for a bare live dashboard, or 'start -Yes' for the live stack."
+        }
+    }
+    return $true
+}
+
 # ── Menu ──
 function Show-MenuGrid {
     $cInfo    = Get-ProfileColor -Name Info
     $cStrong  = Get-ProfileColor -Name Strong
     $cNeutral = Get-ProfileColor -Name Neutral
 
-    Write-Host "  LIVE EXECUTION ENGINE" -ForegroundColor $cInfo
-    Write-Host ("  " + ("─" * 23)) -ForegroundColor (Get-ProfileColor -Name Border)
+    Write-Host "  SPREAD HUNTER - CONTROL CENTER" -ForegroundColor $cInfo
+    Write-Host ("" + ("─" * 30)) -ForegroundColor (Get-ProfileColor -Name Border)
     Write-Host ""
 
-    # Each entry gets a colored badge (number on cyan) + icon + label + dim description
-    $items = @(
-        @{ K = "1"; Icon = "▶"; IconColor = "Success"; V = "Start Live Stack"; D = "Dashboard + screener + engine + fleet (detached)" }
-        @{ K = "2"; Icon = "■"; IconColor = "Error";   V = "Stop Live Stack";  D = "Stop bot stack, then the dashboard" }
-        @{ K = "3"; Icon = "≡"; IconColor = "Info";    V = "Status";           D = "All 5 processes + feed + repo identity" }
-        @{ K = "4"; Icon = "◉"; IconColor = "Warning"; V = "Open Dashboard";   D = "Start live dashboard in background (no bot) & open in browser" }
-        @{ K = "5"; Icon = "◎"; IconColor = "Info";    V = "Open Shadow Dashboard"; D = "python -m dashboard.server --db data/shadow.db --port 8799 + open" }
-        @{ K = "6"; Icon = "□"; IconColor = "Neutral"; V = "Stop Shadow Dashboard";  D = "Close shadow dash on :8799 (stop port)" }
-        @{ K = "q"; Icon = "×"; IconColor = "Neutral"; V = "Exit";            D = "Return to PowerShell" }
+    # Grouped levers: badge (cyan number) + icon + label + description. One
+    # wording style: Start/Open = "Start the <target>", Stop = "Stop the
+    # <target>", Reset+ = "Stop all, wipe state, then start the <target>".
+    # Live actions that rest real maker bids carry "; type START" as the cue.
+    $groups = @(
+        @{ Header = "LIVE - real maker bids"; Items = @(
+            @{ K = "1"; Icon = "▶"; IconColor = "Success"; V = "Start Live Stack";         D = "Start the live dashboard + bot stack; type START to confirm" }
+            @{ K = "2"; Icon = "↺"; IconColor = "Error";   V = "Reset + Live Stack";       D = "Stop all, wipe state, then start the live stack; type START" }
+            @{ K = "3"; Icon = "■"; IconColor = "Error";   V = "Stop Live Stack";          D = "Stop the live bot stack, then the dashboard" }
+            @{ K = "4"; Icon = "◉"; IconColor = "Warning"; V = "Open Dashboard";           D = "Live dashboard only, no bot; open in browser" }
+        ) }
+        @{ Header = "SHADOW - rehearsal, spends nothing"; Items = @(
+            @{ K = "5"; Icon = "◎"; IconColor = "Info";    V = "Open Shadow Dashboard";    D = "Start the shadow dashboard only; drive a run with shadow_run" }
+            @{ K = "6"; Icon = "↺"; IconColor = "Info";    V = "Reset + Shadow Dashboard"; D = "Stop all, wipe state, then start the shadow dashboard only" }
+            @{ K = "7"; Icon = "□"; IconColor = "Neutral"; V = "Stop Shadow Dashboard";    D = "Stop the shadow viewer on :8799 only" }
+        ) }
+        @{ Header = "RESET / STATUS"; Items = @(
+            @{ K = "8"; Icon = "↺"; IconColor = "Warning"; V = "Reset State Only";         D = "Stop all, wipe runtime state, verify clean; starts nothing" }
+            @{ K = "9"; Icon = "≡"; IconColor = "Info";    V = "Status";                   D = "All processes + feed + repo identity" }
+        ) }
     )
-    foreach ($it in $items) {
-        # Badge:  [ 1 ] with cyan number on subtle background
-        Write-Host "   " -NoNewline
-        Write-Host (" {0} " -f $it.K) -BackgroundColor DarkCyan -ForegroundColor White -NoNewline
-        Write-Host ("  {0} " -f $it.Icon) -ForegroundColor (Get-ProfileColor -Name $it.IconColor) -NoNewline
-        Write-Host ("{0,-22}" -f $it.V) -ForegroundColor $cStrong -NoNewline
-        Write-Host $it.D -ForegroundColor $cNeutral
+
+    foreach ($g in $groups) {
+        Write-Host ("  " + $g.Header) -ForegroundColor $cInfo
+        foreach ($it in $g.Items) {
+            Write-Host "   " -NoNewline
+            Write-Host (" {0} " -f $it.K) -BackgroundColor DarkCyan -ForegroundColor White -NoNewline
+            Write-Host ("  {0} " -f $it.Icon) -ForegroundColor (Get-ProfileColor -Name $it.IconColor) -NoNewline
+            Write-Host ("{0,-26}" -f $it.V) -ForegroundColor $cStrong -NoNewline
+            Write-Host $it.D -ForegroundColor $cNeutral
+        }
+        Write-Host ""
     }
-    Write-Host ""
+    Write-Host "  q  × Exit · Return to PowerShell" -ForegroundColor $cNeutral
 }
 
 function Invoke-LiveAction {
@@ -1072,11 +1333,16 @@ function Invoke-LiveAction {
             if (Start-Dashboard) { Start-BotStack }
         }
         "2" {
+            Write-Host ""
+            $confirm = Read-Host "  Type START to confirm: stop everything, wipe state, then start the LIVE stack (real maker bids)"
+            if ($confirm -ne "START") { Lsh-Warn "Reset cancelled."; return }
+            $null = Reset-Environment -Mode "live" -Force
+        }
+        "3" {
             Stop-BotStack
             $null = Stop-Dashboard
             Lsh-Ok "Live stack is down."
         }
-        "3" { Show-Status }
         "4" {
             if (Start-Dashboard) {
                 try {
@@ -1099,15 +1365,26 @@ function Invoke-LiveAction {
             }
         }
         "6" {
+            $confirm = Read-Host "  Stop everything, wipe runtime state, then start the SHADOW dashboard? [y/N]"
+            if ($confirm -match '^[yY]') { $null = Reset-Environment -Mode "shadow" }
+            else { Lsh-Warn "Reset cancelled." }
+        }
+        "7" {
             if (Stop-ShadowDashboard) {
                 Lsh-Ok "Shadow dashboard stopped — port $ShadowPort is free."
             } else {
                 Lsh-Warn "Shadow dashboard stop finished with port still LISTENING — check PID."
             }
         }
+        "8" {
+            $confirm = Read-Host "  Wipe all runtime state (logs, events, feed, shadow stores)? data/orders.db is kept. [y/N]"
+            if ($confirm -match '^[yY]') { $null = Reset-Environment -Mode "none" }
+            else { Lsh-Warn "Reset cancelled." }
+        }
+        "9" { Show-Status }
         "q" { Write-Host "Exiting Spread Hunter Live menu." -ForegroundColor (Get-ProfileColor -Name Neutral); exit 0 }
         default {
-            Lsh-Warn "Invalid selection: $Key (choose 1-6, or q)."
+            Lsh-Warn "Invalid selection: $Key (choose 1-9, or q)."
             Start-Sleep -Seconds 1
         }
     }
@@ -1117,8 +1394,8 @@ function Invoke-LiveAction {
 if ($Action -ne "") {
     $actionMap = @{
         "start"        = "1"
-        "stop"         = "2"
-        "status"       = "3"
+        "reset-live"   = "2"
+        "stop"         = "3"
         "open"         = "4"
         "dashboard"    = "4"
         "dash"         = "4"
@@ -1126,16 +1403,19 @@ if ($Action -ne "") {
         "shadow-open"  = "5"
         "shadow-dash"  = "5"
         "open-shadow"  = "5"
-        "shadow-stop"  = "6"
-        "stop-shadow"  = "6"
+        "reset-shadow" = "6"
+        "shadow-stop"  = "7"
+        "stop-shadow"  = "7"
+        "reset"        = "8"
+        "status"       = "9"
     }
     $key = $Action.Trim().ToLower()
     if ($actionMap.ContainsKey($key)) { $key = $actionMap[$key] }
 
-    # Require -Yes flag for non-interactive start
-    if ($key -eq "1" -and -not $Yes) {
+    # Require -Yes flag for non-interactive start (live stack paths: start, reset-live)
+    if (($key -eq "1" -or $key -eq "2") -and -not $Yes) {
         Write-Host "ERROR: Non-interactive start requires explicit -Yes flag" -ForegroundColor Red
-        Write-Host "Usage: .\scripts\spread-hunter-menu.ps1 start -Yes"
+        Write-Host "Usage: .\scripts\spread-hunter-menu.ps1 start -Yes   or   .\scripts\spread-hunter-menu.ps1 reset-live -Yes"
         exit 1
     }
 
@@ -1146,7 +1426,7 @@ if ($Action -ne "") {
 Lsh-Banner -Title "SPREAD HUNTER LIVE - CONTROL CENTER"
 Show-MenuGrid
 Write-Host "  Select " -ForegroundColor Gray -NoNewline
-Write-Host "[1-6, q]" -ForegroundColor Cyan -NoNewline
+Write-Host "[1-9, q]" -ForegroundColor Cyan -NoNewline
 Write-Host " › " -ForegroundColor Yellow -NoNewline
 $choice = Read-Host
 if ($null -eq $choice) { exit 0 }

@@ -462,6 +462,18 @@ function Adopt-ShadowDashboardInstance {
 
 function Start-ShadowDashboard {
     <# Launch shadow dashboard detached with the current per-run shadow database. #>
+    if (-not $ShadowDbPath) {
+        # No per-run path yet (e.g. Open-Dashboard without a prior Reset) — mint one now
+        # so --db never receives an empty argument.
+        $ts = Get-Date -Format "yyyyMMdd_HHmmss"
+        $ShadowRunId = "shadow-" + ([guid]::NewGuid().ToString("N").Substring(0, 12))
+        $script:ShadowRunId = $ShadowRunId
+        $script:ShadowDbPath = Join-Path $ProjectPath "data/shadow_${ts}_${ShadowRunId}.db"
+        if (-not $StatsDbPath) {
+            $script:StatsDbPath = Join-Path $ProjectPath "data/stats_${ts}_${ShadowRunId}.db"
+        }
+        Lsh-Step "Minted per-run shadow DB for dashboard: $script:ShadowDbPath"
+    }
     $inst = Get-ShadowDashInstance
     if ($null -ne $inst) {
         Lsh-Ok "Shadow dashboard already running (PID $($inst.pid), up $(Format-Uptime $inst.proc.StartTime))."

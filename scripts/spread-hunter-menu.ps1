@@ -472,6 +472,7 @@ function Start-ShadowDashboard {
         if (-not $StatsDbPath) {
             $script:StatsDbPath = Join-Path $ProjectPath "data/stats_${ts}_${ShadowRunId}.db"
         }
+        # Keep all generated per-run paths in script scope for subsequent starts.
         Lsh-Step "Minted per-run shadow DB for dashboard: $script:ShadowDbPath"
     }
     $inst = Get-ShadowDashInstance
@@ -1162,6 +1163,7 @@ function Test-OrphanStackProcess {
     $markers = @(
         "core_brain.trader_loop",
         "core_brain.shadow_run",
+        "core_brain.statistics_observer",
         "core_brain.order_manager poll",
         "scripts.filter_loop",
         "scripts.global_stop_loss",
@@ -1433,7 +1435,7 @@ function Reset-Environment {
                         -RedirectStandardError (Join-Path $RunDir "shadow_run.err.log")
                     Lsh-Ok "Rehearsal loop running (PID $($shadowRun.Id), $Minutes minute(s)) - dashboard updates live from $ShadowDbPath."
                     $observer = Start-Process -FilePath "python" `
-                        -ArgumentList "-m", "core_brain.statistics_observer", "--mode", "shadow", "--watch", $ShadowDbPath, "--run-id", $ShadowRunId, "--interval", "5", "--max-hours", (($Minutes / 60) + 0.08) `
+                        -ArgumentList "-m", "core_brain.statistics_observer", "--mode", "shadow", "--watch", $ShadowDbPath, "--run-id", $ShadowRunId, "--data-dir", $ProjectPath, "--interval", "5", "--max-hours", (($Minutes / 60) + 0.08) `
                         -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
                         -RedirectStandardOutput (Join-Path $RunDir "statistics_observer.out.log") `
                         -RedirectStandardError (Join-Path $RunDir "statistics_observer.err.log")

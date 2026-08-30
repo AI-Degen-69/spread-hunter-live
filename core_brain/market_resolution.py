@@ -356,13 +356,19 @@ def _held_shares_by_token(registry, condition_id: str, run_id: str) -> tuple[dic
     down_token = next((t for t, s in side_of.items() if s == "DOWN"), None)
 
     # The closes table carries no per-leg token id, so subtracting a close needs
-    # the UP/DOWN mapping above. If a close exists but the mapping is incomplete
-    # (no quote rows for this condition), we cannot prove any shares remain --
-    # the close could have taken every one. Be conservative: treat the position
-    # as dissolved rather than risk re-booking shares a merge/exit already
-    # realised. Real shadow runs write the UP/DOWN quote per leg at submit time,
-    # so this fallback only fires on partial/legacy stores.
-    if close_rows and (up_token is None or down_token is None):
+    # the UP/DOWN mapping above. A merge/settlement dissolves BOTH legs: if either
+    # leg's token is unmapped we cannot prove which shares left, so be conservative
+    # and treat the position as dissolved rather than re-book the merged-away side.
+    # A single-buy-exit removes ONE leg (the one its up_price encoding names); an
+    # unmapped OTHER leg was never touched by that exit and must be kept, NOT
+    # discarded here. Real shadow runs always write the UP/DOWN quote per leg, so
+    # the conservative branch only fires on partial/legacy stores with a merge-
+    # type close.
+    merge_type_close = any(
+        cr["method"] in ("merge", "shadow_merge", "shadow_settlement")
+        for cr in close_rows
+    )
+    if merge_type_close and (up_token is None or down_token is None):
         return {}, {}
 
     def _drip(token, sh, removed):
@@ -610,11 +616,16 @@ def sweep_market_resolutions(
                 # Cheap local gate before any network call: a market whose net
                 # held inventory is empty (its position was merged / exited /
                 # already settled) has nothing left to redeem, so it needs no
-                # gamma re-read this rotation.
+                # gamma re-read this rotation. Also honor the unreachable
+                # backoff so a Gamma outage here isn't re-called every tick.
                 held, _hc = _held_shares_by_token(registry, cid, r_id)
-                if sum(max(0.0, float(v)) for v in held.values()) > 1e-9:
+                if (sum(max(0.0, float(v)) for v in held.values()) > 1e-9
+                        and now >= _unreachable_backoff.get(cid, 0.0)):
                     state = fetch(gamma_host, cid)
-                    if (not state.unreachable) and state.resolved:
+                    if state.unreachable:
+                        _unreachable_backoff[cid] = now + UNREACHABLE_RETRY_SEC
+                    elif state.resolved:
+                        _unreachable_backoff.pop(cid, None)
                         shares, pnl = _settle(state)
                         results[-1].settled_shares = shares
                         results[-1].settled_pnl = pnl

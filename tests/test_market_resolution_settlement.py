@@ -173,6 +173,33 @@ def test_unknown_winner_books_nothing(tmp_path: Path):
     assert len(_settlement_closes(reg)) == 0
 
 
+def test_single_leg_exit_keeps_other_leg_inventory(tmp_path: Path):
+    """A single-buy-exit on the UP leg must not discard the DOWN loser.
+
+    Only the UP token carries a quote mapping; the DOWN token has fills but no
+    quoted side. A one-leg exit with up_price set removes only UP, so the still-
+    held DOWN loser must survive to settlement (a loser that is booked), not be
+    wiped by an over-eager close-netting guard.
+    """
+    reg = _registry(tmp_path)
+    _quote(reg, "c1", "up", "UP")           # only UP is mapped in quotes
+    _buy(reg, "c1", "up", 10.0, 0.55)        # $5.50 -> exited below
+    _buy(reg, "c1", "dn", 10.0, 0.40)        # $4.00 DOWN loser, still held
+    # Exit the whole UP leg (single_buy_exit names it via up_price).
+    reg.log_close(CloseRecord(
+        ts=2, condition_id="c1", method="single_buy_exit", shares=10.0,
+        up_price=0.55, up_cost_removed=5.5, cost_basis=5.5, proceeds=5.5,
+        realized_pnl=0.0, run_id=RUN,
+    ))
+
+    booked = book_shadow_settlement(reg, "c1", _state("up"), run_id=RUN)
+
+    # Winner is UP but UP was fully exited: only the DOWN loser remains,
+    # worth $0.00 -> a realized loss of -$4.00, booked (not discarded).
+    assert booked is not None
+    assert booked["realized_pnl"] == -4.0
+
+
 def test_unreachable_market_is_backed_off_not_re_fetched(tmp_path: Path):
     """A gamma failure must not be hammered every rotation."""
     reg = _registry(tmp_path)

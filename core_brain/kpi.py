@@ -468,6 +468,8 @@ def _funnel_from_pipeline(
     by_mkt: dict[str, dict[str, Any]],
     pipeline_path: Path | str | None = None,
     markets_path: Path | str | None = None,
+    *,
+    resolved_cids: Optional[set[str]] = None,
 ) -> Optional[dict[str, Any]]:
     """Build the Level 2 market funnel from the screener's own snapshot and annotate graduated markets with live results.
     `runtime/pipeline.json` is the same file the paper-run scan (server/fleet_dash.py) renders, so sourcing the funnel from it makes the live Level 2 lanes compare 1:1 with the paper-run scan: identical gate names [...]
@@ -524,14 +526,21 @@ def _funnel_from_pipeline(
             specs = []
     if not isinstance(specs, list):
         specs = []
+    _resolved = resolved_cids or set()
     for s in specs:
         if not isinstance(s, dict):
             continue
         # Skip markets the ranker recorded as already resolved. The gamma query
         # already excludes closed markets, but a market can resolve between the
         # rank pass and the dashboard read; days_to_resolve < 0 means expired.
+        # A cid in the resolutions table is the same fact, recorded by the
+        # shadow resolution sweeper (the live venue_sync path drops by_mkt
+        # entries instead; shadow resolutions keep the market visible).
         dtr = s.get("days_to_resolve")
         if isinstance(dtr, (int, float)) and dtr < 0:
+            continue
+        cid = str(s.get("cid") or s.get("condition_id") or "")
+        if cid and cid.lower() in _resolved:
             continue
         cid = s.get("cid") or s.get("condition_id") or ""
         m = by_mkt.get(cid, {})
@@ -771,6 +780,26 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # empty for any run that happened not to sweep.
     all_account_marks = reg.get_all_account_marks()
     resolutions = reg.get_all_resolutions()
+    # The terminal marker the shadow resolution sweeper finally writes
+    # (OrderRegistry.log_resolution -- wired via core_brain.market_resolution).
+    # A cid here is finished on the venue; the read side surfaces it as
+    # FINISHED instead of leaving it reading QUOTING off its append-only
+    # quotes ledger. Lowercased for case-insensitive cid matching. Also carry
+    # the winner + resolved time so the dashboard can render the resolution.
+    # NOTE: named `resolution_cids` (not `resolved_cids`) because a pre-existing
+    # `venue_sync` drop-filter set further down also uses `resolved_cids`;
+    # reusing the name would clobber this one before the KPI count reads it.
+    resolution_cids = set()
+    resolution_by_cid: dict[str, dict[str, Any]] = {}
+    for r in resolutions:
+        if not (isinstance(r, dict) and r.get("condition_id")):
+            continue
+        cid = str(r["condition_id"]).lower()
+        resolution_cids.add(cid)
+        resolution_by_cid[cid] = {
+            "winner": r.get("winning_token"),
+            "resolved_ts": r.get("resolved_ts"),
+        }
 
     runs = list_runs(reg)
 
@@ -961,6 +990,16 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
 
         by_mkt[cid] = {
             **meta,
+            # FINISHED on the venue: recorded by the resolution sweeper, OR
+            # the ranker's own dtr<0 signal (the live venue_sync path keeps
+            # its drop-vanish behaviour below; shadow resolutions keep the
+            # market visible so the operator sees it resolve, not vanish).
+            "resolved": (cid.lower() in resolution_cids)
+                       or (isinstance(meta.get("days_to_resolve"), (int, float))
+                           and meta.get("days_to_resolve") < 0),
+            # Winner + resolved time when the sweeper recorded a resolution,
+            # else None. The dashboard renders this under the FINISHED pill.
+            "resolution": resolution_by_cid.get(cid.lower()),
             "up_sh": up_sh,
             "dn_sh": dn_sh,
             "up_cost": up_cost,
@@ -1060,7 +1099,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # a snapshot, or when serving a non-production db (a test/smoke db), where
     # the repo's snapshot would misrepresent that db's own telemetry.
     if db_path is None or Path(db_path).resolve() in _pipeline_sourced_dbs() or _is_pipeline_shadow_db(db_path):
-        pipeline_funnel = _funnel_from_pipeline(by_mkt)
+        pipeline_funnel = _funnel_from_pipeline(by_mkt, resolved_cids=resolution_cids)
     else:
         pipeline_funnel = None
     if pipeline_funnel is not None:
@@ -1074,9 +1113,16 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
             "raw_count": max(len(census_rows), len(all_cids)),
             "filters": funnel_filters,
             "final_count": len({q["condition_id"] for q in quotes if q.get("condition_id")}),
+            # Exclude resolved cids from the runtime-fallback graduated list:
+            # a market that ended must NOT read as still-graduated, or the
+            # frontend's "left the funnel" FINISHED escape hatch (the one path
+            # that works for shadow dbs) never fires. Without this exclude
+            # every quoted market stays QUOTING forever in a shadow run.
             "graduated": [
                 {"condition_id": cid, "slug": m["slug"], "title": m["title"], "fills": m["fills_count"], "pnl": m["realized_pnl"]}
-                for cid, m in by_mkt.items() if m["fills_count"] > 0 or m["quotes_count"] > 0
+                for cid, m in by_mkt.items()
+                if (m["fills_count"] > 0 or m["quotes_count"] > 0)
+                and not m.get("resolved")
             ],
             "source": "runtime",
             "snapshot_age": None,
@@ -1525,6 +1571,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         "bankroll": _CFG.bankroll_usd,
         "census": census,
         "settlements": closes[:60],
+        "resolved_markets": len(resolution_cids),
 
         # Level 2: Market drilldown & Funnel
         "by_market": by_mkt,

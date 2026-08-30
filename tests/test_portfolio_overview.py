@@ -31,7 +31,7 @@ import pytest
 
 from core_brain import kpi as kpi_mod
 from core_brain.kpi import report
-from core_brain.order_registry import SCHEMA, CloseRecord, MarketEventRecord, OrderRegistry
+from core_brain.order_registry import SCHEMA, CloseRecord, MarketEventRecord, OrderRegistry, ResolutionRecord
 from pathlib import Path
 
 _STATIC_DIR = Path(__file__).resolve().parent.parent / 'dashboard' / 'static'
@@ -367,6 +367,56 @@ def test_resolved_market_drops_when_ranker_records_negative_days_to_resolve(temp
     data = report(db_path=temp_db, run_id=RUN)
     assert "0xexpired" not in data["by_market"]
     assert "0xlive" in data["by_market"]
+
+
+# --------------------------------------------------------------------------
+# Regression (shadow-run bug): a market the sweeper resolved must read
+# FINISHED, not stay QUOTING off its append-only quotes ledger.
+# --------------------------------------------------------------------------
+
+def test_resolved_market_carries_resolved_flag_from_resolutions_table(temp_db, tmp_path, monkeypatch):
+    """A market whose cid is in the ``resolutions`` table (recorded by the
+    shadow resolution sweeper) reads ``resolved=True`` and is EXCLUDED from
+    the runtime-fallback funnel's ``graduated`` list -- so the dashboard's
+    "left the funnel" FINISHED escape hatch fires instead of the market
+    staying QUOTING forever off its append-only quotes history.
+    """
+    monkeypatch.setattr(kpi_mod, "REPO_ROOT", tmp_path)
+    reg = OrderRegistry(temp_db, run_id=RUN)
+
+    # A market the run quoted (so it has quotes_count > 0 and would read
+    # QUOTING forever without the resolved marker).
+    reg.log_quote(__import__("core_brain.order_registry", fromlist=["QuoteRecord"]).QuoteRecord(
+        ts=time.time() - 10, condition_id="0xended", token_id="tok",
+        side="UP", price=0.47, size=20, market_slug="ended",
+    ))
+    reg.log_quote(__import__("core_brain.order_registry", fromlist=["QuoteRecord"]).QuoteRecord(
+        ts=time.time() - 10, condition_id="0xlive2", token_id="tok",
+        side="UP", price=0.47, size=20, market_slug="live2",
+    ))
+    # The sweeper confirmed the first market ended on the venue and recorded it.
+    reg.log_resolution(ResolutionRecord(
+        condition_id="0xended", winning_token=None,
+        resolved_ts=time.time() - 5, run_id=RUN,
+    ))
+
+    data = report(db_path=temp_db, run_id=RUN)
+    by_mkt = data["by_market"]
+    # Both markets stay in the drill-down (shadow resolutions keep the
+    # market visible so the operator sees it resolve, not vanish).
+    assert "0xended" in by_mkt
+    assert "0xlive2" in by_mkt
+    # The resolved one carries the flag; the live one does not.
+    assert by_mkt["0xended"]["resolved"] is True
+    assert by_mkt["0xlive2"]["resolved"] is False
+
+    # The resolved market is NOT in the runtime-fallback graduated list:
+    # this is the gate the frontend's FINISHED heuristic reads.
+    funnel = data["funnel"]
+    grad_cids = {g["condition_id"] for g in (funnel.get("graduated") or [])}
+    assert "0xended" not in grad_cids, (
+        "resolved market must leave the graduated list or it reads QUOTING")
+    assert "0xlive2" in grad_cids
 
 
 # --------------------------------------------------------------------------

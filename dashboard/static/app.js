@@ -762,6 +762,10 @@ function renderKPIs(kpi, status) {
       <div class="kpi-label">Total Fills</div>
       ${fmtVal(kpi.fills || 0)}
     </div>
+    <div class="kpi-tile">
+      <div class="kpi-label">Resolved</div>
+      ${fmtVal(kpi.resolved_markets !== undefined && kpi.resolved_markets !== null ? kpi.resolved_markets : 0)}
+    </div>
   `;
   renderAnalyticsSurface(kpi, status);
 }
@@ -797,6 +801,15 @@ function fmtOrderAge(sec) {
   if (sec < 60) return sec + 's';
   if (sec < 3600) return Math.floor(sec / 60) + 'm';
   return Math.floor(sec / 3600) + 'h';
+}
+
+function fmtAgo(tsSec) {
+  if (tsSec === null || tsSec === undefined) return '';
+  const sec = Math.max(0, (Date.now() / 1000) - tsSec);
+  if (sec < 60) return Math.floor(sec) + 's ago';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm ago';
+  if (sec < 86400) return Math.floor(sec / 3600) + 'h ago';
+  return Math.floor(sec / 86400) + 'd ago';
 }
 
 function isCancelledStatus(status) {
@@ -959,7 +972,14 @@ function renderMarkets(kpi, state) {
     // kpi.funnel.graduated anymore (e.g., Mlb Lad Atl 2026-08-27 past date).
     // HasFunnel guards: when funnel empty (no scan yet) don't mark everything.
     const hasFunnel = graduatedCids.size > 0;
-    const isFinished = (m.days_to_resolve !== null && m.days_to_resolve < 0)
+    // FINISHED when the backend recorded the terminal marker (the shadow
+    // resolution sweeper's `resolutions` row, or the ranker's dtr<0), OR the
+    // market left the graduated funnel (the existing universe-left path).
+    // `m.resolved` is the primary, durable signal; the funnel heuristic is
+    // the fallback that still works when no sweeper has run (live runs that
+    // only drop by_mkt via venue_sync, or older shadow dbs pre-sweeper).
+    const isFinished = m.resolved === true
+      || (m.days_to_resolve !== null && m.days_to_resolve < 0)
       || (hasFunnel && !graduatedCids.has(cid) && hasOrders);
 
     // Badge: per-status pills same size/style as order pills — OPEN blue, FILLED green, 0 ACTIVE gray
@@ -1000,7 +1020,10 @@ function renderMarkets(kpi, state) {
       <td><span class="pill ${hedged === 'Hedged' ? 'active' : 'reconnecting'}">${hedged}</span></td>
       <td class="mono">${esc(m.realized_pnl !== null && m.realized_pnl !== undefined ? fmtUSD(m.realized_pnl) : '--')}</td>
       <td class="mono">${esc(fills_count)}</td>
-      <td><span class="pill ${isFinished ? 'finished' : (m.quotes_count > 0 ? 'quoting-breathing' : 'stopped')}">${isFinished ? 'FINISHED' : (m.quotes_count > 0 ? 'QUOTING' : 'IDLE')}</span></td>
+      <td>
+        <span class="pill ${isFinished ? 'finished' : (m.quotes_count > 0 ? 'quoting-breathing' : 'stopped')}">${isFinished ? 'FINISHED' : (m.quotes_count > 0 ? 'QUOTING' : 'IDLE')}</span>
+        ${m.resolution ? `<div class="caption-muted" title="resolved ${new Date(m.resolution.resolved_ts * 1000).toLocaleString()}">${m.resolution.winner ? ('Winner: ' + esc(m.resolution.winner)) : 'Resolved'} · ${fmtAgo(m.resolution.resolved_ts)}</div>` : ''}
+      </td>
     </tr>`;
 
     // Expanded sub-row with individual orders

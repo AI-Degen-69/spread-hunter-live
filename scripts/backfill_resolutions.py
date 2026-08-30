@@ -12,7 +12,7 @@ it writes `resolutions` + settlement `closes`, which must never enter the real
 order history.
 
 Usage:
-    python -m scripts.backfill_resolutions --db data/29-08_23-50_shadow-01.db [--run-id shadow-01]
+    python -m scripts.backfill_resolutions --db data/01_shadow_29-08_23-50.db [--run-id shadow-01]
     python -m scripts.backfill_resolutions --db data/orders.db   # refused
 
 It reads the current map of markets only to know what to SKIP (markets still

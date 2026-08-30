@@ -278,13 +278,16 @@ function ConvertTo-RelativePath {
 }
 
 function Get-NextShadowSeq {
-    <# Next 2-digit sequence (01..99) for the short shadow db name, derived
-    from existing DD-MM_HH-mm_shadow-NN.db files in data/ so a new run never
-    collides with a previous one. #>
+    <# Next 2-digit run id (01..99) used to name the NN_shadow_<stamp>.db db
+    and the shadow-NN run id itself. It is derived from existing data/*.db files
+    that already use the NN_shadow_ prefix, so a new run never collides with a
+    previous one. Because a clean reset wipes those files, the count restarts at
+    01 each fresh session and counts up run by run. #>
     $seqs = @(Get-ChildItem (Join-Path $ProjectPath "data") -File -Filter "*.db" -ErrorAction SilentlyContinue |
-        ForEach-Object { if ($_.BaseName -match '_shadow-(\d+)$') { [int]$Matches[1] } })
+        ForEach-Object { if ($_.BaseName -match '^(\d{1,2})_shadow_') { [int]$Matches[1] } })
     $next = 1
     if ($seqs.Count -gt 0) { $next = (@($seqs | Measure-Object -Maximum).Maximum) + 1 }
+    if ($next -gt 99) { $next = 1 }   # stay within the 00-99 run-id range
     return ("{0:D2}" -f $next)
 }
 
@@ -521,13 +524,16 @@ function Start-ShadowDashboard {
     <# Launch shadow dashboard detached with the current per-run shadow database. #>
     if (-not $ShadowDbPath) {
         # No per-run path yet (e.g. Open-Dashboard without a prior Reset) — mint one now
-        # so --db never receives an empty argument.
-        $ts = Get-Date -Format "yyyyMMdd_HHmmss"
-        $ShadowRunId = "shadow-" + ([guid]::NewGuid().ToString("N").Substring(0, 12))
+        # so --db never receives an empty argument. Canonical run db name:
+        # NN_shadow_DD-MM_HH-mm.db where NN is the run id (shared with the
+        # statistical/overnight flows; resets to 01 on a clean reset).
+        $stamp = Get-Date -Format "dd-MM_HH-mm"
+        $dbSeq = Get-NextShadowSeq
+        $ShadowRunId = "shadow-$dbSeq"
         $script:ShadowRunId = $ShadowRunId
-        $script:ShadowDbPath = Join-Path $ProjectPath "data/shadow_${ts}_${ShadowRunId}.db"
+        $script:ShadowDbPath = Join-Path $ProjectPath "data/${dbSeq}_shadow_${stamp}.db"
         if (-not $StatsDbPath) {
-            $script:StatsDbPath = Join-Path $ProjectPath "data/stats_${ts}_${ShadowRunId}.db"
+            $script:StatsDbPath = Join-Path $ProjectPath "data/stats_${stamp}_${ShadowRunId}.db"
         }
         Lsh-Step "Minted per-run shadow DB for dashboard: $script:ShadowDbPath"
     }
@@ -1413,7 +1419,7 @@ function Clear-RuntimeState {
     }
     Get-ChildItem (Join-Path $ProjectPath "data") -Directory -Filter "shadow_stat_*" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
     Get-ChildItem (Join-Path $ProjectPath "data") -File -Filter "stats_*.db*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-    Get-ChildItem (Join-Path $ProjectPath "data") -File -Filter "*.db*" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(overnight_validation_|\d{2}-\d{2}_\d{2}-\d{2}_shadow-\d+)' } | Remove-Item -Force -ErrorAction SilentlyContinue
+    Get-ChildItem (Join-Path $ProjectPath "data") -File -Filter "*.db*" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(overnight_validation_|\d{2}-\d{2}_\d{2}-\d{2}_shadow-\d+|\d{1,2}_shadow_|shadow_\d{8}_\d{6}_shadow-)' } | Remove-Item -Force -ErrorAction SilentlyContinue
     Get-ChildItem $ProjectPath -File -Filter "stats_*.db*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     Get-ChildItem (Join-Path $ProjectPath "reports") -File -Filter "*_statistics_report*" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
     New-Item -ItemType Directory -Force -Path $RunDir | Out-Null
@@ -1548,10 +1554,14 @@ function Reset-Environment {
     Lsh-Phase -Text "PHASE 6 · START ($Mode)"
     switch ($Mode) {
         "shadow" {
-            $ts = Get-Date -Format "yyyyMMdd_HHmmss"
-            $ShadowRunId = "shadow-" + ([guid]::NewGuid().ToString("N").Substring(0, 12))
-            $ShadowDbPath = Join-Path $ProjectPath "data/shadow_${ts}_${ShadowRunId}.db"
-            $StatsDbPath = Join-Path $ProjectPath "data/stats_${ts}_${ShadowRunId}.db"
+            # Short, readable run names: NN_shadow_DD-MM_HH-mm.db where NN is the
+            # run id — it ties this db to every order/close/stats record stamped
+            # with the same $ShadowRunId. Count restarts at 01 on a clean reset.
+            $stamp = Get-Date -Format "dd-MM_HH-mm"
+            $dbSeq = Get-NextShadowSeq
+            $ShadowRunId = "shadow-$dbSeq"
+            $ShadowDbPath = Join-Path $ProjectPath "data/${dbSeq}_shadow_${stamp}.db"
+            $StatsDbPath = Join-Path $ProjectPath "data/stats_${stamp}_${ShadowRunId}.db"
             if (Start-ShadowDashboard) {
                 Start-Process $ShadowDashUrl
                 Lsh-Ok "Opened $ShadowDashUrl in default browser (shadow db=$ShadowDbPath)."
@@ -1663,11 +1673,13 @@ function Reset-Environment {
             }
         }
         "statistical" {
-            # Short, readable run names: DD-MM_HH-mm_shadow-NN where NN is the
-            # next free sequence (01..99) across every shadow db in data/.
+            # Short, readable run names: NN_shadow_DD-MM_HH-mm.db where NN is the
+            # run id (shared with the shadow-run flow; resets to 01 on a clean
+            # reset). It ties this db to the run records, stats store and report.
             $stamp = Get-Date -Format "dd-MM_HH-mm"
-            $ShadowRunId = "shadow-" + (Get-NextShadowSeq)
-            $ShadowDbPath = Join-Path $ProjectPath "data/${stamp}_${ShadowRunId}.db"
+            $dbSeq = Get-NextShadowSeq
+            $ShadowRunId = "shadow-$dbSeq"
+            $ShadowDbPath = Join-Path $ProjectPath "data/${dbSeq}_shadow_${stamp}.db"
             $StatsDbPath = Join-Path $ProjectPath "data/stats_${stamp}_${ShadowRunId}.db"
             $reportPath = Join-Path $ProjectPath "reports/validation_${stamp}_${ShadowRunId}"
             $runHours = if ($Hours -gt 0) { $Hours } else { 12.0 }

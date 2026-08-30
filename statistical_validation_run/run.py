@@ -470,6 +470,7 @@ def main(
     # is generated from the shadow store through the same kpi.report path the
     # live dashboard reads, scoped to this run. The verdict is INCONCLUSIVE
     # whenever the sample is underpowered; GO/NO-GO only with adequate sample.
+    artifacts_failed = False
     try:
         from core_brain.kpi import report as kpi_report
         kpi = kpi_report(db_path, run_id=run_id)
@@ -513,9 +514,14 @@ def main(
             artifact_dir,
         )
     except Exception as e:  # noqa: BLE001 - the run itself already finished
+        artifacts_failed = True
         log.warning(
             "artifact emission failed (run finished, results remain in %s): %s",
             db_path, e,
         )
 
+    # The overnight launcher keys off the exit code; a run whose artifact
+    # bundle failed to emit must not look successful to the harness.
+    if artifacts_failed:
+        return 2
     return 0 if result.results else 1

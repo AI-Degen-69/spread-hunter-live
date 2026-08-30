@@ -33,6 +33,10 @@ _SLIMMED_KPI_KEYS = frozenset({
 class StatisticsStore:
     def __init__(self, path: Path):
         self.path = path
+        # Rows pruned since the last VACUUM. Once the store is at capacity every
+        # append prunes, so gating on this (not on total row count) keeps a
+        # long overnight observer from VACUUMing on every single tick.
+        self._pruned_since_compact = 0
 
     @classmethod
     def create(cls, data_dir: Path | str, timestamp: str, run_id: str) -> "StatisticsStore":
@@ -89,12 +93,14 @@ class StatisticsStore:
                 "(SELECT rowid FROM snapshots ORDER BY ts DESC, rowid DESC LIMIT ?)",
                 (MAX_SNAPSHOT_ROWS,),
             )
-        total = con.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
-        if total % COMPACT_EVERY == 0:
-            # VACUUM cannot run inside a transaction: flush the pending insert
-            # first (the outer `with` would otherwise commit it after VACUUM).
-            con.commit()
-            con.execute("VACUUM")
+            self._pruned_since_compact += excess
+            if self._pruned_since_compact >= COMPACT_EVERY:
+                # VACUUM cannot run inside a transaction: flush the pending
+                # insert first (the outer `with` would otherwise commit it
+                # after VACUUM).
+                con.commit()
+                con.execute("VACUUM")
+                self._pruned_since_compact = 0
 
 
 def _slim_kpi(kpi: dict[str, Any]) -> dict[str, Any]:

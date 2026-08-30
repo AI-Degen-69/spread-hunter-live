@@ -200,6 +200,50 @@ def test_single_leg_exit_keeps_other_leg_inventory(tmp_path: Path):
     assert booked["realized_pnl"] == -4.0
 
 
+def test_up_exit_unmapped_keeps_only_down(tmp_path: Path):
+    """UP leg exited but its token has no quote mapping -> keep only DOWN.
+
+    The already-exited UP shares are unattributable, so they must be excluded;
+    only the known opposite (DOWN) leg survives and is settled as the loser.
+    """
+    reg = _registry(tmp_path)
+    _quote(reg, "c1", "dn", "DOWN")          # only DOWN is mapped
+    _buy(reg, "c1", "up", 10.0, 0.60)        # UP bought but not quoted below
+    _buy(reg, "c1", "dn", 10.0, 0.50)        # $5.00 DOWN loser
+    reg.log_close(CloseRecord(
+        ts=2, condition_id="c1", method="single_buy_exit", shares=10.0,
+        up_price=0.60, up_cost_removed=6.0, cost_basis=6.0,
+        proceeds=6.0, realized_pnl=0.0, run_id=RUN,
+    ))
+
+    booked = book_shadow_settlement(reg, "c1", _state("up"), run_id=RUN)
+
+    # UP (winner) was exited and is excluded; only DOWN remains -> realized loss.
+    assert booked is not None
+    assert booked["realized_pnl"] == -5.0
+
+
+def test_down_exit_unmapped_keeps_only_up(tmp_path: Path):
+    """DOWN leg exited but its token has no quote mapping -> keep only UP."""
+    reg = _registry(tmp_path)
+    _quote(reg, "c1", "up", "UP")            # only UP is mapped
+    _buy(reg, "c1", "up", 10.0, 0.50)        # $5.00 UP loser
+    _buy(reg, "c1", "dn", 10.0, 0.60)        # DOWN bought but not quoted below
+    reg.log_close(CloseRecord(
+        ts=2, condition_id="c1", method="single_buy_exit", shares=10.0,
+        up_price=None, dn_cost_removed=6.0, cost_basis=6.0,
+        proceeds=6.0, realized_pnl=0.0, run_id=RUN,
+    ))
+
+    # Winner is DOWN, which was exited and excluded: only UP (the loser) remains.
+    state = _state("dn")
+    state = MarketEndState(condition_id="c1", resolved=True, winning_token_id="dn")
+    booked = book_shadow_settlement(reg, "c1", state, run_id=RUN)
+
+    assert booked is not None
+    assert booked["realized_pnl"] == -5.0
+
+
 def test_unreachable_market_is_backed_off_not_re_fetched(tmp_path: Path):
     """A gamma failure must not be hammered every rotation."""
     reg = _registry(tmp_path)

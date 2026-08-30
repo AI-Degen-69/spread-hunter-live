@@ -371,6 +371,28 @@ def _held_shares_by_token(registry, condition_id: str, run_id: str) -> tuple[dic
     if merge_type_close and (up_token is None or down_token is None):
         return {}, {}
 
+    # A single-buy-exit names ONE leg (up_price set -> the UP leg, otherwise the
+    # DOWN leg). If the exited leg's token is unmapped we cannot subtract it by
+    # token id, but we DO know which leg it was: the exit provably did not touch
+    # the opposite leg, so that opposite leg (if mapped) is the only inventory
+    # that certainly survives. Exclude every unattributable token -- otherwise a
+    # later win could redeem already-exited shares (double-counted proceeds).
+    for cr in close_rows:
+        m = cr["method"]
+        if m not in ("single_buy_exit", "naked_exit"):
+            continue
+        exited_up = cr["up_price"] is not None
+        if exited_up and up_token is None:
+            keep = down_token
+        elif (not exited_up) and down_token is None:
+            keep = up_token
+        else:
+            continue
+        if keep is None:
+            return {}, {}
+        shares = {k: v for k, v in shares.items() if k == keep}
+        cost = {k: v for k, v in cost.items() if k == keep}
+
     def _drip(token, sh, removed):
         if token is None or token not in shares:
             return

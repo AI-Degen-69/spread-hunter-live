@@ -765,6 +765,10 @@ def _parse_args(argv: Optional[list[str]] = None):
                     help="rotation cadence in seconds (default: 5.0)")
     ap.add_argument("--db", default=None,
                     help="explicit per-run shadow store path; data/orders.db is refused")
+    ap.add_argument("--run-id", default=None,
+                    help="run id stamped on every row (e.g. shadow-01); matches the "
+                         "statistics observer's --run-id so records line up across "
+                         "the db, stats store and report. Defaults to shadow_run_id()")
     ap.add_argument("--max-markets", type=int, default=None,
                     help="cap the number of markets rotated (default: all)")
     ap.add_argument("--funder", default=None,
@@ -812,6 +816,7 @@ def main(
         fetch_books=fetch_books or _default_fetch_books(),
         interval=a.interval,
         funder=a.funder,
+        run_id=a.run_id,
     )
 
     quoted = sum(1 for r in result.results if r.status == "QUOTED")

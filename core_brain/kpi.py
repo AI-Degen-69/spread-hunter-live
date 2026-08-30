@@ -593,8 +593,18 @@ def _funnel_from_pipeline(
 
 
 def _is_pipeline_shadow_db(db_path: Path | str) -> bool:
+    # A per-run shadow registry (vs the live orders.db). The menu mints run dbs
+    # as NN_shadow_DD-MM_HH-mm.db (run-id naming), and older flows used
+    # shadow_<ts>_shadow-<hex>.db or DD-MM_HH-mm_shadow-NN.db -- all carry the
+    # same "shadow" run marker but only one era starts with it, so match the
+    # infix too instead of a prefix-only check. When this misses, report() falls
+    # back to an empty runtime funnel and the dashboard shows zero screener
+    # markets despite a fully populated pipeline.json.
     path = Path(db_path).resolve()
-    return path.name.startswith("shadow_") and path.suffix == ".db"
+    name = path.name
+    return path.suffix == ".db" and (
+        name.startswith("shadow_") or "_shadow_" in name or "_shadow-" in name
+    )
 
 
 def _pipeline_sourced_dbs() -> set[Path]:

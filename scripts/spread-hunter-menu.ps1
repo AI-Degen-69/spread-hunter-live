@@ -7,7 +7,7 @@
 #   .\scripts\spread-hunter-menu.ps1 start -Yes    # 1 · LIVE: preflight-stop + wipe, fresh bot + dashboard (real bids)
 #   .\scripts\spread-hunter-menu.ps1 stop          # 2 · LIVE: stop bot + dashboard
 #   .\scripts\spread-hunter-menu.ps1 host          # 3 · LIVE: release :8799 from the other menu-owned dashboard (no wipe), host live & open
-#   .\scripts\spread-hunter-menu.ps1 shadow-run [-Minutes N] # 4 · SHADOW: preflight + wipe, full rehearsal (loop + stop loss)
+#   .\scripts\spread-hunter-menu.ps1 shadow-run [-Minutes N] [-Watch] # 4 · SHADOW: preflight + wipe, full rehearsal (loop + stop loss); -Watch streams the loop log live
 #   .\scripts\spread-hunter-menu.ps1 statistical-run [-Hours N] # overnight shadow statistics + dashboard
 #   .\scripts\spread-hunter-menu.ps1 stop-shadow   # 5 · SHADOW: stop loop, watcher and viewer
 #   .\scripts\spread-hunter-menu.ps1 open-shadow   # 6 · SHADOW: release :8799 from the other menu-owned dashboard (no wipe), host shadow & open
@@ -30,7 +30,8 @@ param(
     [string]$Action = "",
     [switch]$Yes,
     [int]$Minutes = 0,
-    [double]$Hours = 0
+    [double]$Hours = 0,
+    [switch]$Watch
 )
 
 $ErrorActionPreference = "Stop"
@@ -1563,8 +1564,6 @@ function Reset-Environment {
             $ShadowDbPath = Join-Path $ProjectPath "data/${dbSeq}_shadow_${stamp}.db"
             $StatsDbPath = Join-Path $ProjectPath "data/stats_${stamp}_${ShadowRunId}.db"
             if (Start-ShadowDashboard) {
-                Start-Process $ShadowDashUrl
-                Lsh-Ok "Opened $ShadowDashUrl in default browser (shadow db=$ShadowDbPath)."
                 if ($Minutes -gt 0) {
                     # Ordered rehearsal boot (no signer is ever loaded, so it
                     # spends nothing):
@@ -1668,6 +1667,22 @@ function Reset-Environment {
                         -WindowStyle Hidden
                     Lsh-Ok "Shadow session running: screener + loop + stop-loss watcher. Stop Bot + Dashboard (5 / stop-shadow) ends it early."
                 }
+                # Open the browser only after every worker is up and the screener
+                # has written its universe + pipeline, so the dashboard's first
+                # frame already shows the screener feed instead of blank/STALLED.
+                Start-Sleep -Seconds 3
+                Start-Process $ShadowDashUrl
+                Lsh-Ok "Opened $ShadowDashUrl in default browser (shadow db=$ShadowDbPath)."
+                if ($Watch -and $Minutes -gt 0) {
+                    # -Watch: stream the rehearsal loop's stderr to THIS console
+                    # instead of backgrounding it silently. The loop logs its
+                    # [QUOTING] lines to runtime/shadow_run.err.log. Ctrl-C ends
+                    # the watcher; the session still self-stops after $Minutes
+                    # min (detached timer) or via option 5 / stop-shadow.
+                    Write-Host ""
+                    Lsh-Step "Watching the rehearsal loop live (Ctrl-C ends the watcher; session self-stops after $Minutes min or via stop-shadow)."
+                    Get-Content (Join-Path $RunDir "shadow_run.err.log") -Wait -ErrorAction SilentlyContinue
+                }
             } else {
                 return $false
             }
@@ -1687,8 +1702,6 @@ function Reset-Environment {
             Lsh-Ok "Database: $ShadowDbPath"
             Lsh-Ok "Report:   $reportPath"
             if (Start-ShadowDashboard) {
-                Start-Process $ShadowDashUrl
-                Lsh-Ok "Opened $ShadowDashUrl in default browser (validation db=$ShadowDbPath)."
                 Lsh-Step "Running the market ranker before starting the validation loop..."
                 & python -m scripts.rank_markets
                 if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $ProjectPath "runtime/markets.json"))) {
@@ -1732,6 +1745,12 @@ function Reset-Environment {
                 Write-ProfileInfo -Message "Check it" -Detail ".\scripts\spread-hunter-menu.ps1 status"
                 Write-ProfileInfo -Message "Stop it early" -Detail ".\scripts\spread-hunter-menu.ps1 stop-shadow"
                 Write-Host ""
+                # Open the browser only after every worker is up and the screener
+                # feed exists, so the dashboard's first frame already shows the
+                # validation/rehearsal data instead of a blank/STALLED state.
+                Start-Sleep -Seconds 3
+                Start-Process $ShadowDashUrl
+                Lsh-Ok "Opened $ShadowDashUrl in default browser (validation db=$ShadowDbPath)."
             } else { return $false }
         }
         "live" {

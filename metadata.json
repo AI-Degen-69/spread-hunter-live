@@ -1,0 +1,8 @@
+{
+  "name": "Spread Hunter Live",
+  "description": "Real-money execution engine and operations dashboard for the Polymarket spread hunter strategy",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

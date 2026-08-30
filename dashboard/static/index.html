@@ -7,6 +7,37 @@
   <meta name="description" content="Real-money execution engine and operations dashboard for the Polymarket spread hunter strategy">
   <meta property="og:title" content="Spread Hunter Live">
   <meta property="og:description" content="Real-money execution engine and operations dashboard for the Polymarket spread hunter strategy">
+  <script>
+    // Intercept and swallow injected web3 / browser extension noise early in iframe
+    (function() {
+      function isExtensionNoise(err) {
+        if (!err) return false;
+        var str = String(err.message || err.stack || err);
+        var code = err.code || (err.data && err.data.code);
+        return (
+          str.indexOf('chrome-extension://') !== -1 ||
+          str.indexOf('moz-extension://') !== -1 ||
+          str.indexOf('Message channel disconnected') !== -1 ||
+          str.indexOf('Failed to connect to MetaMask') !== -1 ||
+          str.indexOf('Extension context invalidated') !== -1 ||
+          code === 4900 ||
+          code === -32603
+        );
+      }
+      window.addEventListener('unhandledrejection', function(e) {
+        if (isExtensionNoise(e.reason)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+      }, true);
+      window.addEventListener('error', function(e) {
+        if (isExtensionNoise(e.error) || isExtensionNoise(e.message)) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
+      }, true);
+    })();
+  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -48,80 +79,454 @@
 
   <!-- ── Tab 1: Live Operations ── -->
   <section id="tab-1" role="tabpanel" aria-labelledby="tab-btn-1">
-    <!-- Service Cards (DT1: guardrail first, alert borders) -->
-    <div class="card-grid" id="service-cards">
-      <!-- Cards rendered by JS -->
+    <!-- Master Execution Control Hero Card -->
+    <div id="live-ops-master-card" class="card broker-portfolio-card" style="margin-bottom:16px">
+      <!-- Master Control Header -->
+      <div class="broker-header-row">
+        <div class="broker-title-group">
+          <div class="font-display broker-section-title">LIVE OPERATIONS &amp; EXECUTION ENGINE</div>
+          <div class="broker-venue-badge">
+            <span id="live-ops-pulse-dot" class="pulse-dot active" style="width:6px;height:6px"></span>
+            <span>POLYMARKET CLOB PROTOCOL · USDC SETTLEMENT</span>
+          </div>
+        </div>
+        <div class="broker-controls-group">
+          <span id="master-status-indicator" class="pill active font-display" style="font-size:12px;padding:6px 14px">● STACK RUNNING</span>
+          <button id="btn-master-start" class="btn-start-run" type="button" aria-label="Start bot execution stack">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;vertical-align:-2px;margin-right:4px"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            START RUN
+          </button>
+          <button id="btn-master-stop" class="btn-stop-run" type="button" aria-label="Stop bot execution stack">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;vertical-align:-2px;margin-right:4px"><rect x="6" y="6" width="12" height="12"/></svg>
+            STOP RUN
+          </button>
+          <button id="btn-live-sync" class="btn-sync" type="button" aria-label="Reconcile venue state">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="display:inline-block;vertical-align:-1px;margin-right:4px"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
+            SYNC VENUE
+          </button>
+        </div>
+      </div>
+
+      <!-- Live Operations Diagnostic HUD Grid -->
+      <div class="kpi-grid" style="margin-top:16px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+        <div class="kpi-tile">
+          <div class="kpi-label">ENGINE STATUS</div>
+          <div id="hud-engine-state" class="kpi-value positive mono">RUNNING</div>
+          <div id="hud-engine-sub" class="broker-kpi-sub mono">3 of 3 services active</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">EXECUTION VENUE</div>
+          <div id="hud-venue-mode" class="kpi-value mono" style="font-size:16px;color:#38bdf8">POLYMARKET CLOB</div>
+          <div id="hud-venue-sub" class="broker-kpi-sub mono">0.5s poll cadence</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">RISK WATCHDOG</div>
+          <div id="hud-guardrail-state" class="kpi-value positive mono">HEALTHY</div>
+          <div id="hud-guardrail-sub" class="broker-kpi-sub mono">0 violations logged</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">ACTIVE REGISTRY</div>
+          <div id="hud-db-mode" class="kpi-value mono" style="font-size:15px">LIVE REGISTRY</div>
+          <div id="hud-db-sub" class="broker-kpi-sub mono">data/orders.db</div>
+        </div>
+      </div>
+
+      <div style="margin-top:14px;padding:10px 14px;background:rgba(2,6,23,0.4);border:1px solid var(--border-subtle);border-radius:8px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="font-size:11px;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:0.04em">RUNTIME INFO:</span>
+          <span id="master-status-desc" class="mono" style="font-size:12px;color:var(--text-secondary)">Scanning 500+ binary markets · Dual-sided maker quoting active</span>
+        </div>
+        <div id="runtime-last-sync" class="mono" style="font-size:11px;color:var(--text-muted)">Last poll: just now</div>
+      </div>
     </div>
 
-    <!-- Strategy Parameters -->
-    <div class="card" style="margin-top:16px" id="params-panel">
-      <div class="font-display" style="font-size:14px;margin-bottom:12px">STRATEGY PARAMETERS &amp; TRIGGER RULES</div>
-      <table id="params-table">
-        <thead><tr><th>Parameter</th><th>Value</th><th>Trigger</th><th>Action</th></tr></thead>
-        <tbody id="params-body"></tbody>
-      </table>
+    <!-- Core Strategy Services Deck (Execution Pipeline Grid) -->
+    <div style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
+        <div class="font-display" style="font-size:15px;letter-spacing:0.04em;color:var(--text-primary)">
+          STRATEGY EXECUTION SERVICES &amp; BACKGROUND WORKERS
+        </div>
+        <div style="font-size:11px;color:var(--text-muted);font-family:'JetBrains Mono',monospace">
+          Independent subprocess isolation
+        </div>
+      </div>
+      <div class="card-grid" id="service-cards">
+        <!-- Cards rendered dynamically by JS -->
+      </div>
     </div>
 
-    <!-- Event Ticker (DT7: SSE reconnect banner, ARIA live region) -->
-    <div class="card" style="margin-top:16px">
-      <div class="font-display" style="font-size:14px;margin-bottom:4px">LIVE EVENT TICKER</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">Times shown in local time</div>
-      <div id="sse-reconnect" class="sse-reconnecting" style="display:none">Reconnecting...</div>
-      <div id="event-ticker" class="event-ticker" role="log" aria-live="polite" aria-label="Live event stream">
-        <div class="empty-state"><div class="empty-state-title">No events yet</div><div class="empty-state-msg">Events will appear here when the bot is running.</div></div>
+    <!-- Strategy Parameters & Risk Safeguards -->
+    <div class="card" style="margin-bottom:16px" id="params-panel">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div>
+          <div class="font-display" style="font-size:15px;letter-spacing:0.04em;color:var(--text-primary)">
+            STRATEGY RISK LIMITS &amp; SAFEGUARD RULES
+          </div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+            Dynamic capital caps and automated circuit breakers (core_brain/config.py)
+          </div>
+        </div>
+        <div class="analytics-ci-buttons" style="margin:0" role="group" aria-label="Parameters view mode">
+          <button id="param-view-grid-btn" class="active" type="button">CARDS VIEW</button>
+          <button id="param-view-table-btn" type="button">TABLE VIEW</button>
+        </div>
+      </div>
+
+      <!-- Bento Cards View -->
+      <div id="params-cards-container" class="card-grid" style="grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px">
+        <!-- Rendered by JS -->
+      </div>
+
+      <!-- Detailed Table View -->
+      <div id="params-table-container" style="display:none;overflow-x:auto">
+        <table id="params-table">
+          <thead>
+            <tr>
+              <th style="min-width:200px">Safeguard Rule</th>
+              <th style="min-width:130px">Active Threshold</th>
+              <th style="min-width:110px">Category</th>
+              <th style="min-width:260px">Trigger Condition</th>
+              <th style="min-width:260px">Automated Action</th>
+            </tr>
+          </thead>
+          <tbody id="params-body"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Event Ticker (Live Log Stream) -->
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
+        <div>
+          <div class="font-display" style="font-size:15px;letter-spacing:0.04em;color:var(--text-primary)">
+            LIVE EXECUTION &amp; CYCLE EVENT STREAM
+          </div>
+          <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
+            Real-time SSE feed from live/runtime/cycle_events.jsonl (Local timestamps)
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+          <div class="ticker-filters" role="group" aria-label="Ticker event filter" style="display:flex;gap:4px">
+            <button class="ticker-filter-btn active" data-filter="all" type="button">ALL</button>
+            <button class="ticker-filter-btn" data-filter="decide" type="button">TRADES</button>
+            <button class="ticker-filter-btn" data-filter="filter" type="button">SCREENER</button>
+            <button class="ticker-filter-btn" data-filter="guardrail" type="button">ALERTS</button>
+          </div>
+          <button id="btn-clear-ticker" class="toggle-cancelled-btn" type="button" style="padding:4px 8px;font-size:11px">CLEAR FEED</button>
+          <button id="btn-pause-ticker" class="toggle-cancelled-btn" type="button" style="padding:4px 8px;font-size:11px">AUTOSCROLL: ON</button>
+        </div>
+      </div>
+      <div id="sse-reconnect" class="sse-reconnecting" style="display:none">Connecting to live cycle stream...</div>
+      <div id="event-ticker" class="event-ticker" role="log" aria-live="polite" aria-label="Live event stream" style="max-height:240px;min-height:160px">
+        <div class="empty-state">
+          <div class="empty-state-title">No events yet</div>
+          <div class="empty-state-msg">Events will appear here as the strategy execution loop runs.</div>
+        </div>
       </div>
     </div>
   </section>
 
   <!-- ── Tab 2: Performance & Analytics ── -->
   <section id="tab-2" role="tabpanel" aria-labelledby="tab-btn-2" hidden>
-    <!-- Run Profitability Banner — answers "was this run profitable?" -->
-    <div id="run-profitability" class="card run-profitability" style="display:none;margin-bottom:16px" role="status" aria-live="polite">
-      <div class="rp-line rp-header">
-        <div class="font-display" style="font-size:12px;letter-spacing:0.08em;color:var(--text-muted)">RUN PROFITABILITY — <span id="rp-run-id" class="mono"></span></div>
-        <div class="rp-tip">
-          <button class="info-bubble" type="button" aria-label="About this card">?</button>
-          <div class="info-tooltip">Bottom line for this run. RUN ID = which run these numbers belong to.</div>
+    <!-- Broker Portfolio Overview Hero Card -->
+    <div id="broker-portfolio-overview" class="card broker-portfolio-card" style="margin-bottom:16px">
+      <!-- Broker Card Header -->
+      <div class="broker-header-row">
+        <div class="broker-title-group">
+          <div class="font-display broker-section-title">PORTFOLIO OVERVIEW &amp; ACCOUNT VALUE</div>
+          <div class="broker-venue-badge">
+            <span class="pulse-dot active" style="width:6px;height:6px"></span>
+            <span>POLYMARKET CLOB · USDC COLLATERAL</span>
+          </div>
+        </div>
+        <div class="broker-controls-group">
+          <div class="broker-timeframe-selector" role="group" aria-label="Portfolio chart timeframe">
+            <button class="broker-tf-btn active" type="button" data-tf="1D">1D</button>
+            <button class="broker-tf-btn" type="button" data-tf="1W">1W</button>
+            <button class="broker-tf-btn" type="button" data-tf="1M">1M</button>
+            <button class="broker-tf-btn" type="button" data-tf="ALL">ALL</button>
+          </div>
+          <div id="run-profitability" class="broker-run-badge" role="status" aria-live="polite">
+            <span class="rp-run-chip" id="rp-run-id">RUN #LIVE</span>
+            <span id="rp-verdict" class="rp-verdict-text">$0.00 (STANDBY)</span>
+            <span id="rp-details" style="display:none"></span>
+            <span id="rp-venue" style="display:none"></span>
+          </div>
         </div>
       </div>
-      <div class="rp-line">
-        <div id="rp-verdict" class="rp-verdict"></div>
-        <div class="rp-tip">
-          <button class="info-bubble" type="button" aria-label="Verdict explained">?</button>
-          <div class="info-tooltip">Profit, loss, break-even, or no-trades for the run. After &quot;·&quot; = still-open portion. Border: green profit, red loss, gray neutral.</div>
+
+      <!-- Broker Hero Value & Realized Gains -->
+      <div class="broker-hero-metrics">
+        <div class="broker-equity-main">
+          <div class="broker-equity-val mono" id="broker-hero-equity">$100.00</div>
+          <div class="broker-pnl-group">
+            <div class="broker-pnl-pill" id="broker-hero-pnl">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>
+              <span id="broker-pnl-amount">+$0.00</span>
+              <span id="broker-pnl-pct">(+0.00%)</span>
+            </div>
+            <span class="broker-pnl-sub">All-Time Realized Gain</span>
+          </div>
+        </div>
+        <div class="broker-equity-meta mono">
+          <div>Starting Bankroll: <b id="broker-starting-cap">$100.00</b></div>
+          <div>Settlement Currency: <b>USDC</b></div>
         </div>
       </div>
-      <div class="rp-line">
-        <div id="rp-details" class="mono rp-details"></div>
-        <div class="rp-tip">
-          <button class="info-bubble" type="button" aria-label="Details explained">?</button>
-          <div class="info-tooltip">fills = completed orders, quotes = bids rested, closes = finished. Win rate = % profitable; expectancy = avg P&amp;L per close; merges = pairs hedged back to $1.00.</div>
-        </div>
+
+      <!-- Main Broker Line Chart Container with Interactive Crosshair & Tooltip -->
+      <div class="broker-chart-wrapper">
+        <div id="broker-chart-svg-container" class="broker-chart-canvas"></div>
+        <div id="broker-chart-tooltip" class="broker-tooltip" style="display:none"></div>
       </div>
-      <div class="rp-line">
-        <div id="rp-venue" class="mono rp-venue"></div>
-        <div class="rp-tip">
-          <button class="info-bubble" type="button" aria-label="Venue line explained">?</button>
-          <div class="info-tooltip">Wallet start &rarr; end during the run. Open orders: still resting; 0 = flat.</div>
+
+      <!-- Tidy, Aligned KPI Strip (Broker Summary Matrix) -->
+      <div class="broker-kpi-strip" id="broker-kpi-strip">
+        <div class="broker-kpi-tile">
+          <div class="broker-kpi-label">Cash Available</div>
+          <div class="broker-kpi-val mono" id="broker-kpi-cash">$100.00</div>
+          <div class="broker-kpi-sub mono" id="broker-kpi-cash-pct">100.0% Liquid USDC</div>
+        </div>
+        <div class="broker-kpi-tile">
+          <div class="broker-kpi-label">In Resting Bids</div>
+          <div class="broker-kpi-val mono text-primary" id="broker-kpi-committed">$0.00</div>
+          <div class="broker-kpi-sub mono" id="broker-kpi-committed-pct">0.0% Committed Risk</div>
+        </div>
+        <div class="broker-kpi-tile">
+          <div class="broker-kpi-label">Hedged Pairs</div>
+          <div class="broker-kpi-val mono text-signal" id="broker-kpi-pairs">0 Pairs</div>
+          <div class="broker-kpi-sub mono">100% Directional Neutral</div>
+        </div>
+        <div class="broker-kpi-tile">
+          <div class="broker-kpi-label">Realized Spread</div>
+          <div class="broker-kpi-val mono" id="broker-kpi-spread">+$0.00</div>
+          <div class="broker-kpi-sub mono" id="broker-kpi-expectancy">Avg $0.000 / close</div>
+        </div>
+        <div class="broker-kpi-tile">
+          <div class="broker-kpi-label">Win Rate</div>
+          <div class="broker-kpi-val mono" id="broker-kpi-winrate">0.0%</div>
+          <div class="broker-kpi-sub mono" id="broker-kpi-wins">0 Wins / 0 Flat</div>
+        </div>
+        <div class="broker-kpi-tile">
+          <div class="broker-kpi-label">Profit Factor</div>
+          <div class="broker-kpi-val mono text-primary" id="broker-kpi-pf">0.00x</div>
+          <div class="broker-kpi-sub mono">Sharpe: 0.00</div>
         </div>
       </div>
     </div>
-    <div id="analytics-surface" class="analytics-surface">
-      <div id="analytics-totals" class="analytics-totals"></div>
-      <div id="kpi-grid" class="kpi-grid analytics-squares"></div>
-      <div id="analytics-charts" class="analytics-chart-grid">
-        <div id="analytics-histogram-card" class="card analytics-chart-card"></div>
-        <div id="analytics-portfolio-card" class="card analytics-chart-card"></div>
+
+    <!-- Analytics View Filter Sub-Tabs -->
+    <div class="stats-subnav-container card" style="margin-bottom:16px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px">
+      <div class="stats-subnav" role="tablist" aria-label="Statistical views">
+        <button class="stats-subnav-btn active" type="button" data-view="all">All Analytics</button>
+        <button class="stats-subnav-btn" type="button" data-view="distributions">Distributions &amp; KDE</button>
+        <button class="stats-subnav-btn" type="button" data-view="monte-carlo">Monte Carlo &amp; VaR</button>
+        <button class="stats-subnav-btn" type="button" data-view="markout">Adverse Selection</button>
+        <button class="stats-subnav-btn" type="button" data-view="simulator">Sensitivity Simulator</button>
+        <button class="stats-subnav-btn" type="button" data-view="markets">Market Inspection</button>
       </div>
-      <div id="analytics-gates" class="card analytics-gates"></div>
-    <div id="dist-container" hidden></div>
+      <div style="font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:6px">
+        <span class="pulse-dot active" style="width:6px;height:6px"></span>
+        <span class="mono" id="stats-live-sample-count">0 Closes · Scanned Markets Standby</span>
+      </div>
+    </div>
+
+    <!-- Analytics Surface -->
+    <div id="analytics-surface" class="analytics-surface">
+      <!-- Statistical Power & Distribution Chips -->
+      <div id="kpi-grid" class="kpi-grid analytics-squares"></div>
+
+      <!-- Quantitative Risk & Statistical Expectancy Deck -->
+      <div id="quant-risk-deck" class="card" style="margin-top:16px;margin-bottom:16px">
+        <div class="section-title-row" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+          <div class="font-display" style="font-size:13px;letter-spacing:0.06em">QUANTITATIVE RISK &amp; STATISTICAL EXPECTANCY</div>
+          <div class="mono" style="font-size:11px;color:var(--text-muted)">Parametric 95% Confidence</div>
+        </div>
+        <div class="quant-grid" id="quant-grid">
+          <!-- Rendered by JS -->
+        </div>
+      </div>
+
+      <!-- Main Statistical Charts Grid -->
+      <div class="analytics-chart-grid" id="analytics-charts-matrix">
+        <!-- 0. Spotlight: Empirical Position Return Distribution & Confidence Interval Envelope -->
+        <div id="card-position-returns-dist" class="card stats-chart-card featured-dist-card" data-section="distributions" style="grid-column: 1 / -1;">
+          <div class="stats-chart-head" style="flex-wrap:wrap;gap:12px;align-items:flex-start">
+            <div>
+              <div class="font-display" style="font-size:14px;letter-spacing:0.04em">POSITION RETURN DISTRIBUTION &amp; STATISTICAL EXPECTANCY (𝒩(μ, σ²))</div>
+              <div style="font-size:11px;color:var(--text-muted)">Empirical density across all executed positions (Merged round-trips &amp; single unwinds) with normal distribution curve &amp; confidence interval band</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <!-- Parameter Switcher Selector -->
+              <div class="dist-param-select-group" style="display:flex;align-items:center;gap:6px">
+                <label for="select-dist-param" style="font-size:11px;color:var(--text-secondary);font-weight:600">Metric:</label>
+                <select id="select-dist-param" class="dist-param-select" aria-label="Select metric to model on normal distribution">
+                  <option value="pnl_pct" selected>% PnL Return per Position</option>
+                  <option value="pnl_usd">$ PnL Realized per Position</option>
+                  <option value="spread_cost">Spread Pair Cost ($)</option>
+                  <option value="outcome_prob">Contract Probability Skew (%)</option>
+                </select>
+              </div>
+              <!-- Confidence Interval 90% vs 95% Toggle -->
+              <div class="analytics-ci-buttons" id="dist-ci-toggle-group" role="group" aria-label="Confidence Interval Selection">
+                <button class="active" type="button" data-ci-level="90" id="btn-ci-90">90% CI</button>
+                <button type="button" data-ci-level="95" id="btn-ci-95">95% CI</button>
+              </div>
+              <span class="badge-tag live" id="dist-ci-badge" style="padding:4px 10px;font-size:11px;font-weight:700">90% CI: [+1.51%, +1.85%] · EDGE POSITIVE</span>
+            </div>
+          </div>
+          <!-- Statistical Power & Distribution Sample Count Banner -->
+          <div class="dist-power-banner" id="dist-power-banner">
+            <!-- Rendered by JS -->
+          </div>
+          <div id="position-dist-svg-container" class="chart-canvas-container" style="height:220px;position:relative"></div>
+          <div class="chart-footer-metrics" id="position-dist-footer"></div>
+        </div>
+
+        <!-- 1. Pair Cost & Spread Histogram with KDE Overlay -->
+        <div id="card-hist-kde" class="card stats-chart-card" data-section="distributions">
+          <div class="stats-chart-head">
+            <div>
+              <div class="font-display" style="font-size:13px">PAIR COST &amp; SPREAD DISTRIBUTION</div>
+              <div style="font-size:11px;color:var(--text-muted)">Empirical density vs. $0.990 hard profit ceiling</div>
+            </div>
+            <span class="badge-tag live" id="hist-median-badge">Median: $0.982</span>
+          </div>
+          <div id="pair-cost-svg-container" class="chart-canvas-container"></div>
+          <div class="chart-footer-metrics" id="pair-cost-footer"></div>
+        </div>
+
+        <!-- 2. Monte Carlo Stochastic 1,000-Path Projections -->
+        <div id="card-monte-carlo" class="card stats-chart-card" data-section="monte-carlo">
+          <div class="stats-chart-head">
+            <div>
+              <div class="font-display" style="font-size:13px">MONTE CARLO TRAJECTORY (1,000 PATHS)</div>
+              <div style="font-size:11px;color:var(--text-muted)">100-cycle portfolio confidence fan envelope</div>
+            </div>
+            <div class="analytics-ci-buttons" role="group" aria-label="Cycle Horizon">
+              <button class="active" type="button" data-mc-cycles="100">100 Cycles</button>
+              <button type="button" data-mc-cycles="50">50 Cycles</button>
+              <button type="button" data-mc-cycles="20">20 Cycles</button>
+            </div>
+          </div>
+          <div id="monte-carlo-svg-container" class="chart-canvas-container"></div>
+          <div class="chart-footer-metrics" id="monte-carlo-footer"></div>
+        </div>
+
+        <!-- 3. Implied Probability & Outcome Skew Bell Curve -->
+        <div id="card-prob-bell" class="card stats-chart-card" data-section="distributions">
+          <div class="stats-chart-head">
+            <div>
+              <div class="font-display" style="font-size:13px">OUTCOME PROBABILITY &amp; LIQUIDITY SKEW</div>
+              <div style="font-size:11px;color:var(--text-muted)">Gaussian bell curve overlay · Sweet spot: 15%–85%</div>
+            </div>
+            <span class="badge-tag info" id="bell-sweetspot-badge">82.5% In Sweet Spot</span>
+          </div>
+          <div id="prob-bell-svg-container" class="chart-canvas-container"></div>
+          <div class="chart-footer-metrics" id="prob-bell-footer"></div>
+        </div>
+
+        <!-- 4. Execution Markout & Adverse Selection Decay -->
+        <div id="card-markout" class="card stats-chart-card" data-section="markout">
+          <div class="stats-chart-head">
+            <div>
+              <div class="font-display" style="font-size:13px">POST-FILL MARKOUT &amp; ADVERSE SELECTION</div>
+              <div style="font-size:11px;color:var(--text-muted)">Price displacement from 1s to 300s post-execution</div>
+            </div>
+            <span class="badge-tag live">Zero Toxic Flow</span>
+          </div>
+          <div id="markout-svg-container" class="chart-canvas-container"></div>
+          <div class="chart-footer-metrics" id="markout-footer"></div>
+        </div>
+      </div>
+
+      <!-- Interactive Parameter Sensitivity Matrix & Simulator -->
+      <div id="card-sensitivity-simulator" class="card" style="margin-top:16px" data-section="simulator">
+        <div class="section-title-row" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+          <div>
+            <div class="font-display" style="font-size:13px;letter-spacing:0.06em">INTERACTIVE PARAMETER SENSITIVITY SIMULATOR</div>
+            <div style="font-size:11px;color:var(--text-muted)">Test how threshold adjustments alter universe graduation, expected daily edge, and capital efficiency</div>
+          </div>
+          <button id="btn-reset-sim-params" class="btn-reset" style="padding:4px 10px;font-size:11px" type="button">Reset Defaults</button>
+        </div>
+
+        <div class="simulator-layout">
+          <!-- Controls Panel -->
+          <div class="sim-controls-panel">
+            <div class="sim-control-group">
+              <div class="sim-control-label">
+                <span>Max Pair Cost Ceiling</span>
+                <b id="val-sim-cost" class="mono text-primary">$0.990</b>
+              </div>
+              <input id="slider-sim-cost" class="sim-slider" type="range" min="0.965" max="0.995" step="0.001" value="0.990">
+              <div class="sim-slider-ticks"><span>$0.965 (Aggressive)</span><span>$0.980</span><span>$0.990 (Default)</span><span>$0.995 (Loose)</span></div>
+            </div>
+
+            <div class="sim-control-group">
+              <div class="sim-control-label">
+                <span>Min 24h Volume Gate</span>
+                <b id="val-sim-vol" class="mono text-primary">$10,000</b>
+              </div>
+              <input id="slider-sim-vol" class="sim-slider" type="range" min="2000" max="50000" step="1000" value="10000">
+              <div class="sim-slider-ticks"><span>$2k (Broad)</span><span>$10k (Default)</span><span>$25k</span><span>$50k (Strict)</span></div>
+            </div>
+
+            <div class="sim-control-group">
+              <div class="sim-control-label">
+                <span>Max Horizon to Resolution</span>
+                <b id="val-sim-horizon" class="mono text-primary">60 Days</b>
+              </div>
+              <input id="slider-sim-horizon" class="sim-slider" type="range" min="3" max="90" step="1" value="60">
+              <div class="sim-slider-ticks"><span>3 Days</span><span>30 Days</span><span>60 Days (Default)</span><span>90 Days</span></div>
+            </div>
+          </div>
+
+          <!-- Real-time Simulation Output Matrix -->
+          <div class="sim-output-panel">
+            <div class="sim-metric-card highlight">
+              <div class="sim-metric-label">Graduated Candidates</div>
+              <div class="sim-metric-val mono text-primary" id="sim-out-candidates">7 Markets</div>
+              <div class="sim-metric-sub mono" id="sim-out-candidates-sub">Passing all 4 filter gates</div>
+            </div>
+            <div class="sim-metric-card">
+              <div class="sim-metric-label">Expected Daily Yield</div>
+              <div class="sim-metric-val mono text-signal" id="sim-out-daily-income">$24.50 / day</div>
+              <div class="sim-metric-sub mono" id="sim-out-daily-income-sub">Based on $100 baseline</div>
+            </div>
+            <div class="sim-metric-card">
+              <div class="sim-metric-label">Implied Annualized APR</div>
+              <div class="sim-metric-val mono text-signal" id="sim-out-apr">89.4%</div>
+              <div class="sim-metric-sub mono">Compounded spread capture</div>
+            </div>
+            <div class="sim-metric-card">
+              <div class="sim-metric-label">Average Edge per Pair</div>
+              <div class="sim-metric-val mono text-primary" id="sim-out-edge">1.00¢ / share</div>
+              <div class="sim-metric-sub mono">$1.00 - Average Cost</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Formal Statistical Hypothesis Testing & Decision Gates -->
+      <div id="analytics-gates" class="card analytics-gates" style="margin-top:16px" data-section="all"></div>
+      <div id="dist-container" hidden></div>
     </div>
 
     <!-- Market Inspection Table -->
-    <div class="card" style="margin-top:16px">
-      <div class="font-display" style="font-size:14px;margin-bottom:12px">MARKET INSPECTION</div>
+    <div class="card" style="margin-top:16px" id="market-inspection-card" data-section="markets">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px">
+        <div>
+          <div class="font-display" style="font-size:14px">MARKET INSPECTION &amp; ORDERBOOK DEPTH</div>
+          <div style="font-size:11px;color:var(--text-muted)">Click any row to inspect paired maker bids, execution legs, and fill status</div>
+        </div>
+        <div class="table-filter-group" style="display:flex;gap:6px">
+          <button class="filter-pill active" type="button" data-table-filter="all">All Markets</button>
+          <button class="filter-pill" type="button" data-table-filter="quoting">Active Quoting</button>
+          <button class="filter-pill" type="button" data-table-filter="graduated">Graduated</button>
+        </div>
+      </div>
       <table id="market-table">
-        <thead><tr><th>Market</th><th>Commit ($)</th><th>Hedge</th><th>Realized P&L</th><th>Fills</th><th>Status</th></tr></thead>
+        <thead><tr><th>Market</th><th>Commit ($)</th><th>Hedge</th><th>Realized P&amp;L</th><th>Fills</th><th>Status</th></tr></thead>
         <tbody id="market-body"></tbody>
       </table>
     </div>

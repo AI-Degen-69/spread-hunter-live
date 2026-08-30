@@ -75,6 +75,18 @@ DEFAULT_GAMMA_HOST = "https://gamma-api.polymarket.com"
 # [1.0, 0.0]; a side priced >= this threshold is the resolved winner.
 WINNER_PRICE_THRESHOLD = 0.99
 
+# When the gamma sweep cannot confirm a dropped market (network failure,
+# malformed payload, empty result), keep the market in backoff for this long so
+# the rotation does not hammer gamma for the same unreachable cid every tick.
+UNREACHABLE_RETRY_SEC = 60.0
+
+# Per-process retry timestamps for unreachable condition ids. Keyed by cid;
+# cleared once a fetch confirms the market. Shadow runs own this cache (the
+# sweeper only books settlement for shadow stores), so it never grows across a
+# production registry's lifecycle and is bounded by the number of dropped
+# markets in one run.
+_unreachable_backoff: dict[str, float] = {}
+
 
 @dataclass(frozen=True)
 class MarketEndState:
@@ -268,11 +280,18 @@ def fetch_market_end_state(
 def _held_shares_by_token(registry, condition_id: str, run_id: str) -> tuple[dict[str, float], dict[str, float]]:
     """Net held shares and their cost basis per token for a run's position.
 
-    Reads the ``fills`` table joined to ``orders`` (the same shape the
-    registry's ``get_all_fills`` returns) and only rows the named run owns.
-    A BUY fill adds shares and cost; a SELL fill subtracts cost at its sale
-    price (netting out cash already received). Only ``max(0, net)`` is held
-    inventory -- a token the run fully sold carries nothing to redeem.
+    Mirrors the registry's canonical ``inventory_from_registry``: base shares
+    come from ``fills`` joined to ``orders`` (a BUY adds, a SELL subtracts at
+    its sale price), then executed closes REMOVE the shares they realised -- a
+    merge/settlement dissolves both legs, a single-buy-exit/naked-exit removes
+    the one encoded leg. Only rows the named run owns count.
+
+    Without the close subtraction this is what a settlement PnL is measured on
+    WRONG: a merge pays a pair's cost into a ``closes`` row while the BUY fills
+    keep showing the shares as held, so a fills-only read either forces the
+    blanket "any close -> skip" guard (leaving every leftover loser unattributed)
+    or re-books the merged-away shares. Netting the closes gives the actually-
+    still-held inventory, which is what a resolution redeems.
 
     Returns ``({token_id: shares}, {token_id: cost_basis})``.
     """
@@ -290,20 +309,115 @@ def _held_shares_by_token(registry, condition_id: str, run_id: str) -> tuple[dic
                 """,
                 (condition_id, run_id, run_id),
             ).fetchall()
-        for r in rows:
-            token_id = r["token_id"] or "?"
-            sz = float(r["size"] or 0.0)
-            px = float(r["price"] or 0.0)
-            side = (r["side"] or "BUY").upper()
-            if side == "SELL":
-                shares[token_id] = shares.get(token_id, 0.0) - sz
-                cost[token_id] = cost.get(token_id, 0.0) - sz * px
-            else:
-                shares[token_id] = shares.get(token_id, 0.0) + sz
-                cost[token_id] = cost.get(token_id, 0.0) + sz * px
+            close_rows = conn.execute(
+                """
+                SELECT method, shares, up_price, up_cost_removed, dn_cost_removed
+                FROM closes
+                WHERE lower(condition_id) = lower(?)
+                  AND (run_id = ? OR (? IS NULL AND run_id IS NULL))
+                """,
+                (condition_id, run_id, run_id),
+            ).fetchall()
     except Exception:
         return {}, {}
-    return shares, cost
+
+    for r in rows:
+        token_id = r["token_id"] or "?"
+        sz = float(r["size"] or 0.0)
+        px = float(r["price"] or 0.0)
+        side = (r["side"] or "BUY").upper()
+        if side == "SELL":
+            shares[token_id] = shares.get(token_id, 0.0) - sz
+            cost[token_id] = cost.get(token_id, 0.0) - sz * px
+        else:
+            shares[token_id] = shares.get(token_id, 0.0) + sz
+            cost[token_id] = cost.get(token_id, 0.0) + sz * px
+
+    # The closes table has no token column; a single exit records its leg by
+    # which price field is set. Map each token to its outcome (UP/DOWN) from the
+    # quotes ledger -- the same mapping `shadow_positions` and
+    # `single_buy_saver._token_side` read -- so a merge or settlement can drip
+    # the right per-leg shares/cost.
+    side_of: dict[str, str] = {}
+    seen_ts: dict[str, float] = {}
+    for q in registry.get_all_quotes():
+        cid = str(q.get("condition_id") or "")
+        token = str(q.get("token_id") or "")
+        side = str(q.get("side") or "").upper()
+        if not cid or not token or side not in ("UP", "DOWN"):
+            continue
+        if cid.lower() != str(condition_id).lower():
+            continue
+        ts = float(q.get("ts") or 0.0)
+        if ts >= seen_ts.get(token, -1.0):
+            seen_ts[token] = ts
+            side_of[token] = side
+    up_token = next((t for t, s in side_of.items() if s == "UP"), None)
+    down_token = next((t for t, s in side_of.items() if s == "DOWN"), None)
+
+    # The closes table carries no per-leg token id, so subtracting a close needs
+    # the UP/DOWN mapping above. A merge/settlement dissolves BOTH legs: if either
+    # leg's token is unmapped we cannot prove which shares left, so be conservative
+    # and treat the position as dissolved rather than re-book the merged-away side.
+    # A single-buy-exit removes ONE leg (the one its up_price encoding names); an
+    # unmapped OTHER leg was never touched by that exit and must be kept, NOT
+    # discarded here. Real shadow runs always write the UP/DOWN quote per leg, so
+    # the conservative branch only fires on partial/legacy stores with a merge-
+    # type close.
+    merge_type_close = any(
+        cr["method"] in ("merge", "shadow_merge", "shadow_settlement")
+        for cr in close_rows
+    )
+    if merge_type_close and (up_token is None or down_token is None):
+        return {}, {}
+
+    # A single-buy-exit names ONE leg (up_price set -> the UP leg, otherwise the
+    # DOWN leg). If the exited leg's token is unmapped we cannot subtract it by
+    # token id, but we DO know which leg it was: the exit provably did not touch
+    # the opposite leg, so that opposite leg (if mapped) is the only inventory
+    # that certainly survives. Exclude every unattributable token -- otherwise a
+    # later win could redeem already-exited shares (double-counted proceeds).
+    for cr in close_rows:
+        m = cr["method"]
+        if m not in ("single_buy_exit", "naked_exit"):
+            continue
+        exited_up = cr["up_price"] is not None
+        if exited_up and up_token is None:
+            keep = down_token
+        elif (not exited_up) and down_token is None:
+            keep = up_token
+        else:
+            continue
+        if keep is None:
+            return {}, {}
+        shares = {k: v for k, v in shares.items() if k == keep}
+        cost = {k: v for k, v in cost.items() if k == keep}
+
+    def _drip(token, sh, removed):
+        if token is None or token not in shares:
+            return
+        shares[token] = max(0.0, shares[token] - sh)
+        if removed is not None:
+            cost[token] = max(0.0, cost[token] - float(removed))
+
+    for cr in close_rows:
+        m = cr["method"]
+        sh = float(cr["shares"] or 0.0)
+        if sh <= 0:
+            continue
+        # merge / shadow_merge / shadow_settlement dissolve both held legs; a
+        # single-buy-exit / naked-exit removes only the encoded (UP) leg.
+        if m in ("merge", "shadow_merge", "shadow_settlement"):
+            _drip(up_token, sh, cr["up_cost_removed"])
+            _drip(down_token, sh, cr["dn_cost_removed"])
+        elif m in ("single_buy_exit", "naked_exit"):
+            if cr["up_price"] is not None:
+                _drip(up_token, sh, cr["up_cost_removed"])
+            else:
+                _drip(down_token, sh, cr["dn_cost_removed"])
+
+    return {k: max(0.0, v) for k, v in shares.items()},\
+           {k: max(0.0, v) for k, v in cost.items()}
 
 
 def book_shadow_settlement(
@@ -336,30 +450,29 @@ def book_shadow_settlement(
 
     winner_id = state.winning_token_id
     if not winner_id:
-        return None
-
-    # Do not double-count. A `merge`/`shadow_merge`/`single_buy_exit` close for
-    # this condition already realised (some of) the position's PnL; booking a
-    # settlement on top would call the same shares' profit earned twice. The
-    # dominant hold-to-resolution case has NO closes -- that is the one we
-    # settle. A condition that saw any close is skipped entirely rather than
-    # guessing how much of it remains unrealised.
-    try:
-        with registry._conn() as conn:
-            existing = conn.execute(
-                "SELECT 1 FROM closes WHERE lower(condition_id) = lower(?) LIMIT 1",
-                (condition_id,),
-            ).fetchone()
-        if existing:
-            return None
-    except Exception:
+        # The venue did not report a settled price above the threshold, so we
+        # cannot tell which held side redeems at $1.00. Do not fabricate a guess;
+        # book nothing and let a later rotation retry once the outcome is known.
         return None
 
     held, held_cost = _held_shares_by_token(registry, condition_id, run_id)
-    winning_held = max(0.0, float(held.get(winner_id, 0.0)))
-    if winning_held < 1e-9:
+    total_held = sum(max(0.0, float(v)) for v in held.values())
+    if total_held < 1e-9:
+        # Nothing is still held: either the run never bought shares, or every
+        # share was merged / exited before resolution (those closes already
+        # realised their PnL). Nothing left to redeem.
         return None
 
+    # `_held_shares_by_token` returns NET inventory (closes subtracted), so this
+    # books exactly the still-open position -- never the shares a merge or exit
+    # already realised, which is what makes it safe to drop the old
+    # "any close -> skip entirely" guard. A resolution redeems the winning held
+    # side at $1.00; the losing side at $0.00. Both directions are booked: a
+    # winner-holding position realises profit, and a run left holding only the
+    # LOSING side writes a realised LOSS (proceeds 0) instead of silently never
+    # appearing -- the gap that let an overnight verdict look rosier than the
+    # true PnL.
+    winning_held = max(0.0, float(held.get(winner_id, 0.0)))
     proceeds = winning_held * 1.0
     cost_basis = sum(max(0.0, float(held_cost.get(t, 0.0))) for t in held)
     realized_pnl = proceeds - cost_basis
@@ -370,7 +483,7 @@ def book_shadow_settlement(
             condition_id=condition_id,
             market_slug=market_slug,
             method="shadow_settlement",
-            shares=winning_held,
+            shares=total_held,
             cost_basis=round(cost_basis, 6),
             proceeds=round(proceeds, 6),
             realized_pnl=round(realized_pnl, 6),
@@ -379,7 +492,7 @@ def book_shadow_settlement(
     except Exception:
         return None
     return {
-        "shares": round(winning_held, 4),
+        "shares": round(total_held, 4),
         "proceeds": round(proceeds, 4),
         "cost_basis": round(cost_basis, 4),
         "realized_pnl": round(realized_pnl, 4),
@@ -522,19 +635,41 @@ def sweep_market_resolutions(
             results.append(SweepResult(
                 condition_id=cid, action="already_resolved"))
             if book_settlement:
-                state = fetch(gamma_host, cid)
-                if (not state.unreachable) and state.resolved:
-                    shares, pnl = _settle(state)
-                    results[-1].settled_shares = shares
-                    results[-1].settled_pnl = pnl
+                # Cheap local gate before any network call: a market whose net
+                # held inventory is empty (its position was merged / exited /
+                # already settled) has nothing left to redeem, so it needs no
+                # gamma re-read this rotation. Also honor the unreachable
+                # backoff so a Gamma outage here isn't re-called every tick.
+                held, _hc = _held_shares_by_token(registry, cid, r_id)
+                if (sum(max(0.0, float(v)) for v in held.values()) > 1e-9
+                        and now >= _unreachable_backoff.get(cid, 0.0)):
+                    state = fetch(gamma_host, cid)
+                    if state.unreachable:
+                        _unreachable_backoff[cid] = now + UNREACHABLE_RETRY_SEC
+                    elif state.resolved:
+                        _unreachable_backoff.pop(cid, None)
+                        shares, pnl = _settle(state)
+                        results[-1].settled_shares = shares
+                        results[-1].settled_pnl = pnl
+            continue
+
+        # An unreachable market stays in backoff until its retry is due, so a
+        # dead gamma host or a malformed market is not re-read once per tick.
+        if now < _unreachable_backoff.get(cid, 0.0):
+            results.append(SweepResult(
+                condition_id=cid, action="unreachable",
+                reason="gamma read in backoff; retry later"))
             continue
 
         state = fetch(gamma_host, cid)
         if state.unreachable:
+            _unreachable_backoff[cid] = now + UNREACHABLE_RETRY_SEC
             results.append(SweepResult(
                 condition_id=cid, action="unreachable",
-                reason="gamma read failed; retry next rotation"))
+                reason="gamma read failed; retry after backoff"))
             continue
+        if state.resolved:
+            _unreachable_backoff.pop(cid, None)
         if not state.resolved:
             results.append(SweepResult(
                 condition_id=cid, action="still_open",

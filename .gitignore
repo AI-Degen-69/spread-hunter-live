@@ -53,6 +53,8 @@ data/*.json
 data/*.jsonl
 data/*.tmp.*
 data/.current_run_id
+reports/
+python-BACKUP/
 
 # Session tooling
 .freebuff/

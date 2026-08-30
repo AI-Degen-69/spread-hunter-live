@@ -1026,6 +1026,105 @@ def api_system_status():
     return JSONResponse(get_system_status())
 
 
+@app.post("/api/system/service-toggle")
+def api_system_service_toggle(request: Request, body: dict = Body(...)):
+    """Toggle an individual background service (filter, query, decide)."""
+    _authorize_control(request)
+    svc = str(body.get("service") or "").strip()
+    if svc not in ("filter", "query", "decide"):
+        raise HTTPException(status_code=400, detail=f"Unknown service '{svc}'; allowed: filter, query, decide")
+
+    status = get_system_status()
+    svcs = status.get("services", {})
+    is_running = svcs.get(svc, {}).get("running", False)
+
+    procs_file = resolve_runtime_file("processes.json", root=LIVE_ROOT)
+    saved_procs = {}
+    if procs_file.exists():
+        try:
+            saved_procs = json.loads(procs_file.read_text(encoding="utf-8"))
+        except Exception:
+            saved_procs = {}
+
+    if is_running:
+        # Kill the specific process
+        pid = svcs.get(svc, {}).get("pid")
+        if pid:
+            try:
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+                else:
+                    os.kill(int(pid), 15)
+            except Exception:
+                pass
+        saved_procs.pop(svc, None)
+        procs_file.write_text(json.dumps(saved_procs, indent=2), encoding="utf-8")
+        return JSONResponse({"ok": True, "service": svc, "action": "stopped", "status": get_system_status()})
+    else:
+        # Launch the specific process
+        from core_brain.order_registry import get_run_id
+        child_env = {**os.environ, "SH_RUN_ID": get_run_id()}
+        p = None
+        if svc == "filter":
+            p = subprocess.Popen(
+                [sys.executable, "-m", "scripts.filter_loop"],
+                cwd=str(REPO_ROOT),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=child_env,
+            )
+            saved_procs["filter"] = {"pid": p.pid, "started_at": time.time()}
+        elif svc == "query":
+            sweep_interval = resolve_sweep_interval()
+            poll_cmd = [sys.executable, "-m", "core_brain.order_manager", "poll", "--interval", "0.5"]
+            if sweep_interval is not None:
+                poll_cmd += ["--sweep-interval", str(sweep_interval)]
+            p = subprocess.Popen(
+                poll_cmd,
+                cwd=str(LIVE_ROOT),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=child_env,
+            )
+            saved_procs["query"] = {"pid": p.pid, "started_at": time.time(), "sweep_interval_sec": sweep_interval}
+        elif svc == "decide":
+            p = subprocess.Popen(
+                [sys.executable, "-m", "core_brain.trader_loop", "--live",
+                 "--no-reconcile", "--no-sweep", "--interval", "5", "--max-markets", "1"],
+                cwd=str(LIVE_ROOT),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=child_env,
+            )
+            saved_procs["decide"] = {"pid": p.pid, "started_at": time.time()}
+
+        procs_file.write_text(json.dumps(saved_procs, indent=2), encoding="utf-8")
+        return JSONResponse({"ok": True, "service": svc, "action": "started", "pid": p.pid if p else None, "status": get_system_status()})
+
+
+@app.post("/api/system/mode")
+def api_system_mode(request: Request, body: dict = Body(...)):
+    """Toggle or set execution registry mode (live vs shadow)."""
+    _authorize_control(request)
+    mode = str(body.get("mode") or "").strip().lower()
+    global _ACTIVE_DB_OVERRIDE
+    if mode == "live" or mode == "production":
+        _ACTIVE_DB_OVERRIDE = None
+    elif mode == "shadow":
+        shadow_path = REPO_ROOT / "data" / "shadow.db"
+        _ACTIVE_DB_OVERRIDE = shadow_path
+    else:
+        # Toggle current
+        if _ACTIVE_DB_OVERRIDE is None:
+            shadow_path = REPO_ROOT / "data" / "shadow.db"
+            _ACTIVE_DB_OVERRIDE = shadow_path
+        else:
+            _ACTIVE_DB_OVERRIDE = None
+
+    db_id = resolve_db_identity(resolve_db_path(_ACTIVE_DB_OVERRIDE))
+    return JSONResponse({"ok": True, "mode": db_id["mode"], "is_production": db_id["is_production"], "path": str(db_id["path"]), "status": get_system_status()})
+
+
 @app.post("/api/system/start")
 def api_system_start(request: Request):
     """Start background bot stack."""
@@ -1799,39 +1898,63 @@ def get_parameters(registry=None):
     sweep = resolve_sweep_interval()
     params = [
         {
-            "name": "max_pair_cost",
+            "name": "Pair Cost Entry Ceiling",
+            "key": "max_pair_cost",
+            "code": "max_pair_cost",
             "value": f"${cfg.max_pair_cost:.2f}",
+            "category": "Pricing Safeguard",
+            "badge": "Hard Limit",
             "trigger": f"Combined UP + DOWN maker buy cost reaches or exceeds ${cfg.max_pair_cost:.2f}",
-            "action": "Refuses to quote pair to ensure guaranteed positive spread profit on merge",
+            "action": "Refuses to quote pair to guarantee strictly positive spread profit on merge",
         },
         {
-            "name": "max_naked_usd",
+            "name": "Single-Leg Unwind Cap",
+            "key": "max_naked_usd",
+            "code": "max_naked_usd",
             "value": f"${naked_usd:.2f} ({cfg.naked_risk_pct*100:.0f}% of {basis_label})",
-            "trigger": f"One leg fills while the opposing leg is unfilled, creating unhedged exposure > ${naked_usd:.2f}",
+            "category": "Inventory Risk",
+            "badge": "Dynamic %",
+            "trigger": f"One leg fills while opposing leg is unfilled, creating unhedged exposure > ${naked_usd:.2f}",
             "action": "Stops quoting new orders on that market; prepares emergency exit / merge",
         },
         {
-            "name": "max_order_usd",
+            "name": "Max Capital Per Order",
+            "key": "max_order_usd",
+            "code": "max_order_usd",
             "value": f"${order_usd:.2f} ({cfg.order_risk_pct*100:.0f}% of {basis_label})",
+            "category": "Order Sizing",
+            "badge": "Dynamic %",
             "trigger": f"Order sizing calculation generates a single order > ${order_usd:.2f}",
             "action": "Clamps size to prevent accidental capital overcommitment",
         },
         {
-            "name": "max_total_usd",
+            "name": "Bankroll Deployment Ceiling",
+            "key": "max_total_usd",
+            "code": "max_total_usd",
             "value": f"${total_usd:.2f} ({cfg.bankroll_ceiling_pct*100:.0f}% {basis_label} ceiling)",
+            "category": "Global Fleet Cap",
+            "badge": "Dynamic %",
             "trigger": f"Sum of all open notional across fleet reaches ${total_usd:.2f}",
             "action": "Refuses all new quotes across all markets until existing orders settle or cancel",
         },
         {
-            "name": "min_quote_shares",
+            "name": "Minimum Order Size",
+            "key": "min_quote_shares",
+            "code": "min_quote_shares",
             "value": f"{cfg.min_quote_shares} shares",
+            "category": "Venue Protocol",
+            "badge": "Protocol Min",
             "trigger": "Calculated order size falls below Polymarket venue minimum",
-            "action": "Refuses single-sided quote or scales up to {} shares if budget permits".format(cfg.min_quote_shares),
+            "action": f"Refuses single-sided quote or scales up to {cfg.min_quote_shares} shares if budget permits",
         },
         {
-            "name": "sweep_interval",
+            "name": "Account Sync & Balance Cadence",
+            "key": "sweep_interval",
+            "code": "sweep_interval",
             "value": f"{sweep:.0f}s" if sweep is not None else "every tick",
-            "trigger": "{} elapsed since last wallet balance query".format(f"{sweep:.0f}s" if sweep is not None else "every poll cycle"),
+            "category": "Reconciliation",
+            "badge": "Cadence",
+            "trigger": f"{sweep:.0f}s elapsed since last wallet balance query" if sweep is not None else "Every poll cycle",
             "action": "Fetches fresh on-chain USDC balance and updates float marks",
         },
     ]

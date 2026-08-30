@@ -617,6 +617,50 @@ def run_shadow(
         except (sqlite3.Error, OSError, ValueError) as e:
             log.warning("shadow pairs pass failed: %s", e)
 
+        # Confirm externally-ended markets and record the terminal marker.
+        # Runs after the pairs pass so a market this sweep resolves is not
+        # acted on by auto_manage_pairs in the same rotation. The gamma read
+        # is the only thing in this sweep that can reach a network failure;
+        # it is the last stage on purpose so a slow endpoint never blocks
+        # the merge / exit decisions above.
+        try:
+            resolve_fn = getattr(shadow_sweep, "_resolve_fn", None)
+            if resolve_fn is not None:
+                resolve_fn()
+        except Exception as e:  # noqa: BLE001 - degrade, do not stop
+            log.warning("shadow resolution pass failed: %s", e)
+
+    # Close the write-side gap: markets that ended on the venue but whose
+    # resting rows + quotes_count keep the dashboard reading QUOTING. The
+    # gamma read is public (no signer), so the shadow session can run it;
+    # a failure degrades and retries next rotation, never marking a market
+    # resolved on a guess.
+    def resolve_markets_fn():
+        from core_brain.market_resolution import (
+            DEFAULT_GAMMA_HOST, sweep_market_resolutions,
+        )
+        host = os.environ.get("GAMMA_HOST", DEFAULT_GAMMA_HOST)
+        # Shadow models the wallet, so settlement PnL belongs here: a
+        # validation run must book the redemption, not leave it as unrealised
+        # CAPEX. Live loops never set this -- on-chain redemption is theirs.
+        for r in sweep_market_resolutions(
+            seam.registry, db_path, markets=markets_holder[0],
+            gamma_host=host, run_id=run_id, book_settlement=True,
+        ):
+            if r.action in ("resolved_recorded", "partial_stranded"):
+                settle = f" settled {r.settled_shares:g}sh pnl=${r.settled_pnl:.2f}" \
+                    if r.settled_pnl else ""
+                log.info("resolved %s (%s): %s cancelled=%d partial=%d%s%s",
+                         r.condition_id[:12], r.reason, r.action,
+                         r.cancelled_rows, r.partial_rows,
+                         f" winner={r.winning_token}" if r.winning_token else "",
+                         settle)
+            elif r.action == "still_open":
+                log.debug("not resolved %s: %s", r.condition_id[:12], r.reason)
+            elif r.action == "unreachable":
+                log.debug("resolve read failed %s: %s", r.condition_id[:12], r.reason)
+
+    shadow_sweep._resolve_fn = resolve_markets_fn  # type: ignore[attr-defined]
     seam.sweep_fn = shadow_sweep
 
     deadline_ts = time.time() + max(0.0, minutes * 60.0)
@@ -721,6 +765,10 @@ def _parse_args(argv: Optional[list[str]] = None):
                     help="rotation cadence in seconds (default: 5.0)")
     ap.add_argument("--db", default=None,
                     help="explicit per-run shadow store path; data/orders.db is refused")
+    ap.add_argument("--run-id", default=None,
+                    help="run id stamped on every row (e.g. shadow-01); matches the "
+                         "statistics observer's --run-id so records line up across "
+                         "the db, stats store and report. Defaults to shadow_run_id()")
     ap.add_argument("--max-markets", type=int, default=None,
                     help="cap the number of markets rotated (default: all)")
     ap.add_argument("--funder", default=None,
@@ -768,6 +816,7 @@ def main(
         fetch_books=fetch_books or _default_fetch_books(),
         interval=a.interval,
         funder=a.funder,
+        run_id=a.run_id,
     )
 
     quoted = sum(1 for r in result.results if r.status == "QUOTED")

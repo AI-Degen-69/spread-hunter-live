@@ -522,41 +522,28 @@ function renderDbMode(status) {
   const mode = status?.db_mode || null;
   lastDbIsProduction = status?.db_is_production === true;
 
-  if (!el.dataset.modeClickWired) {
-    el.dataset.modeClickWired = 'true';
-    el.style.cursor = 'pointer';
-    el.addEventListener('click', async () => {
-      const nextMode = lastDbIsProduction ? 'SHADOW' : 'LIVE';
-      try {
-        await controlFetch('/api/system/mode', {
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ mode: nextMode }),
-        });
-      } catch (e) {
-        console.error('DB mode toggle error:', e);
-      }
-      pollStatus();
-    });
-  }
-
   if (!mode) {
     el.className = 'pill stopped mono';
     el.textContent = 'DB: --';
-    el.title = 'Active registry unknown: the status endpoint did not answer. Click to toggle mode.';
+    el.title = 'Active registry unknown: the status endpoint did not answer.';
     return;
   }
 
   const path = status.db_path || '';
   if (lastDbIsProduction) {
     el.className = 'pill active mono';
-    el.textContent = 'LIVE REGISTRY (click to switch)';
-    el.title = `Reading production registry: ${path}. Click to switch to SHADOW mode.`;
+    el.textContent = 'LIVE REGISTRY';
+    el.title = `Reading the production registry: ${path}`;
   } else {
+    // Not a cosmetic state. Every number on the page is a rehearsal, and START
+    // is refused while this shows.
     el.className = 'pill shadow mono';
-    el.textContent = `SHADOW: ${path.split(/[\\/]/).pop()} (click to switch)`;
-    el.title = `Reading shadow registry: ${path}. Risk-free rehearsal mode. Click to switch to LIVE mode.`;
+    el.textContent = `${mode}: ${path.split(/[\\/]/).pop()}`;
+    el.title = `Reading ${path}, not the production registry. `
+      + `Orders, fills and PnL on this page are not live positions, and START is disabled.`;
   }
 }
+
 
 /* ── Render: Service Cards & Master Diagnostic HUD ── */
 const SERVICE_DEFS = [
@@ -735,13 +722,29 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
   document.querySelectorAll('.toggle[data-svc]').forEach(t => {
     t.addEventListener('click', async () => {
       const svc = t.dataset.svc;
-      try {
-        await controlFetch('/api/system/service-toggle', {
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ service: svc }),
-        });
-      } catch (e) {
-        console.error('Service toggle error:', e);
+      const isOn = t.classList.contains('on');
+      if (isOn) {
+        // Individual stop - uses per-service control
+        await controlFetch('/api/system/stop');
+      } else {
+        // /api/system/start is atomic: it launches Filter, Query AND the live
+        // Decide & Execute loop together. Every toggle therefore starts live
+        // trading, whichever card was clicked, so the typed confirmation sits
+        // outside the service check rather than only on the decide card.
+        // The server refuses this too (dashboard/server.py:start_bot). Checked
+        // here as well so a shadow view never shows the live-order prompt.
+        if (!lastDbIsProduction) {
+          alert('This dashboard is not reading the production registry. '
+            + 'START launches the live stack against data/orders.db, whose orders '
+            + 'would not appear on this page. Restart the dashboard without '
+            + '--db / LIVE_DB_PATH first.');
+          return;
+        }
+        const confirmed = prompt('This starts the whole stack, including live Decide & Execute, which rests REAL maker bids. Type START to confirm:');
+        if (confirmed !== 'START') {
+          return;
+        }
+        await controlFetch('/api/system/start');
       }
       pollStatus();
     });
@@ -749,6 +752,7 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
       if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); t.click(); }
     });
   });
+
 }
 
 // Master Start / Stop / Sync Button Handlers
@@ -2275,6 +2279,75 @@ function renderAnalyticsSurface(kpi, status) {
 function renderKPIs(kpi, status) {
   renderRunProfitability(kpi);
   renderBrokerPortfolioOverview(kpi, status);
+  const grid = document.getElementById('kpi-grid');
+  if (!kpi || !kpi.portfolio) {
+    grid.innerHTML = `<div class="empty-state" style="grid-column:1/-1">
+      <div class="empty-state-title">No trading data yet</div>
+      <div class="empty-state-msg">KPIs will appear when the bot makes its first spread capture.</div>
+    </div>`;
+    const _totals = document.getElementById('analytics-totals');
+    const _charts = document.getElementById('analytics-charts');
+    const _gates = document.getElementById('analytics-gates');
+    if (_totals) _totals.innerHTML = '';
+    if (_charts) {
+      const _h = _charts.querySelector('#analytics-histogram-card');
+      const _p = _charts.querySelector('#analytics-portfolio-card');
+      if (_h) _h.innerHTML = '';
+      if (_p) _p.innerHTML = '';
+    }
+    if (_gates) _gates.innerHTML = '';
+    return;
+  }
+
+  const p = kpi.portfolio;
+  const ta = kpi.trade_analytics || {};
+  const startCap = status?.starting_capital ?? p.starting_capital;
+  const realized = p.realized_pnl;
+  const unrealized = p.unrealized_usd;
+  const total = p.total_pnl;
+  const netValue = (p.account?.account_value_usd !== null && p.account?.account_value_usd !== undefined)
+    ? p.account.account_value_usd
+    : p.total_value;
+
+  grid.innerHTML = `
+    <div class="kpi-tile">
+      <div class="kpi-label">Net Portfolio Value</div>
+      ${fmtVal(netValue !== null && netValue !== undefined ? fmtUSD(netValue) : null)}
+    </div>
+    <div class="kpi-tile">
+      <div class="kpi-label">Starting Capital</div>
+      ${fmtVal(startCap !== null && startCap !== undefined ? fmtUSD(startCap) : 'estimated')}
+    </div>
+    <div class="kpi-tile">
+      <div class="kpi-label">Realized P&L</div>
+      ${fmtVal(realized !== null && realized !== undefined ? fmtUSD(realized) : null, realized >= 0 ? ' positive' : ' negative')}
+      <div class="kpi-value null" style="font-size:12px">${fmtPct(p.pnl_pct)}</div>
+    </div>
+    <div class="kpi-tile">
+      <div class="kpi-label">Unrealized P&L</div>
+      ${fmtVal(unrealized !== null && unrealized !== undefined ? fmtUSD(unrealized) : (p.unrealized_measured === false ? 'unmeasured' : null))}
+    </div>
+    <div class="kpi-tile">
+      <div class="kpi-label">Win Rate</div>
+      ${fmtVal(ta.win_rate !== null && ta.win_rate !== undefined ? (ta.win_rate * 100).toFixed(1) + '%' : null)}
+    </div>
+    <div class="kpi-tile">
+      <div class="kpi-label">Sharpe</div>
+      ${fmtVal(ta.sharpe_ratio !== null && ta.sharpe_ratio !== undefined ? ta.sharpe_ratio.toFixed(2) : null)}
+    </div>
+    <div class="kpi-tile">
+      <div class="kpi-label">Max Drawdown</div>
+      ${fmtVal(ta.max_drawdown_pct !== null && ta.max_drawdown_pct !== undefined ? fmtPct(-ta.max_drawdown_pct) : null, ' negative')}
+    </div>
+    <div class="kpi-tile">
+      <div class="kpi-label">Total Fills</div>
+      ${fmtVal(kpi.fills || 0)}
+    </div>
+    <div class="kpi-tile">
+      <div class="kpi-label">Resolved</div>
+      ${fmtVal(kpi.resolved_markets !== undefined && kpi.resolved_markets !== null ? kpi.resolved_markets : 0)}
+    </div>
+  `;
   renderAnalyticsSurface(kpi, status);
 }
 
@@ -2309,6 +2382,15 @@ function fmtOrderAge(sec) {
   if (sec < 60) return sec + 's';
   if (sec < 3600) return Math.floor(sec / 60) + 'm';
   return Math.floor(sec / 3600) + 'h';
+}
+
+function fmtAgo(tsSec) {
+  if (tsSec === null || tsSec === undefined) return '';
+  const sec = Math.max(0, (Date.now() / 1000) - tsSec);
+  if (sec < 60) return Math.floor(sec) + 's ago';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm ago';
+  if (sec < 86400) return Math.floor(sec / 3600) + 'h ago';
+  return Math.floor(sec / 86400) + 'd ago';
 }
 
 function isCancelledStatus(status) {
@@ -2478,7 +2560,14 @@ function renderMarkets(kpi, state) {
     // kpi.funnel.graduated anymore (e.g., Mlb Lad Atl 2026-08-27 past date).
     // HasFunnel guards: when funnel empty (no scan yet) don't mark everything.
     const hasFunnel = graduatedCids.size > 0;
-    const isFinished = (m.days_to_resolve !== null && m.days_to_resolve < 0)
+    // FINISHED when the backend recorded the terminal marker (the shadow
+    // resolution sweeper's `resolutions` row, or the ranker's dtr<0), OR the
+    // market left the graduated funnel (the existing universe-left path).
+    // `m.resolved` is the primary, durable signal; the funnel heuristic is
+    // the fallback that still works when no sweeper has run (live runs that
+    // only drop by_mkt via venue_sync, or older shadow dbs pre-sweeper).
+    const isFinished = m.resolved === true
+      || (m.days_to_resolve !== null && m.days_to_resolve < 0)
       || (hasFunnel && !graduatedCids.has(cid) && hasOrders);
 
     // Badge: per-status pills same size/style as order pills — OPEN blue, FILLED green, 0 ACTIVE gray
@@ -2519,7 +2608,10 @@ function renderMarkets(kpi, state) {
       <td><span class="pill ${hedged === 'Hedged' ? 'active' : 'reconnecting'}">${hedged}</span></td>
       <td class="mono">${esc(m.realized_pnl !== null && m.realized_pnl !== undefined ? fmtUSD(m.realized_pnl) : '--')}</td>
       <td class="mono">${esc(fills_count)}</td>
-      <td><span class="pill ${isFinished ? 'finished' : (m.quotes_count > 0 ? 'quoting-breathing' : 'stopped')}">${isFinished ? 'FINISHED' : (m.quotes_count > 0 ? 'QUOTING' : 'IDLE')}</span></td>
+      <td>
+        <span class="pill ${isFinished ? 'finished' : (m.quotes_count > 0 ? 'quoting-breathing' : 'stopped')}">${isFinished ? 'FINISHED' : (m.quotes_count > 0 ? 'QUOTING' : 'IDLE')}</span>
+        ${m.resolution ? `<div class="caption-muted" title="resolved ${new Date(m.resolution.resolved_ts * 1000).toLocaleString()}">${m.resolution.winner ? ('Winner: ' + esc(m.resolution.winner)) : 'Resolved'} · ${fmtAgo(m.resolution.resolved_ts)}</div>` : ''}
+      </td>
     </tr>`;
 
     // Expanded sub-row with individual orders

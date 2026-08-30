@@ -994,6 +994,59 @@ def _fleet_state(registry, cfg) -> dict:
     }
 
 
+def start_resolution_sweeper(
+    registry,
+    db_path: Path,
+    interval: float = 600.0,
+    markets_fn: Optional[Callable] = None,
+) -> Any:
+    """Run the market-resolution sweep on a slow background cadence.
+
+    Resolution detection (gamma reads + writes to the resolutions table) is
+    deliberately kept OFF the trading critical path: it needs the network and
+    touches nothing the quote/submit/reconcile loop depends on, so a slow or
+    wedged gamma endpoint must never block a rotation. A daemon thread sleeps
+    `interval` seconds between passes and dies with the fleet process.
+
+    This is read-mostly at the venue and drops nothing a live loop needs: it
+    marks externally-ended markets resolved (so the dashboard shows FINISHED),
+    it does NOT cancel resting orders (the venue-authoritative
+    `_cancel_dropped_markets` owns that), and it never books settlement PnL
+    in live (redemption is on-chain).
+    """
+    import threading
+
+    def _loop() -> None:
+        from core_brain.market_resolution import (
+            DEFAULT_GAMMA_HOST, sweep_market_resolutions,
+        )
+        host = os.environ.get("GAMMA_HOST", DEFAULT_GAMMA_HOST)
+        while True:
+            try:
+                universe = markets_fn() if markets_fn is not None else []
+                for r in sweep_market_resolutions(
+                    registry, db_path, markets=universe,
+                    gamma_host=host, book_settlement=False,
+                    cancel_resting=False,
+                ):
+                    if r.action in ("resolved_recorded", "partial_stranded"):
+                        log.info("resolved %s (%s): %s winner=%s",
+                                 r.condition_id[:12], r.reason, r.action,
+                                 r.winning_token)
+                    elif r.action in ("still_open", "unreachable"):
+                        log.debug("resolve %s %s: %s",
+                                  r.action, r.condition_id[:12], r.reason)
+            except Exception as e:  # noqa: BLE001 - degrade, do not stop
+                log.warning("resolution sweeper failed: %s: %s",
+                            type(e).__name__, e)
+            time.sleep(max(30.0, interval))
+
+    thread = threading.Thread(
+        daemon=True, name="market-resolution-sweeper", target=_loop)
+    thread.start()
+    return thread
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     """The Trader loop entry point.
 
@@ -1030,6 +1083,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--no-sweep", action="store_true",
                     help="skip the account sweep (the poll loop owns it when "
                          "running alongside this fleet)")
+    ap.add_argument("--resolution-interval", type=float, default=600.0,
+                    help="seconds between market-resolution sweeps on a "
+                         "background, non-blocking thread (default: 600)")
     a = ap.parse_args(argv)
 
     logging.basicConfig(
@@ -1101,6 +1157,16 @@ def main(argv: Optional[list[str]] = None) -> int:
         resting_order_ids_fn=_venue_resting_order_ids,
         emit_fn=partial(_emit_cycle_event, db_path=db_path),
     )
+    # Resolution detection runs off the critical path on a slow background
+    # thread (won't block a 5s rotation). Disabled for --once smoke runs.
+    if not a.once:
+        start_resolution_sweeper(
+            registry, db_path, interval=a.resolution_interval,
+            markets_fn=lambda: _market_specs(a.max_markets, registry=registry),
+        )
+        log.info("resolution sweeper started (every %ss, background)",
+                 a.resolution_interval)
+
     results = run(
         seam,
         interval=a.interval, once=a.once, live=a.live, markets=specs,

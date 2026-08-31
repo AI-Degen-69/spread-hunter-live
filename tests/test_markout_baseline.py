@@ -278,12 +278,36 @@ def test_the_sampler_records_the_reference_when_the_tape_answers(registry, monke
 
 # --- the aggregate the dashboard can read ----------------------------------
 
+def _seed_fill(registry: OrderRegistry, price: float = 0.40,
+               size: float = 200.0) -> None:
+    """A filled order and its fill, so `filled_sh` is not zero.
+
+    The raw adverse-selection figure divides by filled shares, so without this
+    the raw number is None and only half the comparison is visible.
+    """
+    con = sqlite3.connect(str(registry.db_path))
+    con.execute(
+        "INSERT INTO orders (id, order_id, condition_id, token_id, side, price,"
+        " original_size, status, posted_ts, last_polled_ts, run_id)"
+        " VALUES ('o1','o1','0xmarket','tok-up','BUY',?,?,'filled',?,?,'run-1')",
+        (price, size, int(T0 * 1000), int(T0 * 1000)),
+    )
+    con.execute(
+        "INSERT INTO fills (trade_id, order_uuid, size, price, venue_ts, run_id)"
+        " VALUES ('t1','o1',?,?,?,'run-1')",
+        (size, price, int(T0 * 1000)),
+    )
+    con.commit()
+    con.close()
+
+
 def test_kpi_reports_the_excess_beside_the_raw_drift(registry, tmp_path, monkeypatch):
     # Arrange — one fill at 0.40, reference 0.55, and the market handed peers
     # +0.05 over the same span. Raw drift is +0.15; excess is +0.10.
     from core_brain import kpi as kpi_mod
 
     monkeypatch.setattr(kpi_mod, "REPO_ROOT", tmp_path)
+    _seed_fill(registry)
     markout_id = _seed_markout(registry, T0)
     registry.update_markout_horizon(markout_id, 0, 0.55)
     registry.update_markout_reference(markout_id, 0, 0.55, 0.05)
@@ -291,10 +315,12 @@ def test_kpi_reports_the_excess_beside_the_raw_drift(registry, tmp_path, monkeyp
     # Act
     data = kpi_mod.report(db_path=registry.db_path, run_id="all")
 
-    # Assert — both figures present, and they are different numbers.
+    # Assert — both figures present, both on the same fill, and the baseline
+    # is the whole difference between them.
+    assert data["markout_samples"] == 1
+    assert data["adverse_selection"] == pytest.approx(0.15)
     assert data["markout_excess_samples"] == 1
     assert data["adverse_selection_excess"] == pytest.approx(0.10)
-    assert data["adverse_selection"] != data["adverse_selection_excess"]
 
 
 def test_a_markout_without_a_baseline_is_left_out_of_the_excess(registry, tmp_path, monkeypatch):
@@ -312,3 +338,36 @@ def test_a_markout_without_a_baseline_is_left_out_of_the_excess(registry, tmp_pa
     # Assert
     assert data["markout_excess_samples"] == 0
     assert data["adverse_selection_excess"] is None
+
+
+def test_the_peer_baseline_is_unsigned_like_the_raw_drift(registry, monkeypatch):
+    # Arrange — a SELL fill. `kpi.report` computes the raw drift as
+    # `reference - fill_price` with no side factor, so signing the peer figure
+    # and not the raw one would flip the excess on every sell.
+    fill_ts = T0 - 4000
+    con = sqlite3.connect(str(registry.db_path))
+    con.execute(
+        "INSERT INTO markouts (ts, condition_id, side, token_id, fill_price,"
+        " size, done, run_id) VALUES (?,?,'SELL','tok-up',?,?,0,'run-1')",
+        (fill_ts, "0xmarket", 0.40, 200.0),
+    )
+    con.commit()
+    markout_id = con.execute("SELECT MAX(id) FROM markouts").fetchone()[0]
+    con.close()
+
+    class _Market:
+        up_token = "tok-up"
+        down_token = "tok-down"
+
+    monkeypatch.setattr("core_brain.markets.fetch_pinned_market",
+                        lambda *a, **k: _Market())
+    monkeypatch.setattr("core_brain.markets.full_book",
+                        lambda host, token: {"best_bid": 0.55, "best_ask": 0.57})
+
+    trades = [_print(fill_ts, 0.50, 100.0), _print(fill_ts + 300, 0.55, 100.0)]
+
+    # Act
+    sample_pending_markouts(registry, now_sec=T0, trades_fn=lambda t: trades)
+
+    # Assert — +0.05, the same sign the raw drift carries for this fill.
+    assert _refs(registry, markout_id)["h0"]["peer"] == pytest.approx(0.05)

@@ -13,12 +13,15 @@ Amendment 3 Constraint:
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from typing import Optional
 
 from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
 from core_brain.config import load as load_cfg
+
+log = logging.getLogger("markout")
 
 _CFG = load_cfg()
 MARKOUT_HORIZONS: tuple[float, ...] = getattr(
@@ -186,8 +189,11 @@ def _record_reference(registry, row: dict, markout_id: int, horizon_idx: int,
 
     fill_price = row.get("fill_price")
     fill_size = row.get("size")
-    direction = -1.0 if str(row.get("side") or "").upper() == "SELL" else 1.0
-    peer = peer_markout(trades, fill_ts, peer_ref, direction,
+    # UNSIGNED, deliberately. `kpi.report` computes the raw drift as
+    # `reference - fill_price` with no side factor, and the excess subtracts
+    # the peer figure from it. Signing one side and not the other would flip
+    # the excess on every SELL.
+    peer = peer_markout(trades, fill_ts, peer_ref, direction=1.0,
                         fill_price=fill_price, fill_size=fill_size)
     registry.update_markout_reference(markout_id, horizon_idx, reference, peer)
 
@@ -209,7 +215,7 @@ def sample_pending_markouts(
     from core_brain.markets import full_book, fetch_pinned_market
 
     if trades_fn is None:
-        trades_fn = _default_trades_fn()
+        trades_fn = _default_trades_fn(horizons)
 
     now = now_sec if now_sec is not None else time.time()
     try:
@@ -277,8 +283,12 @@ def sample_pending_markouts(
             try:
                 _record_reference(registry, row, m_id, h_idx, mid, row_token,
                                   trades_fn, now, horizons)
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - degrade, never block
+                # Swallowed on purpose -- the raw markout must still be
+                # recorded -- but a reference that silently never appears is
+                # indistinguishable from a market that never printed.
+                log.debug("markout reference skipped for token %s: %r",
+                          row_token, exc)
 
         if mid is not None:
             # Check if all other horizons are filled
@@ -296,7 +306,16 @@ def sample_pending_markouts(
     return updated_count
 
 
-def _default_trades_fn():
+# One page of the tape covers minutes on a busy token, and the 6h horizon needs
+# prints from six hours ago. Walk back until the page runs past the oldest
+# window we could need -- bounded, because this runs per token per pass and an
+# unbounded walk on a hot market would spend the sampler's whole budget on one
+# row.
+TAPE_PAGE_SIZE = 500
+TAPE_MAX_PAGES = 6
+
+
+def _default_trades_fn(horizons: tuple[float, ...] = MARKOUT_HORIZONS):
     """The public tape, per token. Read-only, no credentials, no signer."""
     import json as _json
     import urllib.error
@@ -305,16 +324,45 @@ def _default_trades_fn():
 
     base = "https://data-api.polymarket.com/trades"
     headers = {"User-Agent": "spread-hunter"}
+    span = max(horizons) if horizons else 0.0
 
     def fetch(token_id: str) -> list:
-        url = f"{base}?{urllib.parse.urlencode({'asset': token_id, 'limit': 500})}"
-        try:
-            req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                rows = _json.loads(resp.read().decode("utf-8"))
-        except (urllib.error.URLError, OSError, ValueError):
-            return []
-        return rows if isinstance(rows, list) else []
+        # Everything at or after this instant can matter to a pending markout;
+        # anything older cannot, so the walk stops there.
+        oldest_needed = time.time() - span - REFERENCE_WINDOW_SEC
+        rows: list = []
+        for page_index in range(TAPE_MAX_PAGES):
+            params = {"asset": token_id, "limit": TAPE_PAGE_SIZE,
+                      "offset": page_index * TAPE_PAGE_SIZE}
+            url = f"{base}?{urllib.parse.urlencode(params)}"
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    page = _json.loads(resp.read().decode("utf-8"))
+            except (urllib.error.URLError, OSError, ValueError) as exc:
+                log.debug("tape page %d failed for %s: %r", page_index, token_id, exc)
+                break
+            if not isinstance(page, list) or not page:
+                break
+            rows.extend(page)
+            if len(page) < TAPE_PAGE_SIZE:
+                break
+
+            oldest = None
+            for trade in page:
+                if not isinstance(trade, dict):
+                    continue
+                try:
+                    ts = float(trade.get("timestamp") or 0.0)
+                except (TypeError, ValueError):
+                    continue
+                if oldest is None or ts < oldest:
+                    oldest = ts
+            # The page already reaches past everything a pending markout could
+            # need; another page would be venue work for rows nobody reads.
+            if oldest is not None and oldest <= oldest_needed:
+                break
+        return rows
 
     return fetch
 

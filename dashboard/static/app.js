@@ -515,7 +515,59 @@ function connectSSE() {
 connectSSE();
 
 /* ── Render: Active registry (LIVE vs SHADOW) ── */
+// Shadow-run stopwatch. The rehearsal is not in the supervised registry, so
+// its liveness arrives as `status.shadow_run` (from runtime/shadow_run.json),
+// already matched against the store this page is reading. While the run is
+// live the clock is extrapolated locally between polls; once it ends it is
+// frozen at the elapsed time of the last heartbeat, because a clock that keeps
+// running for a dead process is worse than no clock.
+let shadowRunAnchor = null;
+
+function fmtStopwatch(sec) {
+  if (sec === null || sec === undefined || !isFinite(sec) || sec < 0) return '';
+  const total = Math.floor(sec);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const mm = String(m).padStart(2, '0');
+  const ss = String(s).padStart(2, '0');
+  return (h > 0 ? h + ':' : '') + mm + ':' + ss;
+}
+
+function renderShadowClock() {
+  const el = document.getElementById('shadow-run-clock');
+  if (!el) return;
+  if (!shadowRunAnchor) {
+    el.textContent = '';
+    el.title = '';
+    return;
+  }
+  const drift = shadowRunAnchor.running
+    ? (Date.now() - shadowRunAnchor.receivedAtMs) / 1000
+    : 0;
+  const elapsed = fmtStopwatch(shadowRunAnchor.elapsedSec + drift);
+  el.textContent = shadowRunAnchor.running ? '· ' + elapsed : '· ' + elapsed + ' ended';
+  el.title = shadowRunAnchor.running
+    ? `Shadow rehearsal ${shadowRunAnchor.runId || ''} running, time box ${shadowRunAnchor.minutes ?? '--'} min`
+    : 'This shadow rehearsal is no longer running.';
+}
+
+function setShadowRun(status) {
+  const run = status?.shadow_run;
+  shadowRunAnchor = run
+    ? {
+        elapsedSec: Number(run.elapsed_sec) || 0,
+        running: run.running === true,
+        runId: run.run_id,
+        minutes: run.minutes,
+        receivedAtMs: Date.now(),
+      }
+    : null;
+  renderShadowClock();
+}
+
 function renderDbMode(status) {
+  setShadowRun(status);
   const el = document.getElementById('db-mode-badge');
   if (!el) return;
 
@@ -3189,10 +3241,11 @@ if (typeof module === 'undefined' || !module.exports) {
   pollStatus();
   renderParameters();
   setInterval(pollStatus, POLL_MS);
+  setInterval(renderShadowClock, 1000);
 }
 
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderDbMode, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket };
+  module.exports = { renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket };
 }

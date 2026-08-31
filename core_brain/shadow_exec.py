@@ -29,8 +29,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from core_brain.order_registry import (
-    SIZE_EPS, CloseRecord, FillRecord, OrderRecord, OrderRegistry, QuoteRecord,
-    get_connection,
+    SIZE_EPS, CloseRecord, FillRecord, MarkoutRecord, OrderRecord, OrderRegistry,
+    QuoteRecord, get_connection,
 )
 from core_brain.shadow_fills import (
     ShadowFill, ShadowRestingOrder, credit_fills, queue_ahead_at,
@@ -399,6 +399,51 @@ def _filled_size(db_path: Path | str, local_id: str) -> float:
     return float(row["s"]) if row else 0.0
 
 
+def _log_shadow_markout(
+    registry: OrderRegistry,
+    order,
+    market,
+    *,
+    price: float,
+    size: float,
+    fill_sec: float,
+) -> None:
+    """Open the adverse-selection row a shadow fill would otherwise never get.
+
+    Live, every fill gets one of these from `order_registry.reconcile_orders`,
+    which reads the venue's trade tape -- a path a rehearsal has no equivalent
+    of. Without a row here `markouts` stays empty in every shadow store no
+    matter how long the session runs, and the sampler has nothing to mature.
+    Both completed runs show exactly that: fills present, `markouts` empty.
+
+    `ref_mid` is the fill price with `ref_mid_source='contaminated'`, the same
+    fallback the live writer uses, so the two paths produce comparable rows.
+
+    Never raises. A rehearsal that cannot write telemetry must still rehearse.
+    """
+    if order is None:
+        return
+    condition_id = getattr(order, "condition_id", None) or getattr(
+        market, "condition_id", None)
+    if not condition_id:
+        return
+    try:
+        registry.log_markout(MarkoutRecord(
+            ts=fill_sec,
+            condition_id=str(condition_id),
+            side=str(getattr(order, "side", "BUY") or "BUY"),
+            token_id=getattr(order, "token_id", None),
+            market_slug=getattr(market, "slug", None),
+            fill_price=price,
+            size=size,
+            ref_mid=price,
+            ref_mid_source="contaminated",
+            run_id=registry._run_id(),
+        ))
+    except (sqlite3.Error, OSError, ValueError) as e:
+        _log.warning("shadow markout row not written: %s", e)
+
+
 def settle_market(
     registry: OrderRegistry,
     market,
@@ -476,12 +521,17 @@ def settle_market(
 
     now_ms = int(now_fn() * 1000)
     by_id = {o.local_id: o for o in orders}
+    owned_by_id = {o.id: o for o in owned}
     for f in fills:
         registry.record_fill(FillRecord(
             trade_id=f"{SHADOW_TRADE_PREFIX}{uuid.uuid4().hex[:16]}",
             order_uuid=f.local_id, size=f.size, price=f.price,
             venue_ts=now_ms, recorded_ts=now_ms,
         ))
+        _log_shadow_markout(
+            registry, owned_by_id.get(f.local_id), market,
+            price=f.price, size=f.size, fill_sec=now_ms / 1000.0,
+        )
         order = by_id[f.local_id]
         total_filled = order.filled + f.size
         status = "filled" if total_filled >= order.size - 1e-9 else "partial"
@@ -756,18 +806,25 @@ class ShadowExecutionClient:
 
         now_ms = int(time.time() * 1000)
         local_id = str(uuid.uuid4())
-        self._registry.create_order(OrderRecord(
+        completion = OrderRecord(
             id=local_id,
             order_id=f"{SHADOW_ORDER_PREFIX}{uuid.uuid4().hex[:12]}",
             condition_id=condition_id, token_id=token_id, side="BUY",
             price=price, original_size=shares, status="filled",
             posted_ts=now_ms, last_polled_ts=now_ms, pair_id=pair_id,
-        ))
+        )
+        self._registry.create_order(completion)
         self._registry.record_fill(FillRecord(
             trade_id=f"{SHADOW_TRADE_PREFIX}{uuid.uuid4().hex[:16]}",
             order_uuid=local_id, size=shares, price=price,
             venue_ts=now_ms, recorded_ts=now_ms,
         ))
+        # A completion buy is a fill like any other, and the live path writes a
+        # markout for it too. Leaving it out would make the taker leg of every
+        # completed pair invisible to the adverse-selection measurement.
+        _log_shadow_markout(self._registry, completion, None,
+                            price=price, size=shares,
+                            fill_sec=now_ms / 1000.0)
         return {"success": True, "orderID": local_id, "status": "matched",
                 "price": price, "size": shares}
 

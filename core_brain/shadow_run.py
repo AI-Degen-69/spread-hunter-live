@@ -676,6 +676,13 @@ def run_shadow(
         except (sqlite3.Error, OSError, ValueError) as e:
             log.warning("shadow pairs pass failed: %s", e)
 
+        # Mature any adverse-selection horizon that has come due. Placed after
+        # the pairs pass and before the resolution read so a fill booked this
+        # rotation is already in the store when the next rotation samples it.
+        sampled = sample_shadow_markouts(seam.registry, clob_host=seam.clob_host)
+        if sampled:
+            log.info("markouts: %d horizon(s) sampled", sampled)
+
         # Confirm externally-ended markets and record the terminal marker.
         # Runs after the pairs pass so a market this sweep resolves is not
         # acted on by auto_manage_pairs in the same rotation. The gamma read
@@ -760,6 +767,38 @@ def run_shadow(
         # did not.
         skipped_stages=("reconcile",),
     )
+
+
+def sample_shadow_markouts(
+    registry,
+    clob_host: str = "https://clob.polymarket.com",
+) -> int:
+    """Mature whatever adverse-selection horizons have come due, once.
+
+    `core_brain.markout.MarkoutWorker` is a daemon thread started only by
+    `core_brain.order_manager` on the live poll path, so a rehearsal has no
+    sampler at all: rows would be opened on fill and then sit at NULL forever.
+    This is the rehearsal's equivalent, called from the per-rotation sweep
+    rather than from a thread -- the sweep already runs on the session's own
+    cadence, and one more thread in a rehearsal buys nothing.
+
+    Cheap when idle: `get_pending_markouts` is a single indexed read that
+    returns nothing until a horizon is actually due, and the run's fills are
+    counted in single digits.
+
+    Reads only -- the public book and the public tape, no signer and no
+    credentials, the same endpoints this session already decides against.
+
+    Returns the number of horizons filled. Never raises: telemetry that fails
+    must not end a rehearsal, so every error degrades to 0 and a warning.
+    """
+    from core_brain import markout as markout_mod
+
+    try:
+        return markout_mod.sample_pending_markouts(registry, clob_host=clob_host)
+    except Exception as e:  # noqa: BLE001 - degrade, never stop the sweep
+        log.warning("shadow markout sampling failed: %s", e)
+        return 0
 
 
 def _default_markets_fn() -> Callable[..., list]:

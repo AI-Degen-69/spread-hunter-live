@@ -173,15 +173,28 @@ def _resolve_leg(
 def _record_reference(registry, row: dict, markout_id: int, horizon_idx: int,
                       mid: float, token_id: Optional[str], trades_fn,
                       now: float, horizons: tuple[float, ...]) -> None:
-    """Store the windowed reference and peer baseline for one horizon."""
+    """Store the windowed reference and peer baseline for one horizon.
+
+    The reference window is CENTRED on the horizon, so half of it is still in
+    the future at the moment the horizon comes due. Measuring then would build
+    the VWAP from the first half only and store it as though it covered the
+    whole window. The row is left for a later pass instead; a horizon whose
+    window has not closed by the time the row completes simply has no
+    reference, which the excess aggregation already skips.
+    """
     if not token_id:
-        return
-    trades = trades_fn(token_id)
-    if not trades:
         return
 
     fill_ts = float(row.get("ts") or 0.0)
     horizon_sec = horizons[horizon_idx] if horizon_idx < len(horizons) else 0.0
+    window_closes_at = fill_ts + horizon_sec + REFERENCE_WINDOW_SEC / 2.0
+    if now < window_closes_at:
+        return
+
+    trades = trades_fn(token_id, row.get("condition_id"))
+    if not trades:
+        return
+
     reference = windowed_reference(trades, fill_ts + horizon_sec)
     # No prints around the horizon means no VWAP. The mid stands in only for the
     # peer arithmetic, and the stored `ref` says plainly that it was unmeasured.
@@ -316,7 +329,16 @@ TAPE_MAX_PAGES = 6
 
 
 def _default_trades_fn(horizons: tuple[float, ...] = MARKOUT_HORIZONS):
-    """The public tape, per token. Read-only, no credentials, no signer."""
+    """The public tape for one market, filtered to one token.
+
+    The trades endpoint is queried by `market` (condition id) -- the same
+    parameter `markets.recent_trades` uses -- and the rows are then filtered to
+    the token being measured. A market's two legs move inversely, so mixing
+    them into one VWAP would price the reference at something neither leg ever
+    traded at.
+
+    Read-only, no credentials, no signer.
+    """
     import json as _json
     import urllib.error
     import urllib.parse
@@ -326,13 +348,15 @@ def _default_trades_fn(horizons: tuple[float, ...] = MARKOUT_HORIZONS):
     headers = {"User-Agent": "spread-hunter"}
     span = max(horizons) if horizons else 0.0
 
-    def fetch(token_id: str) -> list:
+    def fetch(token_id: str, condition_id: Optional[str] = None) -> list:
         # Everything at or after this instant can matter to a pending markout;
         # anything older cannot, so the walk stops there.
         oldest_needed = time.time() - span - REFERENCE_WINDOW_SEC
         rows: list = []
+        if not condition_id:
+            return rows
         for page_index in range(TAPE_MAX_PAGES):
-            params = {"asset": token_id, "limit": TAPE_PAGE_SIZE,
+            params = {"market": condition_id, "limit": TAPE_PAGE_SIZE,
                       "offset": page_index * TAPE_PAGE_SIZE}
             url = f"{base}?{urllib.parse.urlencode(params)}"
             try:
@@ -344,7 +368,11 @@ def _default_trades_fn(horizons: tuple[float, ...] = MARKOUT_HORIZONS):
                 break
             if not isinstance(page, list) or not page:
                 break
-            rows.extend(page)
+            # Only this token's prints. The complement leg trades in the same
+            # market and at the mirror price; averaging the two would produce a
+            # reference neither leg ever printed at.
+            rows.extend(t for t in page
+                        if isinstance(t, dict) and str(t.get("asset")) == str(token_id))
             if len(page) < TAPE_PAGE_SIZE:
                 break
 

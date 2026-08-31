@@ -230,7 +230,7 @@ def test_a_tape_that_will_not_answer_leaves_the_raw_markout_alone(registry, monk
     monkeypatch.setattr("core_brain.markets.full_book",
                         lambda host, token: {"best_bid": 0.55, "best_ask": 0.57})
 
-    def _boom(token_id):
+    def _boom(token_id, condition_id=None):
         raise OSError("tape unreachable")
 
     # Act
@@ -268,7 +268,7 @@ def test_the_sampler_records_the_reference_when_the_tape_answers(registry, monke
     ]
 
     # Act
-    sample_pending_markouts(registry, now_sec=T0, trades_fn=lambda t: trades)
+    sample_pending_markouts(registry, now_sec=T0, trades_fn=lambda token, cid=None: trades)
 
     # Assert
     stored = _refs(registry, markout_id)["h0"]
@@ -367,7 +367,83 @@ def test_the_peer_baseline_is_unsigned_like_the_raw_drift(registry, monkeypatch)
     trades = [_print(fill_ts, 0.50, 100.0), _print(fill_ts + 300, 0.55, 100.0)]
 
     # Act
-    sample_pending_markouts(registry, now_sec=T0, trades_fn=lambda t: trades)
+    sample_pending_markouts(registry, now_sec=T0, trades_fn=lambda token, cid=None: trades)
 
     # Assert — +0.05, the same sign the raw drift carries for this fill.
     assert _refs(registry, markout_id)["h0"]["peer"] == pytest.approx(0.05)
+
+
+def test_a_window_still_open_is_left_for_a_later_pass(registry, monkeypatch):
+    # Arrange — the reference window is centred on the horizon, so at the
+    # moment the horizon comes due half of it is still in the future.
+    # Measuring then would build the VWAP from the first half and store it as
+    # though it covered the whole window.
+    fill_ts = T0 - 300.0  # the 300s horizon comes due exactly now
+    markout_id = _seed_markout(registry, fill_ts)
+
+    class _Market:
+        up_token = "tok-up"
+        down_token = "tok-down"
+
+    monkeypatch.setattr("core_brain.markets.fetch_pinned_market",
+                        lambda *a, **k: _Market())
+    monkeypatch.setattr("core_brain.markets.full_book",
+                        lambda host, token: {"best_bid": 0.55, "best_ask": 0.57})
+
+    trades = [_print(fill_ts + 300, 0.55, 100.0)]
+
+    # Act
+    sample_pending_markouts(registry, now_sec=T0,
+                            trades_fn=lambda token, cid=None: trades)
+
+    # Assert — the mid is recorded, the reference is not yet.
+    assert _refs(registry, markout_id) == {}
+
+
+def test_the_default_tape_reader_keeps_only_this_token(monkeypatch):
+    # Arrange — both legs of a market trade in the same feed, at mirror
+    # prices. Averaging them would price the reference at something neither
+    # leg ever printed at.
+    from core_brain import markout as markout_mod
+
+    page = [
+        {"asset": "tok-up", "timestamp": T0, "price": 0.40, "size": 100.0},
+        {"asset": "tok-down", "timestamp": T0, "price": 0.60, "size": 100.0},
+    ]
+    captured: list[dict] = []
+
+    class _Resp:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps(self.payload).encode("utf-8")
+
+    def _urlopen(req, timeout=None):
+        captured.append({"url": req.full_url})
+        return _Resp(page)
+
+    monkeypatch.setattr("urllib.request.urlopen", _urlopen)
+
+    # Act
+    fetch = markout_mod._default_trades_fn()
+    rows = fetch("tok-up", "0xmarket")
+
+    # Assert — queried by market, filtered to the token.
+    assert "market=0xmarket" in captured[0]["url"]
+    assert [r["asset"] for r in rows] == ["tok-up"]
+
+
+def test_the_default_tape_reader_needs_a_market():
+    # Arrange — the endpoint is queried by condition id; without one there is
+    # nothing to ask for, and a token-only guess would return the whole feed.
+    from core_brain import markout as markout_mod
+
+    # Act / Assert
+    assert markout_mod._default_trades_fn()("tok-up", None) == []

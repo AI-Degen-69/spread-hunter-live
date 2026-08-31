@@ -169,12 +169,9 @@ def test_the_markout_row_reads_the_top_level_payload_fields():
     # trade_analytics deliberately carries the WRONG values, so the test fails
     # if the renderer goes back to reading them from there.
     ta = {**_healthy(), "markout_samples": 0, "adverse_selection": None}
-    payload = {"trade_analytics": ta, "statistical_analytics": {}, "n": 40,
-               "kpi": {"markout_samples": 30, "adverse_selection": 0.0022,
-                       "adverse_selection_excess": 0.0009}}
-    out = subprocess.run([shutil.which("node"), str(HARNESS), json.dumps(payload)],
-                         capture_output=True, text=True, check=True, encoding="utf-8")
-    rendered = json.loads(out.stdout)
+    rendered = _render(ta, 40, kpi={"markout_samples": 30,
+                                    "adverse_selection": 0.0022,
+                                    "adverse_selection_excess": 0.0009})
 
     # Act / Assert — samples, raw drift, and the baseline-corrected figure.
     assert "30 samples" in rendered["html"]

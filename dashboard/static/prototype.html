@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Spread Hunter — Sidebar Pages (Prototype)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/prototype.css">
+</head>
+<body class="proto-body">
+
+<a class="proto-skip" href="#proto-page-body">Skip to page content</a>
+
+<header class="proto-topbar">
+  <button id="proto-nav-toggle" class="proto-hamburger" type="button"
+          aria-label="Toggle navigation" aria-expanded="false" aria-controls="proto-sidebar">
+    <span></span><span></span><span></span>
+  </button>
+  <div class="font-display proto-wordmark">SPREAD HUNTER</div>
+  <span class="pill shadow mono proto-badge">FRAME PROTOTYPE — NO DATA WIRED</span>
+  <a class="proto-back" href="/">← Live dashboard</a>
+</header>
+
+<div class="proto-shell">
+  <nav id="proto-sidebar" class="proto-sidebar" aria-label="Pages">
+    <ul class="proto-nav" role="list">
+      <li><button class="proto-nav-btn" type="button" data-page="home" aria-current="page">
+        <span class="proto-nav-icon" aria-hidden="true">◆</span> Home
+      </button></li>
+      <li><button class="proto-nav-btn" type="button" data-page="data-markets">
+        <span class="proto-nav-icon" aria-hidden="true">▤</span> Data &amp; Markets
+      </button></li>
+      <li><button class="proto-nav-btn" type="button" data-page="strategy">
+        <span class="proto-nav-icon" aria-hidden="true">✦</span> Strategy
+      </button></li>
+      <li><button class="proto-nav-btn" type="button" data-page="trades">
+        <span class="proto-nav-icon" aria-hidden="true">⇄</span> Trades &amp; Positions
+      </button></li>
+      <li><button class="proto-nav-btn" type="button" data-page="reports">
+        <span class="proto-nav-icon" aria-hidden="true">▩</span> Reports &amp; Analytics
+      </button></li>
+    </ul>
+    <div class="proto-nav-foot mono">Frame only. Each panel is an empty
+      container waiting for its content to move in.</div>
+  </nav>
+
+  <main id="proto-page-body" class="proto-pages">
+    <section id="page-home" class="proto-page" aria-labelledby="page-home-title">
+      <h1 id="page-home-title" class="font-display proto-page-title">Home</h1>
+      <p class="proto-page-note">Read-only overview: bankroll and exposure strip,
+        run-proof banner, service-health summary.</p>
+      <div class="proto-placeholder" data-slot="overview-strip">bankroll / exposure strip</div>
+      <div class="proto-placeholder" data-slot="run-proof">run-proof banner</div>
+      <div class="proto-placeholder" data-slot="service-health">service health summary</div>
+    </section>
+
+    <section id="page-data-markets" class="proto-page" hidden aria-labelledby="page-data-markets-title">
+      <h1 id="page-data-markets-title" class="font-display proto-page-title">Data &amp; Markets</h1>
+      <p class="proto-page-note">The screener kanban, the market inspection table,
+        and the market filter's own controls.</p>
+      <div class="proto-placeholder" data-slot="screener-kanban">screener kanban</div>
+      <div class="proto-placeholder" data-slot="market-table">market inspection table</div>
+      <div class="proto-placeholder" data-slot="filter-controls">market filter controls</div>
+    </section>
+
+    <section id="page-strategy" class="proto-page" hidden aria-labelledby="page-strategy-title">
+      <h1 id="page-strategy-title" class="font-display proto-page-title">Strategy</h1>
+      <p class="proto-page-note">The strategy explainer folded in as a page,
+        beside the pricing parameters and the decision gates.</p>
+      <div class="proto-placeholder" data-slot="strategy-explainer">strategy explainer</div>
+      <div class="proto-placeholder" data-slot="pricing-params">pricing parameters</div>
+      <div class="proto-placeholder" data-slot="decision-gates">decision gates</div>
+    </section>
+
+    <section id="page-trades" class="proto-page" hidden aria-labelledby="page-trades-title">
+      <h1 id="page-trades-title" class="font-display proto-page-title">Trades &amp; Positions</h1>
+      <p class="proto-page-note">Live operations in detail: orders, positions,
+        the exposure bar, and the service toggles.</p>
+      <div class="proto-placeholder" data-slot="orders">orders and fills</div>
+      <div class="proto-placeholder" data-slot="positions">open positions</div>
+      <div class="proto-placeholder" data-slot="exposure">exposure bar</div>
+      <div class="proto-placeholder" data-slot="service-controls">service toggles</div>
+    </section>
+
+    <section id="page-reports" class="proto-page" hidden aria-labelledby="page-reports-title">
+      <h1 id="page-reports-title" class="font-display proto-page-title">Reports &amp; Analytics</h1>
+      <p class="proto-page-note">KPIs, run profitability, the statistical
+        decision gates, and the performance charts.</p>
+      <div class="proto-placeholder" data-slot="kpi">KPI tiles</div>
+      <div class="proto-placeholder" data-slot="run-profitability">run profitability</div>
+      <div class="proto-placeholder" data-slot="statistical-gates">statistical gates</div>
+      <div class="proto-placeholder" data-slot="charts">performance charts</div>
+    </section>
+  </main>
+</div>
+
+<script src="/static/prototype.js"></script>
+</body>
+</html>

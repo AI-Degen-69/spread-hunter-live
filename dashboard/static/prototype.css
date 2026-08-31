@@ -1,0 +1,196 @@
+/* Sidebar-pages prototype (#95).
+ *
+ * Frame only: the sidebar, the page containers, and the responsive drawer.
+ * Every colour, radius and font comes from the tokens `styles.css` already
+ * defines, so the scaffold cannot drift from the live dashboard's theme while
+ * it waits for its content to move in. */
+
+.proto-body {
+  min-height: 100vh;
+}
+
+.proto-skip {
+  position: absolute;
+  left: -9999px;
+}
+.proto-skip:focus {
+  left: 12px;
+  top: 12px;
+  z-index: 40;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.proto-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+.proto-wordmark {
+  font-size: 18px;
+  letter-spacing: 0.06em;
+}
+.proto-badge {
+  font-size: 10px;
+}
+.proto-back {
+  margin-left: auto;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 12px;
+}
+.proto-back:hover {
+  color: var(--text-primary);
+}
+
+.proto-hamburger {
+  display: none;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  width: 34px;
+  height: 34px;
+  padding: 0 7px;
+  background: transparent;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.proto-hamburger span {
+  display: block;
+  height: 2px;
+  background: var(--text-secondary);
+  border-radius: 2px;
+}
+
+.proto-shell {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  align-items: start;
+  gap: 0;
+}
+
+.proto-sidebar {
+  position: sticky;
+  top: 59px;
+  align-self: start;
+  height: calc(100vh - 59px);
+  padding: 14px 10px;
+  border-right: 1px solid var(--border-subtle);
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.proto-nav {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.proto-nav-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font: 600 13px Inter, sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.proto-nav-btn:hover {
+  color: var(--text-primary);
+  background: rgba(148, 163, 184, 0.08);
+}
+.proto-nav-btn[aria-current="page"] {
+  color: var(--text-primary);
+  background: rgba(56, 189, 248, 0.10);
+  border-color: rgba(56, 189, 248, 0.35);
+}
+.proto-nav-icon {
+  width: 16px;
+  text-align: center;
+  color: var(--text-muted);
+}
+.proto-nav-btn[aria-current="page"] .proto-nav-icon {
+  color: #38bdf8;
+}
+.proto-nav-foot {
+  margin-top: auto;
+  font-size: 10px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.proto-pages {
+  padding: 20px 22px 48px;
+  min-width: 0;
+}
+.proto-page-title {
+  margin: 0 0 4px;
+  font-size: 22px;
+  letter-spacing: 0.04em;
+}
+.proto-page-note {
+  margin: 0 0 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  max-width: 70ch;
+}
+.proto-placeholder {
+  border: 1px dashed var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-card);
+  color: var(--text-muted);
+  font: 600 11px 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 28px 16px;
+  margin-bottom: 12px;
+  text-align: center;
+}
+
+/* Drawer. Below 900px the rail slides over the page instead of squeezing it,
+ * which is what breaks first on a phone-width window. */
+@media (max-width: 900px) {
+  .proto-hamburger {
+    display: flex;
+  }
+  .proto-shell {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .proto-sidebar {
+    position: fixed;
+    top: 59px;
+    left: 0;
+    width: 240px;
+    max-width: 82vw;
+    z-index: 30;
+    transform: translateX(-105%);
+    transition: transform 160ms ease;
+  }
+  .proto-body.proto-nav-open .proto-sidebar {
+    transform: translateX(0);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45);
+  }
+  .proto-body.proto-nav-open .proto-pages {
+    /* The drawer is over the page, so the page keeps its full width and only
+     * dims -- no reflow while the operator is reading it. */
+    opacity: 0.35;
+  }
+}

@@ -471,7 +471,6 @@ def _is_pid_alive(pid: int | None, started_at: float | None = None) -> bool:
     return abs(created - float(started_at)) <= PID_START_TOLERANCE_S
 
 
-<<<<<<< HEAD
 # A heartbeat older than this many rotations means nobody is refreshing it:
 # the rehearsal ended or died. A stopwatch that keeps ticking for a dead
 # process is worse than no stopwatch.
@@ -533,7 +532,7 @@ def read_shadow_run(active_db_path: str | None, now: float | None = None) -> dic
         "ended": ended,
         "finished": finished,
     }
-=======
+
 def _service_started_at(pid: int | None, info: dict, running: bool) -> float | None:
     """Unix start time for a running service, or None.
 
@@ -564,7 +563,6 @@ def _uptime_sec(started_at: float | None, now: float | None = None) -> float | N
         return None
     elapsed = (time.time() if now is None else now) - float(started_at)
     return max(0.0, elapsed)
->>>>>>> ffd7b5b (feat(dashboard): show Market Filter uptime on the SCREENER header)
 
 
 def get_system_status() -> dict:

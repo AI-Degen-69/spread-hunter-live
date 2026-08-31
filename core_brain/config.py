@@ -1086,12 +1086,25 @@ def leg_allocation_usd(cfg) -> float:
     return couple_allocation_usd(cfg) / 2.0
 
 
+# One share at the top of the price range: the venue refuses anything under
+# `single_buy_saver.MIN_ORDER_SHARES` (1.0 share), so a dollar cap below this
+# cannot fund a single legal order at any price. Kept as a literal rather than
+# an import so `config` stays free of execution-path imports.
+VENUE_MIN_NOTIONAL_USD: float = 1.0
+
+
 def derive_dynamic_caps(cfg: MakerConfig, portfolio_usd: float | None = None) -> dict[str, float]:
     """Derive dynamic risk caps scaled to the account's total portfolio value.
 
     - max_naked_usd = 6% (naked_risk_pct) of portfolio value
     - max_order_usd = 25% (order_risk_pct) of portfolio value
     - max_total_usd = 90% (bankroll_ceiling_pct) of portfolio value
+
+    `max_order_usd` is floored at the venue minimum notional
+    (`VENUE_MIN_NOTIONAL_USD`): a percentage cap below one share's cost cannot
+    fund a legal order at all, so the bot would rest nothing while believing it
+    was sized. The floor never exceeds the total cap -- a cap that outruns the
+    portfolio ceiling would be the ceiling in name only.
 
     If portfolio_usd is None, non-finite, or <= 0, falls back to cfg.bankroll_usd.
     """
@@ -1132,6 +1145,13 @@ def derive_dynamic_caps(cfg: MakerConfig, portfolio_usd: float | None = None) ->
     naked_val = round(raw_naked, 2) if raw_naked >= 0.005 else raw_naked
     order_val = round(raw_order, 2) if raw_order >= 0.005 else raw_order
     total_val = round(raw_total, 2) if raw_total >= 0.005 else raw_total
+
+    # Venue-minimum floor, applied after rounding so the published cap is the
+    # one the guards compare against. Bounded by the total cap: on an account
+    # too small to fund one share, the ceiling still wins and the order is
+    # refused rather than sized past the portfolio limit.
+    floor = min(VENUE_MIN_NOTIONAL_USD, total_val)
+    order_val = max(order_val, floor)
 
     return {
         "bankroll_usd": round(base_val, 2) if base_val >= 0.005 else base_val,

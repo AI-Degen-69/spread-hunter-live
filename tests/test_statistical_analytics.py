@@ -434,3 +434,34 @@ def test_the_renderer_carries_no_fabricated_analytics_copy():
                      "<b>50.0%</b>", "±18.0%", "1,000 Paths",
                      "prob_positive_return * 100"):
         assert invented not in source, f"fabricated analytics back in app.js: {invented}"
+
+
+@requires_node
+def test_a_metric_no_position_carries_renders_unmeasured_not_infinity():
+    """Closes with no cost basis carry no percentage.
+
+    Deriving axis bounds from an empty set yields Infinity and formats null,
+    so the chart has to recognise that its selected metric was never measured
+    even though closes exist.
+    """
+    # Arrange — one close, dollars recorded, percent unmeasurable.
+    stats = build([_close(0.30, cost=0.0)], [], [], 85.42)
+
+    # Act
+    rendered = _render(stats)
+
+    # Assert
+    assert "unmeasured" in rendered["badge"]
+    assert "metric not recorded" in rendered["badge"]
+    assert "Infinity" not in rendered["footer"]
+    assert "NaN" not in rendered["footer"]
+
+
+def test_the_renderer_carries_no_invented_metric_branches():
+    # Arrange — the two remaining fabrications: a per-position spread cost, and
+    # a fixed N(50, 18²) outcome distribution that described no run.
+    source = _APP_JS.read_text(encoding="utf-8")
+
+    # Act / Assert
+    assert "|| 0.982" not in source
+    assert "18.0 / Math.sqrt(60)" not in source

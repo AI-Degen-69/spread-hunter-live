@@ -1659,14 +1659,24 @@ function renderPositionDistributionChart(stats) {
     delta = 0.035;
     unit = '$';
     formatVal = (v) => `$${v.toFixed(3)}`;
-    rawValues = positions.map(p => p.spread_cost || 0.982);
+    // Only positions that actually carry a cost. The fallback constant that
+    // used to sit here invented one for every position that did not.
+    rawValues = positions.map(p => p.spread_cost).filter(v => v != null);
   } else { // outcome_prob
-    mean = 50.0;
-    stdev = 18.0;
-    sem = 18.0 / Math.sqrt(60);
-    const z = currentCiLevel === 95 ? 1.96 : 1.645;
-    ciLower = mean - z * sem;
-    ciUpper = mean + z * sem;
+    // Read from the measured bell rather than a fixed N(50, 18^2) that
+    // described no run in particular.
+    const pb = stats?.probability_bell || {};
+    mean = pb.mean != null ? pb.mean * 100 : null;
+    stdev = pb.stdev != null ? pb.stdev * 100 : null;
+    sem = (stdev != null && pb.samples_count)
+      ? stdev / Math.sqrt(pb.samples_count) : null;
+    if (sem != null && mean != null) {
+      const z = currentCiLevel === 95 ? 1.96 : 1.645;
+      ciLower = mean - z * sem;
+      ciUpper = mean + z * sem;
+    }
+    rawValues = (pb.bins || []).flatMap(
+      b => Array(b.empirical_count || 0).fill(b.bin * 100));
     delta = 45.0;
     unit = '%';
     formatVal = (v) => `${v.toFixed(1)}%`;
@@ -1677,6 +1687,24 @@ function renderPositionDistributionChart(stats) {
   const minDomain = mean - delta;
   const maxDomain = mean + delta;
   const span = 2 * delta;
+
+  // Every value for this metric may be unmeasured even when positions exist --
+  // closes with no cost basis carry no percentage, for instance. Deriving axis
+  // bounds from an empty set yields Infinity, so the chart says so instead of
+  // drawing geometry from it.
+  if (!rawValues.length || mean == null || !isFinite(mean)) {
+    if (container) {
+      container.innerHTML = `<div class="empty-state" style="padding:40px;text-align:center"><div class="empty-state-title" style="color:var(--text-muted)">Metric unmeasured</div><div class="empty-state-msg" style="font-size:12px;color:var(--text-muted);margin-top:4px">${posCount} closed position${posCount === 1 ? '' : 's'} recorded · none carry this measurement</div></div>`;
+    }
+    if (badge) {
+      badge.className = 'badge-tag stopped';
+      badge.textContent = `${currentCiLevel}% CI: unmeasured · metric not recorded`;
+    }
+    if (footer) {
+      footer.innerHTML = `<div class="chart-footer-item"><span>Metric:</span> <b style="color:var(--text-muted)">unmeasured on ${posCount} recorded close${posCount === 1 ? '' : 's'}</b></div>`;
+    }
+    return;
+  }
 
   // Update prominent badge
   if (badge) {
@@ -1757,7 +1785,13 @@ function renderPositionDistributionChart(stats) {
   // Individual scatter points
   let dotsSvg = '';
   positions.forEach((pos, idx) => {
-    const val = currentDistMetric === 'pnl_pct' ? pos.pnl_pct : (currentDistMetric === 'pnl_usd' ? pos.pnl_usd : (currentDistMetric === 'spread_cost' ? (pos.spread_cost || 0.982) : 50 + (idx % 7) * 4));
+    // One dot per OBSERVATION. The outcome-probability arm used to place dots
+    // at `50 + (idx % 7) * 4` -- points derived from a row's position in the
+    // list, drawn as though they were measurements.
+    const val = currentDistMetric === 'pnl_pct' ? pos.pnl_pct
+      : (currentDistMetric === 'pnl_usd' ? pos.pnl_usd
+        : (currentDistMetric === 'spread_cost' ? pos.spread_cost : null));
+    if (val == null || !isFinite(val)) return;
     const dotX = Math.min(Math.max(padL + 2, getX(val)), w - padR - 2);
     const jitterY = padT + plotH - 10 - ((idx % 3) * 6);
     const isProfit = (currentDistMetric === 'pnl_pct' || currentDistMetric === 'pnl_usd') ? val >= 0 : true;
@@ -1949,9 +1983,12 @@ function renderPairCostKdeChart(stats) {
   // which is a number the operator would have acted on.
   const mean = pc.mean != null ? pc.mean : null;
   const stdev = pc.stdev != null ? pc.stdev : null;
-  const median = pc.median || 0.982;
+  const median = pc.median != null ? pc.median : null;
 
-  if (medianBadge && pc.median != null) medianBadge.textContent = `Median: $${median.toFixed(3)}`;
+  if (medianBadge) {
+    medianBadge.textContent = median == null
+      ? 'Median: unmeasured' : `Median: $${median.toFixed(3)}`;
+  }
 
   if (!bins || bins.length === 0) {
     container.innerHTML = `<div class="empty-state"><div class="empty-state-title">Distribution unmeasured</div></div>`;

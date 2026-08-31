@@ -916,7 +916,7 @@ class OrderRegistry:
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             already = conn.execute(
-                "SELECT 1 FROM fills WHERE trade_id = ?",
+                "SELECT order_uuid FROM fills WHERE trade_id = ?",
                 (fill.trade_id,),
             ).fetchone()
             if already is not None:
@@ -924,7 +924,13 @@ class OrderRegistry:
                 # persisted before attribution existed sits behind this check,
                 # and the venue never replays an old trade a second time, so
                 # returning here is what leaves a quote at filled = 0 for good.
-                self._attribute_fill_to_quote(conn, fill.order_uuid)
+                #
+                # Attribute the STORED order, not the replayed one. `trade_id`
+                # is the identity here; a replay carrying a different
+                # `order_uuid` is a mismatched report, and trusting it would
+                # recompute an unrelated order's quote while leaving the one
+                # that actually holds this fill stale.
+                self._attribute_fill_to_quote(conn, already["order_uuid"])
                 conn.commit()
                 return False
             conn.execute(

@@ -157,6 +157,36 @@ def test_a_replayed_fill_still_attributes_an_unattributed_quote(tmp_path):
     assert q["fill_ts"] == pytest.approx(1700000000000)
 
 
+def test_a_replay_naming_a_different_order_attributes_the_stored_one(tmp_path):
+    """A mismatched replay must not recompute an unrelated order's quote.
+
+    `trade_id` is the identity in `fills`. A replay that carries the same
+    `trade_id` under a different `order_uuid` is a mismatched report, and
+    trusting the replayed value would leave the order that actually holds the
+    fill stale while rewriting one that does not.
+    """
+    # Arrange — A holds the fill; B never traded.
+    reg = _registry(tmp_path)
+    _post(reg, local_id="order-A", size=5.0)
+    _post(reg, local_id="order-B", size=5.0)
+    reg.record_fill(
+        FillRecord(trade_id="t-shared", order_uuid="order-A", size=5.0,
+                   price=0.47, venue_ts=1700000000000)
+    )
+    with sqlite3.connect(tmp_path / "orders.db") as raw:
+        raw.execute("UPDATE quotes SET filled = 0, fill_ts = NULL")
+
+    # Act — the same trade replayed against the wrong order.
+    assert reg.record_fill(
+        FillRecord(trade_id="t-shared", order_uuid="order-B", size=5.0,
+                   price=0.47, venue_ts=1700000000000)
+    ) is False
+
+    # Assert — A is repaired, B is untouched.
+    assert _quote(reg, "order-A")["filled"] == pytest.approx(5.0)
+    assert _quote(reg, "order-B")["filled"] == pytest.approx(0.0)
+
+
 def test_opening_a_legacy_database_backfills_its_quotes(tmp_path):
     """A database written before attribution existed repairs itself on open.
 
@@ -187,20 +217,40 @@ def test_opening_a_legacy_database_backfills_its_quotes(tmp_path):
     assert q["fill_ts"] == pytest.approx(1700000000000)
 
 
-def test_the_backfill_does_not_touch_a_quote_that_never_filled(tmp_path):
-    # Arrange — a resting quote with no fills at all.
+def test_the_backfill_repairs_only_the_quotes_that_actually_filled(tmp_path):
+    """Both halves of the backfill's contract, in one database.
+
+    Asserting the fill-less quote alone would pass without the backfill --
+    `filled` starts at 0 and `fill_ts` at NULL either way. Pairing it with a
+    quote that must be repaired is what makes the case depend on the change,
+    while still proving an empty aggregate is never written as a 0.0.
+    """
+    # Arrange — one quote with a historical fill, one with none, then blank
+    # the attribution the way every pre-existing database already is.
     db = tmp_path / "orders.db"
     reg = _registry(tmp_path)
+    _post(reg, local_id="order-filled", size=5.0)
     _post(reg, local_id="order-j", size=5.0)
+    reg.record_fill(
+        FillRecord(trade_id="t-hist", order_uuid="order-filled", size=5.0,
+                   price=0.47, venue_ts=1700000000000)
+    )
+    with sqlite3.connect(db) as raw:
+        raw.execute("UPDATE quotes SET filled = 0, fill_ts = NULL")
 
     # Act
     reopened = OrderRegistry(db)
 
-    # Assert — a quote with no fills stays unfilled rather than being handed a
-    # zero-sum from an empty aggregate.
-    q = _quote(reopened, "order-j")
-    assert q["filled"] == pytest.approx(0.0)
-    assert q["fill_ts"] is None
+    # Assert — the one with fills is repaired...
+    repaired = _quote(reopened, "order-filled")
+    assert repaired["filled"] == pytest.approx(5.0)
+    assert repaired["fill_ts"] == pytest.approx(1700000000000)
+
+    # ...and the one without is left alone rather than handed the 0.0 an empty
+    # aggregate returns.
+    untouched = _quote(reopened, "order-j")
+    assert untouched["filled"] == pytest.approx(0.0)
+    assert untouched["fill_ts"] is None
 
 
 def test_a_duplicate_fill_does_not_double_count(tmp_path):

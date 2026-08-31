@@ -16,6 +16,7 @@ Stage 2 Architecture Constraints:
 from __future__ import annotations
 
 import os
+import logging
 import sqlite3
 import threading
 import time
@@ -51,7 +52,16 @@ _CREDS_UNCHECKED = object()
 SIZE_EPS: float = 1e-9
 
 # Every status a row may hold, enforced by a CHECK constraint in the schema.
+_log = logging.getLogger(__name__)
+
 ORDER_STATUSES = ("pending", "open", "partial", "filled", "cancelled", "unattributed")
+
+# Statuses that end an order's life WITHOUT it having reached the front of the
+# queue. Reaching one closes the quote row out, so a resting order that never
+# traded is distinguishable from one still waiting -- the difference every
+# fill-rate and time-in-queue number depends on. "filled" is deliberately
+# absent: a filled order is closed by its fill attribution, not by this.
+TERMINAL_UNFILLED_STATUSES = frozenset({"cancelled", "unattributed"})
 
 RECONCILE_LOCK_STALE_MS: int = 300_000
 
@@ -493,11 +503,58 @@ def get_connection(db_path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+def backfill_quote_fill_attribution(conn: sqlite3.Connection) -> int:
+    """Attribute fills onto quote rows that predate attribution. Rows repaired.
+
+    There is no migration framework here -- the schema is create-if-absent --
+    and no amount of running the bot repairs these rows, because the venue
+    never replays a trade it has already reported. `data/orders.db` and every
+    archived run therefore hold fills whose quotes read `filled = 0` and always
+    will, which is what made the historical fill rate invisible.
+
+    Only rows that both have fills and read unfilled are touched, so this is a
+    no-op on an already-attributed database and safe to run on every open. A
+    quote with no fills is left alone rather than being handed the 0.0 an empty
+    aggregate would produce -- the same reason `fill_ts` stays NULL there.
+    """
+    cur = conn.execute(
+        """
+        UPDATE quotes
+           SET filled = (
+                   SELECT COALESCE(SUM(size), 0.0) FROM fills
+                    WHERE order_uuid = quotes.local_id
+               ),
+               fill_ts = (
+                   SELECT MIN(COALESCE(venue_ts, recorded_ts)) FROM fills
+                    WHERE order_uuid = quotes.local_id
+               )
+         WHERE local_id IS NOT NULL
+           AND COALESCE(filled, 0) = 0
+           AND EXISTS (SELECT 1 FROM fills WHERE order_uuid = quotes.local_id)
+        """
+    )
+    return cur.rowcount
+
+
 def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
-    """Initialize schema for the database file."""
+    """Initialize schema for the database file, repairing stale attribution."""
     with _lock:
         conn = get_connection(db_path)
-        conn.close()
+        try:
+            repaired = backfill_quote_fill_attribution(conn)
+            conn.commit()
+            if repaired:
+                _log.info("attributed %d quote row(s) from existing fills in %s",
+                          repaired, db_path)
+        except sqlite3.Error as exc:
+            # A registry that cannot repair history must still open: the
+            # backfill is a correction to old telemetry, never a precondition
+            # for placing or tracking today's orders.
+            conn.rollback()
+            _log.warning("quote attribution backfill skipped for %s: %s",
+                         db_path, exc)
+        finally:
+            conn.close()
 
 
 @dataclass(frozen=True)
@@ -859,11 +916,22 @@ class OrderRegistry:
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             already = conn.execute(
-                "SELECT 1 FROM fills WHERE trade_id = ?",
+                "SELECT order_uuid FROM fills WHERE trade_id = ?",
                 (fill.trade_id,),
             ).fetchone()
             if already is not None:
-                conn.rollback()
+                # Refuse the duplicate, but attribute it anyway. Every fill
+                # persisted before attribution existed sits behind this check,
+                # and the venue never replays an old trade a second time, so
+                # returning here is what leaves a quote at filled = 0 for good.
+                #
+                # Attribute the STORED order, not the replayed one. `trade_id`
+                # is the identity here; a replay carrying a different
+                # `order_uuid` is a mismatched report, and trusting it would
+                # recompute an unrelated order's quote while leaving the one
+                # that actually holds this fill stale.
+                self._attribute_fill_to_quote(conn, already["order_uuid"])
+                conn.commit()
                 return False
             conn.execute(
                 """
@@ -872,8 +940,44 @@ class OrderRegistry:
                 """,
                 (fill.trade_id, fill.order_uuid, fill.size, fill.price, fill.venue_ts, rec_ts, r_id),
             )
+            self._attribute_fill_to_quote(conn, fill.order_uuid)
             conn.commit()
             return True
+
+    @staticmethod
+    def _attribute_fill_to_quote(conn: sqlite3.Connection, order_uuid: str) -> None:
+        """Roll this order's fills up onto its quote row.
+
+        `fills.order_uuid`, `orders.id` and `quotes.local_id` are the same
+        local identifier, so a quote can always be found for an order that
+        rested one. Recomputing the total from `fills` rather than adding the
+        new leg keeps this idempotent: `record_fill` refuses a replayed
+        `trade_id` before reaching here, and a re-run over the same rows still
+        lands on the same number.
+
+        `fill_ts` keeps the EARLIEST fill, not the latest. Time-to-fill is
+        measured from the moment the queue first cleared; overwriting it with
+        each partial would report the last leg's latency and shorten every
+        measurement.
+
+        An order that never rested a quote -- the completer crossing a missing
+        leg, say -- simply matches no row, and that is not an error.
+        """
+        conn.execute(
+            """
+            UPDATE quotes
+               SET filled = (
+                       SELECT COALESCE(SUM(size), 0.0) FROM fills
+                        WHERE order_uuid = ?
+                   ),
+                   fill_ts = (
+                       SELECT MIN(COALESCE(venue_ts, recorded_ts)) FROM fills
+                        WHERE order_uuid = ?
+                   )
+             WHERE local_id = ?
+            """,
+            (order_uuid, order_uuid, order_uuid),
+        )
 
     def update_order_status(
         self, local_id: str, status: str, last_polled_ts: int
@@ -894,6 +998,11 @@ class OrderRegistry:
                 raise KeyError(
                     f"update_order_status: no order row {local_id!r} "
                     f"(status={status!r}); {cur.rowcount} rows matched"
+                )
+            if str(status).lower() in TERMINAL_UNFILLED_STATUSES:
+                conn.execute(
+                    "UPDATE quotes SET cancelled = 1 WHERE local_id = ?",
+                    (local_id,),
                 )
             conn.commit()
 

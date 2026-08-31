@@ -171,19 +171,21 @@ def test_a_matured_horizon_is_sampled_into_the_row(registry):
         "the 5-minute horizon must carry the sampled mid")
 
 
-def test_the_shadow_sweep_samples_pending_markouts(monkeypatch, tmp_path):
-    """The wiring half: a rehearsal must run the sampler itself.
+def test_a_rehearsal_rotation_samples_pending_markouts(monkeypatch, tmp_path):
+    """The wiring half, driven through `run_shadow` rather than the wrapper.
 
     `MarkoutWorker` is started only by `core_brain.order_manager` on the live
     poll path, so a shadow session that never calls the sampler leaves every
-    horizon NULL no matter how many fills it books.
+    horizon NULL no matter how many fills it books. Calling
+    `sample_shadow_markouts` directly here would still pass with the call site
+    in `shadow_run.shadow_sweep` deleted -- so the session is run instead, one
+    rotation, with the sampler stubbed underneath it.
     """
     import core_brain.markout as markout_mod
-    import core_brain.shadow_run as shadow_run
+    from core_brain.shadow_run import run_shadow
 
     db = tmp_path / "shadow.db"
     init_db(str(db))
-    reg = OrderRegistry(str(db))
 
     calls: list[str] = []
 
@@ -193,10 +195,17 @@ def test_the_shadow_sweep_samples_pending_markouts(monkeypatch, tmp_path):
 
     monkeypatch.setattr(markout_mod, "sample_pending_markouts", fake_sample)
 
-    shadow_run.sample_shadow_markouts(reg, clob_host="https://clob.example")
+    # An empty market list starves the quoting loop, so the sweep is the only
+    # thing in the rotation that could reach the sampler.
+    run_shadow(
+        minutes=0.0, db_path=db,
+        markets_fn=lambda max_markets=None: [],
+        client_fn=lambda: object(),
+        fetch_books=lambda host, token_id: {"bids": {}, "asks": {}},
+    )
 
-    assert calls == ["https://clob.example"], (
-        "the shadow session must run one sampler pass per sweep")
+    assert len(calls) == 1, (
+        "one rehearsal rotation must run exactly one sampler pass")
 
 
 def test_a_failing_sampler_never_stops_the_sweep(monkeypatch, tmp_path):

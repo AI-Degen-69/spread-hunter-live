@@ -38,36 +38,63 @@ def test_no_merge_sign_off_api_remains():
         assert not hasattr(guard, name), f"{name} should have been removed"
 
 
-def test_merge_check_always_allows():
+def test_a_merge_payload_still_reaches_the_policy_and_allows(monkeypatch):
+    """The dispatch path a removal could sever.
+
+    This change deleted `_changed_paths` and `_head_sha` from the module. Both
+    sat among the `gh`-shelling helpers the merge policy uses, so cutting one
+    too many, or cutting the argv branch such that a payload no longer reaches
+    `classify`, breaks exactly here. Driving it through `main` rather than
+    calling `check_merge` directly is what makes that reachable.
+    """
     # Arrange
-    pr = "104"
-
-    # Act
-    code, message = guard.check_merge(pr)
-
-    # Assert — a merge is never blocked, for any path.
-    assert code == 0
-    assert message
-
-
-def test_unparseable_stdin_allows(monkeypatch):
-    # Arrange
-    monkeypatch.setattr(sys, "stdin", io.StringIO("not json"))
-
-    # Act
-    code = guard.main([])
-
-    # Assert
-    assert code == 0
-
-
-def test_payload_for_an_unrelated_tool_allows(monkeypatch):
-    # Arrange
-    payload = {"tool_name": "Read", "tool_input": {"file_path": "AGENTS.md"}}
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "gh pr merge 104 --squash"},
+    }
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "104")
 
     # Act
     code = guard.main([])
 
-    # Assert
+    # Assert — a merge is never blocked, for any path, and the reminder is the
+    # merge one rather than a stray fall-through.
     assert code == 0
+
+
+def test_a_push_payload_still_reaches_the_policy(monkeypatch):
+    """Same reason as above, on the one branch that can legitimately block."""
+    # Arrange
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "git push origin some-branch"},
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "104")
+    monkeypatch.setattr(guard, "_reviews", lambda pr: ["CHANGES_REQUESTED"])
+
+    # Act
+    code = guard.main([])
+
+    # Assert — one round of findings is under the limit, so it reminds.
+    assert code == 0
+
+
+def test_a_push_is_blocked_at_the_round_limit(monkeypatch):
+    # Arrange
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "git push origin some-branch"},
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "104")
+    monkeypatch.setattr(
+        guard, "_reviews", lambda pr: ["CHANGES_REQUESTED"] * guard.MAX_REVIEW_ROUNDS
+    )
+
+    # Act
+    code = guard.main([])
+
+    # Assert — the guard's one real block still fires after the removal.
+    assert code == 2

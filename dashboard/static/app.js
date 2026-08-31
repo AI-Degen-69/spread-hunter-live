@@ -2752,8 +2752,18 @@ function fmtAge(sec) {
 // seconds; the ticker below extrapolates from it every second so the header
 // reads as a stopwatch instead of stepping once per poll. Anchoring on the
 // server-sent elapsed time rather than on `started_at` keeps the reading
-// correct even when the browser's clock disagrees with the host's.
+// correct even when the browser's clock disagrees with the host's, and the
+// drift between polls is measured on a monotonic clock so a wall-clock
+// correction (NTP step, DST, manual change) can never make it tick backwards.
 let filterUptimeAnchor = null;
+
+// `performance.now()` is monotonic; `Date.now()` is not. Falls back to the
+// wall clock only where performance timing is unavailable.
+function monotonicMs() {
+  return (typeof performance !== 'undefined' && performance.now)
+    ? performance.now()
+    : Date.now();
+}
 
 function fmtUptime(sec) {
   if (sec === null || sec === undefined || !isFinite(sec) || sec < 0) return '';
@@ -2775,7 +2785,7 @@ function renderFilterUptime() {
     el.textContent = '';
     return;
   }
-  const drift = (Date.now() - filterUptimeAnchor.receivedAtMs) / 1000;
+  const drift = (monotonicMs() - filterUptimeAnchor.receivedAtMs) / 1000;
   el.textContent = ' · ' + fmtUptime(filterUptimeAnchor.uptimeSec + drift);
 }
 
@@ -2784,7 +2794,7 @@ function setFilterUptime(status) {
   const uptime = filter?.running ? filter.uptime_sec : null;
   filterUptimeAnchor = (uptime === null || uptime === undefined)
     ? null
-    : { uptimeSec: Number(uptime), receivedAtMs: Date.now() };
+    : { uptimeSec: Number(uptime), receivedAtMs: monotonicMs() };
   renderFilterUptime();
 }
 
@@ -2859,8 +2869,7 @@ function getStageHero(key, funnel) {
   }
 }
 
-function renderScreener(kpi, scanState, status) {
-  setFilterUptime(status);
+function renderScreener(kpi, scanState) {
   const board = document.getElementById('kanban-board');
   const headerPill = document.getElementById('scan-state-pill');
   const headerAge = document.getElementById('scan-snapshot-age');
@@ -3239,6 +3248,11 @@ async function pollStatus() {
     // Which registry these numbers came from, before anything renders them.
     if (status) renderDbMode(status);
 
+    // Service uptime rides on the status payload, so it must not wait on
+    // /api/kpi: the SCREENER header still needs a stopwatch when the KPI read
+    // is the one that failed.
+    if (status) setFilterUptime(status);
+
     // Render service cards
     if (status) renderServiceCards(status, guardHealth, guardAlerts);
 
@@ -3261,7 +3275,7 @@ async function pollStatus() {
 
     // Render screener kanban (Tab 3)
     if (currentKpi) {
-      renderScreener(currentKpi, scanState, status);
+      renderScreener(currentKpi, scanState);
     }
   } catch (e) {
     // Non-fatal transient error swallowed gracefully

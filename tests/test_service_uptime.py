@@ -67,8 +67,11 @@ def test_status_reports_no_uptime_for_a_stopped_service(status_with):
     assert filter_service["uptime_sec"] is None
 
 
-def test_started_at_falls_back_to_the_recorded_time_when_the_os_will_not_answer():
+def test_started_at_falls_back_to_the_recorded_time_when_the_os_will_not_answer(monkeypatch):
     # Arrange — OS creation time unreadable (denied access, odd platform).
+    # Stubbed rather than trusted: the test PID may exist on the host running
+    # this suite, and then the real creation time would answer instead.
+    monkeypatch.setattr(srv, "_process_start_time", lambda pid: None)
     info = {"pid": RUNNING_PID, "started_at": RECORDED_START}
 
     # Act

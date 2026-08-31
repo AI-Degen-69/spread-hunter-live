@@ -2488,10 +2488,44 @@ function fmtAgo(tsSec) {
   return Math.floor(sec / 86400) + 'd ago';
 }
 
+// Active means "still work to do": not cancelled, and not a leg the merge
+// already consumed.
+function isActiveOrder(o) {
+  return !isCancelledStatus(o?.status) && !isMergedOrder(o);
+}
+
 function isCancelledStatus(status) {
   if (!status) return false;
   const s = String(status).toLowerCase();
   return s === 'cancelled' || s === 'canceled';
+}
+
+// A merged pair is a finished event: the merge consumed both legs back into
+// $1.00 of USDC, so there is nothing left to do on it until resolution. The
+// status is derived in `registry_state.summarize_state` -- `orders.status` is
+// CHECK-constrained and never carries it.
+function isMergedOrder(o) {
+  return !!o && (o.is_merged === true
+    || String(o.display_status || '').toLowerCase() === 'merged');
+}
+
+// One row for the pair, not one per consumed leg: price and size summed across
+// the legs, age taken from the leg that was posted first.
+function collapseMergedPair(legs) {
+  const sum = (key) => legs.reduce((total, leg) => total + (Number(leg[key]) || 0), 0);
+  const first = legs[0] || {};
+  return {
+    ...first,
+    id: legs.map(leg => leg.id).join('+'),
+    price: sum('price'),
+    original_size: sum('original_size'),
+    size_matched: sum('size_matched'),
+    age_sec: legs.reduce((oldest, leg) => Math.max(oldest, Number(leg.age_sec) || 0), 0),
+    display_status: 'merged',
+    is_merged: true,
+    outcome: 'PAIR',
+    token_side: null,
+  };
 }
 
 function renderExpandedOrders(orders, fills, showCancelled) {
@@ -2550,6 +2584,8 @@ function renderExpandedOrders(orders, fills, showCancelled) {
     if (v === 'open' || v === 'partial' || v === 'pending') return 'open';
     if (v === 'filled') return 'filled';
     if (v === 'cancelled' || v === 'canceled') return 'stopped';
+    // Muted on purpose: a merged pair is finished, not active work.
+    if (v === 'merged') return 'finished';
     return 'reconnecting';
   }
   // Group by pair_id so same pair rows are adjacent and share color
@@ -2566,11 +2602,19 @@ function renderExpandedOrders(orders, fills, showCancelled) {
     const pairNum = pairNumMap[pid];
     const pairDisplay = pid === '__no_pair__' ? '--' : String(pairNum).padStart(2,'0');
     const pairTitle = pid === '__no_pair__' ? '' : ` title="${esc(pid)}"`;
-    const pairOrders = byPair[pid].sort((a,b) => (a.price||0) - (b.price||0));
+    let pairOrders = byPair[pid].sort((a,b) => (a.price||0) - (b.price||0));
+    // Both legs of a merged pair collapse into one MERGED row. A single merged
+    // leg is left alone: there is no pair to sum.
+    const mergedLegs = pairOrders.filter(isMergedOrder);
+    if (pid !== '__no_pair__' && mergedLegs.length > 1) {
+      pairOrders = [collapseMergedPair(mergedLegs)]
+        .concat(pairOrders.filter(o => !isMergedOrder(o)));
+    }
     for (const o of pairOrders) {
       const oFills = fillsByOrder[o.id] || [];
       const fillCount = oFills.length;
-      const statusCls = pillForStatus(o.status);
+      const rowStatus = isMergedOrder(o) ? 'merged' : o.status;
+      const statusCls = pillForStatus(rowStatus);
       const isDown = o.token_side === 'DOWN' || (o.outcome && (o.outcome.toLowerCase().includes('no') || o.outcome.toLowerCase().includes('down')));
       const badgeCls = isDown ? 'badge-down' : 'badge-up';
       const label = o.outcome ? `${o.outcome} (${fmtSide(o.side)})` : (o.token_side ? `${o.token_side} (${fmtSide(o.side)})` : fmtSide(o.side));
@@ -2582,7 +2626,7 @@ function renderExpandedOrders(orders, fills, showCancelled) {
         <td class="mono">${esc(o.price !== null && o.price !== undefined ? o.price.toFixed(4) : '--')}</td>
         <td class="mono">${esc(o.original_size !== null && o.original_size !== undefined ? o.original_size : '--')}</td>
         <td class="mono">${esc(o.size_matched !== null && o.size_matched !== undefined ? o.size_matched : '--')}</td>
-        <td><span class="pill ${statusCls}">${fmtOrderStatus(o.status)}</span></td>
+        <td><span class="pill ${statusCls}">${fmtOrderStatus(rowStatus)}</span></td>
       </tr>`;
     }
   }
@@ -2614,7 +2658,7 @@ function renderMarkets(kpi, state) {
   // Filter entries based on active table filter pill
   let entries = Object.entries(kpi.by_market);
   if (currentTableFilter === 'quoting') {
-    entries = entries.filter(([cid, m]) => (m.quotes_count > 0 || (ordersByMarket[cid] || []).some(o => !isCancelledStatus(o.status))));
+    entries = entries.filter(([cid, m]) => (m.quotes_count > 0 || (ordersByMarket[cid] || []).some(o => isActiveOrder(o))));
   } else if (currentTableFilter === 'graduated') {
     entries = entries.filter(([cid]) => graduatedCids.has(cid));
   }
@@ -2622,8 +2666,8 @@ function renderMarkets(kpi, state) {
   // Market order: OPEN (pure) → mixed OPEN+FILLED → pure FILLED → zero active / IDLE/FINISHED at bottom
   entries.sort((a,b) => {
     const [cidA] = a; const [cidB] = b;
-    const activeA = (ordersByMarket[cidA] || []).filter(o => !isCancelledStatus(o.status));
-    const activeB = (ordersByMarket[cidB] || []).filter(o => !isCancelledStatus(o.status));
+    const activeA = (ordersByMarket[cidA] || []).filter(o => isActiveOrder(o));
+    const activeB = (ordersByMarket[cidB] || []).filter(o => isActiveOrder(o));
     const rank = (active) => {
       if (active.length === 0) return 4;
       const hasOpen = active.some(o => { const v=String(o.status||'').toLowerCase(); return v==='open'||v==='partial'||v==='pending'; });
@@ -2646,8 +2690,10 @@ function renderMarkets(kpi, state) {
     const isExpanded = expandedMarkets.has(cid);
     const hasOrders = ordersByMarket[cid] && ordersByMarket[cid].length > 0;
     const allOrders = hasOrders ? ordersByMarket[cid] : [];
-    const activeOrders = allOrders.filter(o => !isCancelledStatus(o.status));
-    const cancelledCount = allOrders.length - activeOrders.length;
+    // Merged legs are finished, not active: a fully-merged market must not
+    // rank or badge as if it still had resting work.
+    const activeOrders = allOrders.filter(o => isActiveOrder(o));
+    const cancelledCount = allOrders.filter(o => isCancelledStatus(o.status)).length;
     const showCancelled = showCancelledByMarket.has(cid);
     // Distinct FINISHED when market is resolved or dropped from current
     // graduated universe but still has history (shadow retains it for P/L).
@@ -3361,5 +3407,5 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderBrokerPortfolioOverview, portfolioEquity, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket };
+  module.exports = { isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity };
 }

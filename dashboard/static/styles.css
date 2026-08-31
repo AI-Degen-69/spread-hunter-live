@@ -413,7 +413,20 @@ header {
 .analytics-gate-badge { display:inline-flex; padding:4px 8px; border-radius:999px; font:700 10px Inter,sans-serif; }
 .analytics-gate-badge.go { color:#34d399; background:var(--green-bg); border:1px solid var(--green-border); }
 .analytics-gate-badge.nogo { color:#fca5a5; background:var(--red-bg); border:1px solid var(--red-border); }
-.analytics-gate-badge.inconclusive { color:#fbbf24; background:var(--amber-bg); border:1px solid var(--amber-border); }
+.analytics-gate-badge.inconclusive,
+.analytics-gate-badge.accumulating { color:#fbbf24; background:var(--amber-bg); border:1px solid var(--amber-border); }
+/* STANDBY had no rule at all, so the renderer's fourth state came out
+   unstyled and could not be told from neutral text. */
+.analytics-gate-badge.standby,
+.analytics-gate-badge.stopped { color:#94a3b8; background:rgba(100,116,139,0.16); border:1px solid rgba(148,163,184,0.22); }
+.analytics-gates .gate-name { font-weight:600; }
+.analytics-gates .gate-standard { color:var(--text-secondary); }
+.analytics-gates .gate-threshold,
+.analytics-gates .gate-observed { font-family:'JetBrains Mono', monospace; }
+.analytics-gates .gate-observed { font-weight:700; }
+.analytics-gates .gate-group th { text-transform:uppercase; letter-spacing:.06em; font-size:10px;
+  color:var(--text-muted); padding-top:12px; }
+.math-inline { white-space:nowrap; }
 @media (max-width:900px) { .analytics-chart-grid { grid-template-columns:1fr; } }
 @media (max-width:600px) { .analytics-totals { grid-template-columns:1fr; } .analytics-chip { font-size:12px; } }
 

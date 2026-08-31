@@ -81,6 +81,10 @@ def _parse_market_row(market: dict) -> Optional[LiveMarket]:
     token_ids = json.loads(token_ids_raw) if isinstance(token_ids_raw, str) else token_ids_raw
     if not isinstance(token_ids, (list, tuple)) or len(token_ids) != 2:
         return None
+    # Element-level check too: `str(None)` is the string "None", which would
+    # travel on as a token id and fail far from here.
+    if not all(isinstance(t, (str, int)) and str(t).strip() for t in token_ids):
+        return None
 
     condition_id = market.get("conditionId")
     if not condition_id:

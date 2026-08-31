@@ -169,3 +169,14 @@ def test_fetch_live_market_keeps_valid_rows_around_a_malformed_one(monkeypatch):
     # Assert — the malformed row is skipped, the newest valid one is returned.
     assert live is not None
     assert live.condition_id == "0xlate"
+
+
+def test_parse_market_skips_a_row_whose_token_ids_are_not_usable():
+    # Arrange — right length, wrong contents: `str(None)` would become "None"
+    # and travel on as a token id.
+    empty = {**_valid_row(), "clobTokenIds": json.dumps([None, "222"])}
+    blank = {**_valid_row(), "clobTokenIds": json.dumps(["", "222"])}
+
+    # Act / Assert
+    assert _parse_market(empty) is None
+    assert _parse_market(blank) is None

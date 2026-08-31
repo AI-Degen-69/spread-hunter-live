@@ -2312,14 +2312,23 @@ function typesetMath(root) {
   });
 }
 
-function decisionGatesRows(ta, stats, n) {
+function decisionGatesRows(ta, stats, n, kpi) {
+  // Markout figures live at the top level of the KPI payload, not inside
+  // trade_analytics. Reading them off `ta` alone is why this row reported
+  // "0 Samples" on runs that had measured plenty.
+  const markout = kpi || {};
   const lower = ta.ci90_lower_pct != null ? Number(ta.ci90_lower_pct) : null;
   const winRate = ta.win_rate != null ? Number(ta.win_rate) * 100 : null;
   const required = ta.required_observations != null ? Number(ta.required_observations) : 120;
   const progressPct = required > 0 ? Math.min(100, Math.round((n / required) * 100)) : 0;
   const sweetSpot = stats?.probability_bell?.sweet_spot_pct;
-  const markoutSamples = Number(ta.markout_samples || 0);
-  const drift = ta.adverse_selection != null ? Number(ta.adverse_selection) : null;
+  const markoutSamples = Number(
+    markout.markout_samples ?? ta.markout_samples ?? 0);
+  const driftRaw = markout.adverse_selection ?? ta.adverse_selection;
+  const drift = driftRaw != null ? Number(driftRaw) : null;
+  // The baseline-corrected figure, when the sampler recorded peers for it.
+  const excessRaw = markout.adverse_selection_excess ?? ta.adverse_selection_excess;
+  const excess = excessRaw != null ? Number(excessRaw) : null;
   const drawdown = ta.max_drawdown_pct != null ? Number(ta.max_drawdown_pct) : null;
 
   const edgeState = n >= 10 && lower != null && lower > 0
@@ -2384,6 +2393,7 @@ function decisionGatesRows(ta, stats, n) {
       threshold: '&ge; 25 matured fills, drift &ge; 0',
       observed: drift != null
         ? `${markoutSamples} samples · ${(drift * 100).toFixed(2)}¢/share`
+          + (excess != null ? ` (excess ${(excess * 100).toFixed(2)}¢)` : '')
         : `${markoutSamples} samples`,
       measured: markoutSamples > 0,
       state: markoutState,
@@ -2399,8 +2409,8 @@ function decisionGatesRows(ta, stats, n) {
   ];
 }
 
-function decisionGatesHtml(ta, stats, n) {
-  const rows = decisionGatesRows(ta || {}, stats || {}, n || 0);
+function decisionGatesHtml(ta, stats, n, kpi) {
+  const rows = decisionGatesRows(ta || {}, stats || {}, n || 0, kpi || {});
   let body = '';
   for (const row of rows) {
     if (row.group) {
@@ -2479,7 +2489,7 @@ function renderAnalyticsSurface(kpi, status) {
   // Render the decision gates. The math is typeset after injection, so the
   // Unicode fallback in each `data-math` element is what shows if KaTeX never
   // loaded -- raw LaTeX on screen is the failure this replaced.
-  gates.innerHTML = decisionGatesHtml(ta, stats, n);
+  gates.innerHTML = decisionGatesHtml(ta, stats, n, kpi);
   typesetMath(gates);
   typesetMath(document.getElementById('tab-2'));
 

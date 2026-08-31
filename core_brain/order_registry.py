@@ -15,6 +15,7 @@ Stage 2 Architecture Constraints:
 
 from __future__ import annotations
 
+import json
 import os
 import logging
 import sqlite3
@@ -237,6 +238,11 @@ CREATE TABLE IF NOT EXISTS markouts (
     mid_h1 REAL,
     mid_h2 REAL,
     mid_h3 REAL,
+    -- Windowed references and the peer baseline, per horizon, as
+    -- {"h0": {"ref": .., "peer": ..}, ...}. JSON rather than eight columns:
+    -- the horizons are a config tuple, and a schema that hardcodes four of
+    -- them goes stale the moment that tuple changes. See core_brain/markout.py.
+    refs_json TEXT,
     done INTEGER DEFAULT 0,
     run_id TEXT NOT NULL
 );
@@ -422,6 +428,8 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE markouts ADD COLUMN run_id TEXT")
         if "token_id" not in cols:
             conn.execute("ALTER TABLE markouts ADD COLUMN token_id TEXT")
+        if "refs_json" not in cols:
+            conn.execute("ALTER TABLE markouts ADD COLUMN refs_json TEXT")
 
     # Check columns in closes
     cur = conn.execute("PRAGMA table_info(closes)")
@@ -1166,6 +1174,35 @@ class OrderRegistry:
                     f"UPDATE markouts SET {col} = ? WHERE id = ?",
                     (mid, markout_id),
                 )
+            conn.commit()
+
+    def update_markout_reference(self, markout_id: int, horizon_idx: int,
+                                 ref: float | None, peer: float | None) -> None:
+        """Record the windowed reference and peer baseline for one horizon.
+
+        Merged into `refs_json` rather than overwriting it, so a horizon that
+        sampled earlier keeps what it measured. Never touches `mid_h*` or
+        `done`: the raw mid-based markout stands on its own, and this sits
+        beside it.
+        """
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT refs_json FROM markouts WHERE id = ?", (markout_id,)
+            ).fetchone()
+            existing: dict = {}
+            if row is not None and row["refs_json"]:
+                try:
+                    loaded = json.loads(row["refs_json"])
+                    if isinstance(loaded, dict):
+                        existing = loaded
+                except (TypeError, ValueError):
+                    existing = {}
+            existing[f"h{horizon_idx}"] = {"ref": ref, "peer": peer}
+            conn.execute(
+                "UPDATE markouts SET refs_json = ? WHERE id = ?",
+                (json.dumps(existing), markout_id),
+            )
             conn.commit()
 
     def get_pending_markouts(self, now_sec: float, horizons: tuple[float, ...]) -> list[dict]:

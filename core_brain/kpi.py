@@ -1158,6 +1158,41 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # NULL, not 0.0: zero markout samples means undrifted-unknown, not undrifted.
     adverse_selection = (sum(markout_drifts) / filled_sh) if (filled_sh > 0 and markout_drifts) else None
 
+    # The same drift, net of what the market handed everyone else who printed
+    # in the same window (`markouts.refs_json`, written by core_brain.markout).
+    # Reported BESIDE the raw figure, never in place of it: a market-wide move
+    # and our own adverse selection are different findings, and only rows that
+    # actually carry a peer baseline can tell them apart.
+    excess_drifts = []
+    excess_shares = 0.0
+    for m in markouts:
+        refs_raw = m.get("refs_json")
+        if not refs_raw:
+            continue
+        try:
+            refs = json.loads(refs_raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(refs, dict):
+            continue
+        sz = float(m.get("size") or 1.0)
+        fp = float(m.get("fill_price") or 0.0)
+        for horizon in ("h2", "h1", "h3", "h0"):
+            slot = refs.get(horizon)
+            if not isinstance(slot, dict):
+                continue
+            ref = slot.get("ref")
+            peer = slot.get("peer")
+            if ref is None or peer is None:
+                continue
+            excess_drifts.append(((float(ref) - fp) - float(peer)) * sz)
+            excess_shares += sz
+            break
+
+    adverse_selection_excess = (
+        sum(excess_drifts) / excess_shares if excess_shares > 0 and excess_drifts else None
+    )
+
     # Hedge Census
     census = {
         "markets_observed": len(census_rows),
@@ -1571,6 +1606,8 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
 
         # Adverse selection & rebate
         "adverse_selection": adverse_selection,
+        "adverse_selection_excess": adverse_selection_excess,
+        "markout_excess_samples": len(excess_drifts),
         "markout_samples": len(markout_drifts),
         "rebate_est": None,  # Explicit NULL: graduated spread markets carry $0.00 maker rewards; rebate accrual disabled
         "rebate_est_note": "NULL: graduated spread markets carry $0.00 maker rewards; income derives strictly from merge spread capture",

@@ -57,11 +57,40 @@ def _sanitize_slug(slug: str) -> str:
 
 
 def _parse_market(market: dict) -> Optional[LiveMarket]:
+    """One venue market row -> LiveMarket, or None when the row is unusable.
+
+    Row garbage is skipped, never raised. `fetch_live_market` walks every
+    market of every open event, so one malformed row used to abort the whole
+    universe scan and leave the screener with no market list for the rotation
+    -- the same failure mode `parse_book` was hardened against.
+    """
+    if not isinstance(market, dict):
+        return None
+    try:
+        return _parse_market_row(market)
+    except (TypeError, ValueError, KeyError, AttributeError, json.JSONDecodeError):
+        log.debug("skipping malformed market row: %r", market.get("conditionId")
+                  if isinstance(market, dict) else market)
+        return None
+
+
+def _parse_market_row(market: dict) -> Optional[LiveMarket]:
     token_ids_raw = market.get("clobTokenIds")
     if not token_ids_raw:
         return None
     token_ids = json.loads(token_ids_raw) if isinstance(token_ids_raw, str) else token_ids_raw
-    if len(token_ids) != 2:
+    if not isinstance(token_ids, (list, tuple)) or len(token_ids) != 2:
+        return None
+    # Element-level check too: `str(None)` is the string "None", which would
+    # travel on as a token id and fail far from here.
+    # `bool` is an `int` subclass: True would otherwise pass as the token id
+    # "True". Strings and real integers only.
+    if not all(isinstance(t, (str, int)) and not isinstance(t, bool)
+               and str(t).strip() for t in token_ids):
+        return None
+
+    condition_id = market.get("conditionId")
+    if not condition_id:
         return None
 
     # eventStartTime is the actual trading-window open (UTC :00/:05/:10 boundary).
@@ -73,8 +102,11 @@ def _parse_market(market: dict) -> Optional[LiveMarket]:
 
     start_ts = _iso_to_unix(start_iso)
     end_ts = _iso_to_unix(end_iso)
+    if start_ts is None or end_ts is None:
+        return None
+
     return LiveMarket(
-        condition_id=market["conditionId"],
+        condition_id=str(condition_id),
         market_slug=_sanitize_slug(market.get("slug", "")),
         up_token=str(token_ids[0]),
         down_token=str(token_ids[1]),
@@ -85,12 +117,23 @@ def _parse_market(market: dict) -> Optional[LiveMarket]:
     )
 
 
-def _iso_to_unix(s: str) -> float:
+def _iso_to_unix(s: str) -> Optional[float]:
+    """ISO-8601 -> unix seconds, or None when the string will not parse.
+
+    Returns None rather than raising: a timestamp the venue mangled is a row
+    to skip, not a reason to abort the caller's whole scan.
+    """
     # tolerate "Z" suffix
     from datetime import datetime, timezone
+    if not isinstance(s, str) or not s:
+        return None
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
-    dt = datetime.fromisoformat(s)
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        log.debug("unparseable market timestamp: %r", s)
+        return None
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.timestamp()
@@ -107,7 +150,11 @@ def fetch_live_market(gamma_host: str, series_slug: str) -> Optional[LiveMarket]
     now = time.time()
     candidates: list[LiveMarket] = []
     for ev in events:
+        if not isinstance(ev, dict):
+            continue
         markets = ev.get("markets") or []
+        if not isinstance(markets, list):
+            continue
         for m in markets:
             lm = _parse_market(m)
             if lm and lm.start_ts <= now < lm.end_ts:
@@ -159,7 +206,12 @@ def fetch_pinned_market(condition_id: str,
         return None
 
     end_iso = m.get("end_date_iso")
-    end_ts = _iso_to_unix(end_iso) if end_iso else (time.time() + 365 * 86400)
+    end_ts = _iso_to_unix(end_iso) if end_iso else None
+    if end_ts is None:
+        # No parseable resolution date: treat the market as long-dated rather
+        # than refusing to load it. Every 5-min timing rule is disabled by an
+        # effectively-infinite t_remaining anyway.
+        end_ts = time.time() + 365 * 86400
     return LiveMarket(
         condition_id=condition_id,
         market_slug=_sanitize_slug(m.get("market_slug") or condition_id[:10]),

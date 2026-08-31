@@ -87,10 +87,13 @@ def _parse_market(market: dict) -> Optional[LiveMarket]:
 
 def _iso_to_unix(s: str) -> float:
     # tolerate "Z" suffix
-    from datetime import datetime
+    from datetime import datetime, timezone
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
-    return datetime.fromisoformat(s).timestamp()
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
 
 
 def fetch_live_market(gamma_host: str, series_slug: str) -> Optional[LiveMarket]:

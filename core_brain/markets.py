@@ -83,7 +83,10 @@ def _parse_market_row(market: dict) -> Optional[LiveMarket]:
         return None
     # Element-level check too: `str(None)` is the string "None", which would
     # travel on as a token id and fail far from here.
-    if not all(isinstance(t, (str, int)) and str(t).strip() for t in token_ids):
+    # `bool` is an `int` subclass: True would otherwise pass as the token id
+    # "True". Strings and real integers only.
+    if not all(isinstance(t, (str, int)) and not isinstance(t, bool)
+               and str(t).strip() for t in token_ids):
         return None
 
     condition_id = market.get("conditionId")

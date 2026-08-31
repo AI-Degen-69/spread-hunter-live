@@ -176,7 +176,10 @@ def test_parse_market_skips_a_row_whose_token_ids_are_not_usable():
     # and travel on as a token id.
     empty = {**_valid_row(), "clobTokenIds": json.dumps([None, "222"])}
     blank = {**_valid_row(), "clobTokenIds": json.dumps(["", "222"])}
+    # `bool` is an `int` subclass, so True would otherwise become "True".
+    boolean = {**_valid_row(), "clobTokenIds": [True, "222"]}
 
     # Act / Assert
     assert _parse_market(empty) is None
     assert _parse_market(blank) is None
+    assert _parse_market(boolean) is None

@@ -202,3 +202,47 @@ def test_the_report_flags_a_truncated_walk():
     # Assert
     assert "TRUNCATED" in text
     assert "10 (counted, never summed)" in text
+
+
+def test_the_row_cap_is_applied_before_the_page_is_totalled():
+    # Arrange — a 750-row allowance against 500-row pages. Counting the second
+    # page whole and then noticing the cap would total 1,000 rows the cap says
+    # not to trust.
+    page = [_row("BUY", 1.0, 0.50, 0.01)] * ACTIVITY_PAGE_SIZE
+
+    # Act
+    total = lifetime_taker_fees(FUNDER, row_cap=750, fetch=lambda offset: page)
+
+    # Assert
+    assert total.rows == 750
+    assert total.fees_usd == pytest.approx(750 * 0.01)
+    assert total.complete is False
+
+
+def test_a_response_that_is_not_a_list_is_not_the_end_of_the_feed():
+    # Arrange — an error object read as "no more rows" would end the walk
+    # early and report the short total as complete.
+    page = [_row("BUY", 1.0, 0.50, 0.01)] * ACTIVITY_PAGE_SIZE
+
+    def _fetch(offset):
+        return page if offset == 0 else {"error": "rate limited"}
+
+    # Act
+    total = lifetime_taker_fees(FUNDER, fetch=_fetch)
+
+    # Assert
+    assert total.complete is False
+    assert total.rows == ACTIVITY_PAGE_SIZE
+
+
+def test_a_first_response_that_is_not_a_list_reports_nothing():
+    # Arrange / Act / Assert
+    assert lifetime_taker_fees(FUNDER, fetch=lambda offset: {"error": "nope"}) is None
+
+
+def test_float_noise_below_zero_normalises_rather_than_refusing():
+    # Arrange — the arithmetic can land a hair under zero on an exact-fee row.
+    row = {"side": "BUY", "size": 3.0, "price": 0.1, "usdcSize": 0.3 - 1e-12}
+
+    # Act / Assert — that is a zero fee, not an unreadable row.
+    assert recover_fee(row) == 0.0

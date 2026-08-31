@@ -98,11 +98,12 @@ def recover_fee(row: Any) -> Optional[float]:
         # turns a rebate into a charge.
         return None
 
-    if fee < 0:
-        # The venue does not charge a negative taker fee. A negative residual is
-        # a row we are misreading, not a discount.
+    if fee < -FEE_EPSILON:
+        # The venue does not charge a negative taker fee. A residual materially
+        # below zero is a row we are misreading, not a discount. Float noise of
+        # a fraction of a cent is not that, and falls through to normalise.
         return None
-    return 0.0 if fee < FEE_EPSILON else fee
+    return 0.0 if abs(fee) < FEE_EPSILON else fee
 
 
 def fees_from_rows(rows: Iterable[Any]) -> tuple[float, int, int]:
@@ -161,15 +162,35 @@ def lifetime_taker_fees(funder: str, timeout: float = 15.0,
             # incomplete rather than as a lifetime figure.
             complete = False
             break
-        if not isinstance(page, list) or not page:
+        if not isinstance(page, list):
+            # A shape we cannot read is not the end of the feed. On the first
+            # page there is nothing to report; later, keep what was counted and
+            # say the total is short.
+            if offset == 0:
+                return None
+            complete = False
+            break
+        if not page:
             break
 
-        page_total, page_seen, page_priced = fees_from_rows(page)
+        # Trim to the allowance BEFORE summing. Counting a page and then
+        # noticing the cap totals rows the cap says not to trust.
+        remaining = row_cap - offset
+        if remaining <= 0:
+            complete = False
+            break
+        counted = page[:remaining] if len(page) > remaining else page
+        if len(counted) < len(page):
+            complete = False
+
+        page_total, page_seen, page_priced = fees_from_rows(counted)
         total += page_total
         seen += page_seen
         priced += page_priced
-        offset += len(page)
+        offset += len(counted)
 
+        if not complete:
+            break
         if len(page) < ACTIVITY_PAGE_SIZE:
             break
         if offset >= row_cap:

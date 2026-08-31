@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import json
+import math
 import os
 import re
 import sys
@@ -48,6 +49,9 @@ _CFG = _load_cfg()
 MIN_VOLUME_24H = _CFG.select_min_volume_24h_usd
 MAX_DAYS_TO_RESOLVE = _CFG.select_max_days_to_resolve
 MIN_TOP3_DEPTH_USD = _CFG.select_min_top3_depth_usd
+MOVEMENT_WINDOW_SEC = _CFG.select_movement_window_sec
+MIN_MOVEMENT_USD = _CFG.select_min_movement_usd
+TRADES_API = "https://data-api.polymarket.com/trades"
 MAX_BOOK_SPREAD = _CFG.select_max_book_spread
 
 GAMMA = "https://gamma-api.polymarket.com/markets"
@@ -174,6 +178,80 @@ def pre_start(start_iso: Optional[str],
     hours = seconds / 3600.0
     when = f"{hours:.1f}h" if hours >= 1.0 else f"{seconds / 60.0:.0f}m"
     return True, f"pre-start: event has not started (starts in {when})"
+
+
+def traded_notional(session: requests.Session, condition_id: str,
+                    window_sec: float = MOVEMENT_WINDOW_SEC,
+                    now_ts: Optional[float] = None,
+                    limit: int = 500) -> Optional[float]:
+    """Dollars that changed hands on this market inside the window.
+
+    None means UNMEASURED -- the tape read failed, or the venue answered with
+    a shape this cannot read. Unknown is never treated as flat: a gate that
+    fires on a failed HTTP call would empty the universe on one bad minute.
+
+    `now_ts` is the test seam, matching `days_to_resolve` and `pre_start`.
+    """
+    if not condition_id:
+        return None
+    try:
+        rows = session.get(TRADES_API,
+                           params={"market": condition_id, "limit": limit},
+                           timeout=12).json()
+    except Exception:
+        return None
+    if not isinstance(rows, list):
+        return None
+    now = time.time() if now_ts is None else now_ts
+    cutoff = now - max(0.0, window_sec)
+    total = 0.0
+    for t in rows:
+        if not isinstance(t, dict):
+            continue
+        try:
+            ts = float(t.get("timestamp") or 0.0)
+            price = float(t.get("price") or 0.0)
+            size = float(t.get("size") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        # inf/nan or a negative print is venue garbage, and either one would
+        # travel straight into the gate: `inf` makes every market look active,
+        # a negative subtracts real activity from the window.
+        if not all(math.isfinite(x) for x in (ts, price, size)):
+            continue
+        if price < 0 or size < 0:
+            continue
+        # A row we cannot place in time cannot be counted toward a windowed
+        # figure. Skipping it under-counts, which is the safe direction for a
+        # gate that refuses on "too little".
+        if ts < cutoff:
+            continue
+        total += price * size
+    return round(total, 2)
+
+
+def movement_reject(movement_usd: Optional[float],
+                    min_movement_usd: Optional[float] = None,
+                    window_sec: float = MOVEMENT_WINDOW_SEC) -> tuple[bool, str]:
+    """Should this market be refused for having no recent movement?
+
+    Two markets can both clear a six-figure 24h volume while one of them has
+    printed nothing for hours: the 4.3-hour stall sat at 0.23 with 1,777
+    shares ahead and zero traded. 24h volume cannot see that; a window can.
+
+    Inert at the shipped bar of 0.0 (record only) and inert on an unmeasured
+    tape, so enforcing is a deliberate act with evidence behind it.
+    """
+    bar = MIN_MOVEMENT_USD if min_movement_usd is None else min_movement_usd
+    if not bar or bar <= 0:
+        return False, ""
+    if movement_usd is None:
+        return False, ""
+    if movement_usd >= bar:
+        return False, ""
+    minutes = int(round(window_sec / 60.0))
+    return True, (f"no movement: ${movement_usd:,.0f} traded in last "
+                  f"{minutes}m under ${bar:,.0f} (flat)")
 
 
 def tradable(volume_24h: Optional[float],
@@ -583,6 +661,11 @@ def evaluate(session: requests.Session, rate: float, m: dict,
             "slug": m.get("market_slug", ""),
         }
 
+    # THE MOVEMENT GATE, measured only for markets that already cleared the
+    # book gates: one tape read per surviving candidate rather than per row.
+    movement_usd = traded_notional(session, m.get("condition_id"))
+    flat, flat_reason = movement_reject(movement_usd)
+
     theirs = q_min(q1, q2)
     n = max(min_size, 120)
 
@@ -623,6 +706,9 @@ def evaluate(session: requests.Session, rate: float, m: dict,
     # A spread market is paid by whoever lifts the offer, in the amount of the
     # spread, so there is no distribution to be under. Holding it to the floor
     # would reject exactly the liquid markets this path exists to admit.
+    if not why and flat:
+        why = flat_reason
+        can_trade = False
     pays = income >= MIN_PAYOUT * FLOOR_MULTIPLE if source == "rewards" else income > 0
     if not why and not pays:
         why = (f"income ${income:.2f}/day under payout floor"
@@ -637,6 +723,10 @@ def evaluate(session: requests.Session, rate: float, m: dict,
         "eligible": pays and can_trade,
         "reject_reason": why,
         "volume_24h": round(volume_24h, 2) if volume_24h is not None else None,
+        # Recorded on every scanned market, gated or not: the bar for
+        # `select_min_movement_usd` is meant to be chosen from this column.
+        "movement_usd": movement_usd,
+        "movement_window_sec": MOVEMENT_WINDOW_SEC,
         "days_to_resolve": round(days, 2) if days is not None else None,
         "cid": m["condition_id"],
         "title": m.get("question", "")[:90],
@@ -682,10 +772,13 @@ def _cause(reason: str) -> str:
         return "horizon"
     if "income" in r:
         return "income"
-    # The pre-start reason embeds the countdown, so bucketing on the raw text
-    # would make one card per market. The gate is the bucket.
+    # The pre-start and movement reasons embed a countdown and a measured
+    # dollar figure, so bucketing on the raw text would make one card per
+    # market. The gate is the bucket.
     if "pre-start" in r:
         return "pre-start"
+    if "no movement" in r:
+        return "no movement"
     # The book gate embeds the measured value in the reason -- "YES: spread
     # 0.8250 > 0.0600" -- so splitting on " $" left one bucket per spread
     # level (23 buckets in one live run). The side still matters (YES-side vs

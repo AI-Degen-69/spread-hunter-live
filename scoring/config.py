@@ -436,6 +436,18 @@ class MakerConfig:
     # $200k-volume market with a $750-depth book is admissible. Overridable
     # from HUNTER_VOLUME_TRIAL_USD; the ranker's own `--trial-volume` flag wins.
     select_min_volume_24h_usd_trial: float | None = None
+    # THE MOVEMENT GATE (#74). 24h volume says a market traded SOMETIME; it
+    # says nothing about whether anything is happening now. A shadow run sat
+    # 4.3 hours on a market with 1,777 shares ahead at 0.23 and zero traded --
+    # inside every existing bar, tying up resting capital the whole time.
+    # `select_movement_window_sec` is the lookback, `select_min_movement_usd`
+    # the notional that must have changed hands inside it.
+    #
+    # Ships at 0.0 -- RECORD ONLY. Every scanned market carries its measured
+    # `movement_usd` so the bar can be chosen from evidence rather than
+    # guessed; set HUNTER_MIN_MOVEMENT_USD to enforce.
+    select_movement_window_sec: float = 900.0
+    select_min_movement_usd: float = 0.0
     select_max_book_spread: float = 0.06
     # 30 days admits liquid macro, sports, and political markets while keeping
     # long-dated 2027 markets excluded.
@@ -814,6 +826,24 @@ def load() -> MakerConfig:
     trial = os.environ.get("HUNTER_DEPTH_TRIAL_USD") or ""
     if trial.strip():
         kw["select_min_top3_depth_usd_trial"] = float(trial)
+    mvmt = os.environ.get("HUNTER_MIN_MOVEMENT_USD") or ""
+    if mvmt.strip():
+        try:
+            bar = float(mvmt)
+        except ValueError:
+            bar = None
+        # inf/nan are not bars. `inf` would refuse every market on earth and
+        # `nan` compares false against everything, silently disabling the gate.
+        if bar is not None and math.isfinite(bar):
+            kw["select_min_movement_usd"] = max(0.0, bar)
+    mwin = os.environ.get("HUNTER_MOVEMENT_WINDOW_SEC") or ""
+    if mwin.strip():
+        try:
+            window = float(mwin)
+        except ValueError:
+            window = None
+        if window is not None and math.isfinite(window) and window > 0:
+            kw["select_movement_window_sec"] = window
     vtri = os.environ.get("HUNTER_VOLUME_TRIAL_USD") or ""
     if vtri.strip():
         kw["select_min_volume_24h_usd_trial"] = float(vtri)

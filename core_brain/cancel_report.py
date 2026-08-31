@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 import statistics
+import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
 
@@ -36,10 +37,16 @@ def summarize(db_path: Path | str) -> dict[str, Any]:
                 "cancelled": 0, "unattributed": 0}
 
     try:
-        con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        # Escape before interpolating: a filename holding `?` or `#` would
+        # otherwise be read as the start of the URI's query or fragment, and
+        # the open would fail on a file that is perfectly fine.
+        con = sqlite3.connect(
+            f"file:{urllib.parse.quote(str(path))}?mode=ro", uri=True)
         con.row_factory = sqlite3.Row
         cols = {r["name"] for r in con.execute("PRAGMA table_info(orders)")}
-        if "cancel_reason" not in cols:
+        # BOTH columns, not just one: a partially migrated store would pass a
+        # check on `cancel_reason` alone and then fail selecting the other.
+        if not {"cancel_reason", "cancel_queue_ahead"} <= cols:
             # A store written before attribution existed. Its cancels are real
             # and countable; they simply carry no reason. Reporting that as
             # "unreadable" would send the operator looking for a broken file.
@@ -89,6 +96,21 @@ def summarize(db_path: Path | str) -> dict[str, Any]:
     }
 
 
+def _hold_state() -> str:
+    """Whether the queue hold is actually on, read from the config.
+
+    Printed rather than assumed: a hardcoded "currently off" would keep saying
+    so after someone turned it on, which is the reading that matters most.
+    """
+    try:
+        from core_brain.config import load
+
+        shares = float(getattr(load(), "requote_hold_queue_shares", 0.0) or 0.0)
+    except Exception:
+        return "state unread"
+    return f"on at {shares:g} shares" if shares > 0 else "currently off"
+
+
 def format_report(summary: dict[str, Any]) -> str:
     """The block an operator reads."""
     if not summary.get("readable"):
@@ -121,8 +143,8 @@ def format_report(summary: dict[str, Any]) -> str:
         lines.append("")
         lines.append(f"  {share:.0f}% of cancels were price moves. Those are the "
                      f"only ones the queue hold can keep")
-        lines.append("  (core_brain.config.requote_hold_queue_shares, currently "
-                     "off); the rest are gates doing their job.")
+        lines.append(f"  (core_brain.config.requote_hold_queue_shares, "
+                     f"{_hold_state()}); the rest are gates doing their job.")
     return "\n".join(lines)
 
 

@@ -384,16 +384,123 @@ def test_a_store_written_before_attribution_counts_its_cancels_anyway(tmp_path):
 
 
 def test_a_market_leaving_the_universe_is_its_own_reason():
-    # Arrange — `_cancel_dropped_markets` builds the order dicts it hands the
-    # canceller. That path is neither churn nor a gate, and a cancel with no
-    # recorded reason reads as either.
-    from core_brain.trader_loop import CANCEL_MARKET_DROPPED
-    import inspect
-    import core_brain.trader_loop as tl
+    """Driven through `_cancel_dropped_markets`, not read out of its source.
 
-    source = inspect.getsource(tl._cancel_dropped_markets)
+    That path is neither churn nor a gate, and a cancel with no recorded reason
+    reads as either. This fails if the reason is dropped anywhere between the
+    sweep and the canceller.
+    """
+    # Arrange
+    from types import SimpleNamespace
 
-    # Act / Assert
-    assert "cancel_reason" in source
-    assert "CANCEL_MARKET_DROPPED" in source
-    assert CANCEL_MARKET_DROPPED == "market_dropped"
+    from core_brain.trader_loop import CANCEL_MARKET_DROPPED, _cancel_dropped_markets
+
+    resting = SimpleNamespace(
+        id="o1", order_id="v1", condition_id="0xgone", token_id=UP,
+        price=0.50, side="BUY", status="open")
+    handed: list = []
+
+    def _cancel_fn(_client, _registry, orders):
+        handed.extend(orders)
+        return len(orders)
+
+    seam = SimpleNamespace(
+        client=object(),
+        registry=SimpleNamespace(get_active_orders=lambda: [resting]),
+        cancel_fn=_cancel_fn,
+        resting_order_ids_fn=None,
+        db_path=None,
+    )
+
+    # Act — the universe no longer contains 0xgone.
+    _cancel_dropped_markets(seam, current_markets=[])
+
+    # Assert
+    assert [o["id"] for o in handed] == ["o1"]
+    assert handed[0]["cancel_reason"] == CANCEL_MARKET_DROPPED
+
+
+def test_a_held_order_does_not_get_a_replacement_posted_beside_it():
+    """A held order rests OUTSIDE the tolerance by definition.
+
+    Without this the submit loop does not recognise it as covering the cycle's
+    intent and posts a second order on the same token -- double the resting
+    size, which is the opposite of what holding a queue position is for.
+    """
+    # Arrange
+    cfg = MakerConfig()
+    orders = [_order("o1", UP, 0.50)]
+
+    # Act
+    to_cancel, to_submit = plan_orders(
+        orders, [_intent(UP, 0.40)], dead_band=0.03, cfg=cfg,
+        hedge_asks={UP: 0.40}, queue_ahead={"o1": 25.0},
+        hold_queue_shares=200.0)
+
+    # Assert
+    assert to_cancel == []
+    assert to_submit == []
+
+
+def test_a_partially_migrated_store_is_not_called_unreadable(tmp_path):
+    # Arrange — one column present, the other not. Checking only the first
+    # would pass the guard and then fail selecting the second.
+    from core_brain.cancel_report import summarize
+
+    db = tmp_path / "partial.db"
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE orders (id TEXT PRIMARY KEY, status TEXT, "
+                "cancel_reason TEXT)")
+    con.execute("INSERT INTO orders VALUES ('a', 'cancelled', 'price_moved')")
+    con.commit()
+    con.close()
+
+    # Act
+    summary = summarize(db)
+
+    # Assert
+    assert summary["readable"] is True
+    assert summary["cancelled"] == 1
+    assert summary["unattributed"] == 1
+
+
+def test_a_path_with_uri_characters_still_opens(tmp_path):
+    # Arrange — `#` in a filename would otherwise be read as the URI's
+    # fragment. (`?` is the other case the escaping covers, but Windows will
+    # not create a file with one, so it cannot be exercised portably.)
+    from core_brain.cancel_report import summarize
+
+    db = tmp_path / "run#2 rehearsal.db"
+    con = sqlite3.connect(str(db))
+    con.execute("CREATE TABLE orders (id TEXT PRIMARY KEY, status TEXT, "
+                "cancel_reason TEXT, cancel_queue_ahead REAL)")
+    con.execute("INSERT INTO orders VALUES ('a','cancelled','price_moved',25.0)")
+    con.commit()
+    con.close()
+
+    # Act
+    summary = summarize(db)
+
+    # Assert
+    assert summary["readable"] is True
+    assert summary["reasons"]["price_moved"]["count"] == 1
+
+
+def test_the_report_states_the_hold_setting_it_actually_read(monkeypatch):
+    # Arrange — a hardcoded "currently off" would keep saying so after someone
+    # turned the hold on, which is the reading that matters most.
+    import core_brain.cancel_report as cr
+
+    summary = {"db_path": "x.db", "readable": True, "cancelled": 2,
+               "unattributed": 0,
+               "reasons": {"price_moved": {"count": 2, "measured_queues": 0,
+                                           "median_queue_ahead": None,
+                                           "min_queue_ahead": None}}}
+
+    # Act / Assert — off
+    monkeypatch.setattr(cr, "_hold_state", lambda: "currently off")
+    assert "currently off" in cr.format_report(summary)
+
+    # Act / Assert — on
+    monkeypatch.setattr(cr, "_hold_state", lambda: "on at 200 shares")
+    assert "on at 200 shares" in cr.format_report(summary)

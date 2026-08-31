@@ -167,6 +167,12 @@ def plan_orders(
         return float(ahead) <= float(hold_queue_shares)
 
     kept: dict[str, list[dict]] = {}
+    # Tokens whose order was HELD through a price move. A held order rests at a
+    # price outside the tolerance by definition, so the submit loop below would
+    # not recognise it as covering this cycle's intent and would post a second
+    # order beside it -- double the resting size on one token, which is the
+    # opposite of what holding a queue position is for.
+    held_tokens: set[str] = set()
     to_cancel: list[dict] = []
     for o in open_orders:
         tok = o["token_id"]
@@ -188,6 +194,7 @@ def plan_orders(
             # price we would be keeping.
             if regate_armed and not regate_blocks and _near_front(o):
                 kept.setdefault(tok, []).append(o)
+                held_tokens.add(tok)
                 continue
             _record(o, CANCEL_PRICE_MOVED)
             to_cancel.append(o)
@@ -201,6 +208,10 @@ def plan_orders(
 
     to_submit: list[QuoteIntent] = []
     for i in intents:
+        if i.token_id in held_tokens:
+            # We chose to keep the resting order on this token. Posting the new
+            # price as well would leave both working.
+            continue
         sits = kept.get(i.token_id, [])
         if not any(abs(o["price"] - i.price) <= tolerance for o in sits):
             to_submit.append(i)

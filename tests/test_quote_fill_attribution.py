@@ -130,6 +130,79 @@ def test_the_first_fill_timestamp_is_kept_not_the_latest(tmp_path):
     assert q["fill_ts"] == pytest.approx(1700000000000)
 
 
+def test_a_replayed_fill_still_attributes_an_unattributed_quote(tmp_path):
+    """The case that leaves historical databases stuck at zero.
+
+    Every fill already persisted before attribution existed sits behind the
+    `trade_id` idempotency check. If the duplicate path returns before
+    attributing, those quotes stay at `filled = 0` for good, and re-running the
+    bot cannot repair them because the venue never replays an old trade twice.
+    """
+    # Arrange — a fill row that exists while its quote still reads unfilled,
+    # exactly the shape of every database written before this change.
+    reg = _registry(tmp_path)
+    _post(reg, local_id="order-h", size=5.0)
+    fill = FillRecord(trade_id="t-replay", order_uuid="order-h", size=5.0,
+                      price=0.47, venue_ts=1700000000000)
+    assert reg.record_fill(fill) is True
+    with sqlite3.connect(tmp_path / "orders.db") as raw:
+        raw.execute("UPDATE quotes SET filled = 0, fill_ts = NULL")
+
+    # Act — the venue replays the same trade.
+    assert reg.record_fill(fill) is False
+
+    # Assert — the duplicate is still refused, but the quote is repaired.
+    q = _quote(reg, "order-h")
+    assert q["filled"] == pytest.approx(5.0)
+    assert q["fill_ts"] == pytest.approx(1700000000000)
+
+
+def test_opening_a_legacy_database_backfills_its_quotes(tmp_path):
+    """A database written before attribution existed repairs itself on open.
+
+    `data/orders.db` and every archived run hold fills whose quotes read zero.
+    Nothing will ever replay those trades, so without a backfill the historical
+    fill rate stays permanently invisible.
+    """
+    # Arrange — build the legacy shape, then blank the attribution the way
+    # every pre-existing database already is.
+    db = tmp_path / "orders.db"
+    reg = _registry(tmp_path)
+    _post(reg, local_id="order-i", size=5.0)
+    reg.record_fill(
+        FillRecord(trade_id="t-old", order_uuid="order-i", size=5.0,
+                   price=0.47, venue_ts=1700000000000)
+    )
+    with sqlite3.connect(db) as raw:
+        raw.execute("UPDATE quotes SET filled = 0, fill_ts = NULL")
+        assert raw.execute(
+            "SELECT COUNT(*) FROM quotes WHERE filled > 0").fetchone()[0] == 0
+
+    # Act — simply opening the registry again.
+    reopened = OrderRegistry(db)
+
+    # Assert
+    q = _quote(reopened, "order-i")
+    assert q["filled"] == pytest.approx(5.0)
+    assert q["fill_ts"] == pytest.approx(1700000000000)
+
+
+def test_the_backfill_does_not_touch_a_quote_that_never_filled(tmp_path):
+    # Arrange — a resting quote with no fills at all.
+    db = tmp_path / "orders.db"
+    reg = _registry(tmp_path)
+    _post(reg, local_id="order-j", size=5.0)
+
+    # Act
+    reopened = OrderRegistry(db)
+
+    # Assert — a quote with no fills stays unfilled rather than being handed a
+    # zero-sum from an empty aggregate.
+    q = _quote(reopened, "order-j")
+    assert q["filled"] == pytest.approx(0.0)
+    assert q["fill_ts"] is None
+
+
 def test_a_duplicate_fill_does_not_double_count(tmp_path):
     # Arrange
     reg = _registry(tmp_path)
@@ -156,6 +229,20 @@ def test_cancelling_an_order_marks_its_quote_cancelled(tmp_path):
 
     # Assert
     q = _quote(reg, "order-e")
+    assert q["cancelled"] == 1
+
+
+def test_an_unattributed_order_marks_its_quote_cancelled(tmp_path):
+    # Arrange — `unattributed` is the second terminal-unfilled status: an
+    # order the venue never acknowledged, which never traded either.
+    reg = _registry(tmp_path)
+    _post(reg, local_id="order-k")
+
+    # Act
+    reg.update_order_status("order-k", "unattributed", int(time.time() * 1000))
+
+    # Assert
+    q = _quote(reg, "order-k")
     assert q["cancelled"] == 1
 
 

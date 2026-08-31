@@ -16,6 +16,7 @@ Stage 2 Architecture Constraints:
 from __future__ import annotations
 
 import os
+import logging
 import sqlite3
 import threading
 import time
@@ -51,6 +52,8 @@ _CREDS_UNCHECKED = object()
 SIZE_EPS: float = 1e-9
 
 # Every status a row may hold, enforced by a CHECK constraint in the schema.
+_log = logging.getLogger(__name__)
+
 ORDER_STATUSES = ("pending", "open", "partial", "filled", "cancelled", "unattributed")
 
 # Statuses that end an order's life WITHOUT it having reached the front of the
@@ -500,11 +503,58 @@ def get_connection(db_path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+def backfill_quote_fill_attribution(conn: sqlite3.Connection) -> int:
+    """Attribute fills onto quote rows that predate attribution. Rows repaired.
+
+    There is no migration framework here -- the schema is create-if-absent --
+    and no amount of running the bot repairs these rows, because the venue
+    never replays a trade it has already reported. `data/orders.db` and every
+    archived run therefore hold fills whose quotes read `filled = 0` and always
+    will, which is what made the historical fill rate invisible.
+
+    Only rows that both have fills and read unfilled are touched, so this is a
+    no-op on an already-attributed database and safe to run on every open. A
+    quote with no fills is left alone rather than being handed the 0.0 an empty
+    aggregate would produce -- the same reason `fill_ts` stays NULL there.
+    """
+    cur = conn.execute(
+        """
+        UPDATE quotes
+           SET filled = (
+                   SELECT COALESCE(SUM(size), 0.0) FROM fills
+                    WHERE order_uuid = quotes.local_id
+               ),
+               fill_ts = (
+                   SELECT MIN(COALESCE(venue_ts, recorded_ts)) FROM fills
+                    WHERE order_uuid = quotes.local_id
+               )
+         WHERE local_id IS NOT NULL
+           AND COALESCE(filled, 0) = 0
+           AND EXISTS (SELECT 1 FROM fills WHERE order_uuid = quotes.local_id)
+        """
+    )
+    return cur.rowcount
+
+
 def init_db(db_path: Path | str = DEFAULT_DB_PATH) -> None:
-    """Initialize schema for the database file."""
+    """Initialize schema for the database file, repairing stale attribution."""
     with _lock:
         conn = get_connection(db_path)
-        conn.close()
+        try:
+            repaired = backfill_quote_fill_attribution(conn)
+            conn.commit()
+            if repaired:
+                _log.info("attributed %d quote row(s) from existing fills in %s",
+                          repaired, db_path)
+        except sqlite3.Error as exc:
+            # A registry that cannot repair history must still open: the
+            # backfill is a correction to old telemetry, never a precondition
+            # for placing or tracking today's orders.
+            conn.rollback()
+            _log.warning("quote attribution backfill skipped for %s: %s",
+                         db_path, exc)
+        finally:
+            conn.close()
 
 
 @dataclass(frozen=True)
@@ -870,7 +920,12 @@ class OrderRegistry:
                 (fill.trade_id,),
             ).fetchone()
             if already is not None:
-                conn.rollback()
+                # Refuse the duplicate, but attribute it anyway. Every fill
+                # persisted before attribution existed sits behind this check,
+                # and the venue never replays an old trade a second time, so
+                # returning here is what leaves a quote at filled = 0 for good.
+                self._attribute_fill_to_quote(conn, fill.order_uuid)
+                conn.commit()
                 return False
             conn.execute(
                 """

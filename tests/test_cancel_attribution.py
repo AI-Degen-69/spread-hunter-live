@@ -504,3 +504,41 @@ def test_the_report_states_the_hold_setting_it_actually_read(monkeypatch):
     # Act / Assert — on
     monkeypatch.setattr(cr, "_hold_state", lambda: "on at 200 shares")
     assert "on at 200 shares" in cr.format_report(summary)
+
+
+def test_the_hold_stands_down_when_there_is_no_hedge_ask_to_check_against():
+    """A hedge ask of None is NO OPINION to `completable_pair_block`.
+
+    It declines to judge rather than refusing, which is right for an ordinary
+    keep. The hold must not read "declined to judge" as "passed" -- that is the
+    unmeasured bet it exists to stand down from.
+    """
+    # Arrange — front of the queue, re-gate nominally armed, but the book has
+    # no ask on the other leg.
+    cfg = MakerConfig()
+    orders = [_order("o1", UP, 0.50)]
+    reasons: dict = {}
+
+    # Act
+    to_cancel, _ = plan_orders(
+        orders, [_intent(UP, 0.40)], dead_band=0.03, cfg=cfg,
+        hedge_asks={UP: None}, reasons=reasons,
+        queue_ahead={"o1": 1.0}, hold_queue_shares=200.0)
+
+    # Assert
+    assert to_cancel == orders
+    assert reasons == {"o1": CANCEL_PRICE_MOVED}
+
+
+def test_the_hold_stands_down_on_a_zero_hedge_ask():
+    # Arrange — 0 is the same "no opinion" case as None.
+    cfg = MakerConfig()
+    orders = [_order("o1", UP, 0.50)]
+
+    # Act
+    to_cancel, _ = plan_orders(
+        orders, [_intent(UP, 0.40)], dead_band=0.03, cfg=cfg,
+        hedge_asks={UP: 0.0}, queue_ahead={"o1": 1.0}, hold_queue_shares=200.0)
+
+    # Assert
+    assert to_cancel == orders

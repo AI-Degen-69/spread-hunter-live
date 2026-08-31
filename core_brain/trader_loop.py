@@ -192,7 +192,15 @@ def plan_orders(
             # queue hold may override, and only with the re-gate armed and
             # passing: something has to be checking the economics of the stale
             # price we would be keeping.
-            if regate_armed and not regate_blocks and _near_front(o):
+            # A hedge ask of None or 0 is NO OPINION to
+            # `risk.completable_pair_block` -- it declines to judge rather than
+            # refusing. For the ordinary keep that is right, but the hold must
+            # not read "declined to judge" as "passed": that is precisely the
+            # unmeasured bet it stands down from. The hold needs a real ask.
+            hedge_ask = hedge_asks.get(tok) if hedge_asks else None
+            hold_gate_armed = (regate_armed and hedge_ask is not None
+                               and float(hedge_ask) > 0)
+            if hold_gate_armed and not regate_blocks and _near_front(o):
                 kept.setdefault(tok, []).append(o)
                 held_tokens.add(tok)
                 continue

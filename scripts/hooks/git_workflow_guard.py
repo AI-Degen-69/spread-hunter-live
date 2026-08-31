@@ -19,7 +19,6 @@ import re
 import shlex
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 # A fourth round of findings means stop, not grind.
@@ -30,7 +29,6 @@ REVIEW_BOT = "coderabbitai[bot]"
 
 DOC = "docs/agents/git-workflow.md"
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-APPROVALS = REPO_ROOT / "runtime" / "merge-approvals.json"
 
 # Global options accepted before a subcommand. True when the option consumes
 # the following token as its argument.
@@ -199,62 +197,6 @@ def _reviews(pr: str) -> list[str]:
     return states
 
 
-def _changed_paths(pr: str) -> list[str]:
-    raw = _run(["gh", "pr", "diff", pr, "--name-only"])
-    return [line.strip() for line in raw.splitlines() if line.strip()]
-
-
-def _head_sha(pr: str) -> str:
-    return str(_pr_json(pr, "headRefOid").get("headRefOid") or "")
-
-
-# ---------------------------------------------------------------------------
-# approvals
-# ---------------------------------------------------------------------------
-
-def load_approvals() -> dict:
-    try:
-        data = json.loads(APPROVALS.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def is_approved(pr: str, head: str) -> bool:
-    """True when this exact commit was signed off.
-
-    An approval recorded against an earlier commit does not carry forward: a
-    push after sign-off has to be signed off again.
-    """
-    entry = load_approvals().get(str(pr))
-    if not isinstance(entry, dict) or not head:
-        return False
-    return entry.get("head_sha") == head
-
-
-def record_approval(pr: str) -> int:
-    head = _head_sha(pr)
-    if not head:
-        print(f"Could not read the head commit of pull request #{pr}.",
-              file=sys.stderr)
-        return 1
-    approvals = load_approvals()
-    approvals[str(pr)] = {
-        "head_sha": head,
-        "approved_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-    }
-    try:
-        APPROVALS.parent.mkdir(parents=True, exist_ok=True)
-        APPROVALS.write_text(json.dumps(approvals, indent=2) + "\n",
-                             encoding="utf-8")
-    except OSError as exc:
-        print(f"Could not write {APPROVALS}: {exc}", file=sys.stderr)
-        return 1
-    print(f"Recorded approval for pull request #{pr} at commit {head[:7]}.")
-    print("It lapses if anything else is pushed to the branch.")
-    return 0
-
-
 # ---------------------------------------------------------------------------
 # policy
 # ---------------------------------------------------------------------------
@@ -313,14 +255,14 @@ def _command_from_stdin() -> str | None:
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if argv and argv[0] == "--approve":
-        # Without the arity check this falls through to reading stdin, and an
-        # operator who forgets the number sees the command hang.
-        if len(argv) != 2:
-            print("usage: git_workflow_guard.py --approve <pr-number>",
-                  file=sys.stderr)
-            return 1
-        return record_approval(argv[1])
+    if argv:
+        # This guard takes no arguments. Falling through to stdin would leave
+        # anyone who typed the retired `--approve <pr>` staring at a hang, so
+        # refuse loudly instead. There is no merge sign-off to record.
+        print(f"git_workflow_guard.py takes no arguments (got {argv[0]!r}); "
+              "it reads a PreToolUse payload on stdin. Merges need no sign-off "
+              f"({DOC}).", file=sys.stderr)
+        return 1
 
     command = _command_from_stdin()
     if command is None:

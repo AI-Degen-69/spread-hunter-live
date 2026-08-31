@@ -75,24 +75,30 @@ def test_a_row_whose_direction_cannot_be_read_is_counted_not_guessed():
     assert unreadable == 1
 
 
-def test_merge_and_split_are_walked_oldest_first():
+def test_merge_and_split_are_requested_oldest_first(monkeypatch):
     # Arrange — under the default DESC ordering the venue drops rows of these
     # two types silently, which under-counts exactly the events this strategy
-    # lives on.
-    seen_params: list[tuple[str, int]] = []
+    # lives on. Driven through the real reader so the request itself is what
+    # gets asserted, not a stand-in for it.
+    from core_brain import pnl_crosscheck as pc
 
-    def _fetch(kind, offset):
-        seen_params.append((kind, offset))
+    requests: list[dict] = []
+
+    def _get_json(path, params, timeout):
+        requests.append(dict(params))
         return []
 
+    monkeypatch.setattr(pc, "_get_json", _get_json)
+
     # Act
-    replay_cashflow(FUNDER, fetch=_fetch, open_value_fn=lambda: 0.0,
+    replay_cashflow(FUNDER, open_value_fn=lambda: 0.0,
                     types=("MERGE", "SPLIT", "TRADE"))
 
-    # Assert — the sort is applied in the real reader, and these are the types
-    # it applies to.
-    assert ASC_TYPES == ("MERGE", "SPLIT")
-    assert [kind for kind, _ in seen_params] == ["MERGE", "SPLIT", "TRADE"]
+    # Assert
+    by_type = {r["type"]: r for r in requests}
+    assert by_type["MERGE"]["sortDirection"] == "ASC"
+    assert by_type["SPLIT"]["sortDirection"] == "ASC"
+    assert "sortDirection" not in by_type["TRADE"]
 
 
 def test_an_unvalued_book_yields_no_venue_pnl():
@@ -230,4 +236,32 @@ def test_the_report_says_nothing_was_measured_rather_than_zero():
     # Assert
     assert "UNREAD" in text
     assert "not $0.00" in text
+    assert check.explained is None
+
+
+def test_a_row_that_could_not_be_read_makes_the_walk_incomplete():
+    # Arrange — a row the replay could not price is money missing from the
+    # cashflow, exactly like a truncated walk.
+    replay = Replay(trading_cashflow=-8.0, open_value=10.0, rows=3,
+                    unreadable_rows=1)
+
+    # Act
+    check = cross_check(registry_pnl=2.35, replay=replay, taker_fees=0.35)
+
+    # Assert
+    assert replay.complete is False
+    assert check.explained is None
+
+
+def test_a_truncated_fee_walk_cannot_produce_an_explained_verdict():
+    # Arrange — the fee total is a floor, so the expected gap built on it is a
+    # floor, and a verdict would be arithmetic on a number known to be short.
+    replay = Replay(trading_cashflow=-8.0, open_value=10.0)
+
+    # Act
+    check = cross_check(registry_pnl=2.35, replay=replay, taker_fees=0.35,
+                        fees_complete=False)
+
+    # Assert
+    assert check.gap == pytest.approx(0.35)
     assert check.explained is None

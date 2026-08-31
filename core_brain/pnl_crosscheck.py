@@ -71,7 +71,14 @@ class Replay:
 
     @property
     def complete(self) -> bool:
-        return not self.incomplete_types
+        """Every type walked to the end, and every row read.
+
+        A row the replay could not price is a row missing from the cashflow, so
+        it makes the total short in exactly the way a truncated walk does.
+        Counting it as complete would let a verdict rest on a figure that is
+        known to be missing money.
+        """
+        return not self.incomplete_types and self.unreadable_rows == 0
 
     @property
     def pnl(self) -> Optional[float]:
@@ -304,7 +311,8 @@ def cross_check(registry_pnl: Optional[float], replay: Optional[Replay],
                 taker_fees: Optional[float] = None,
                 maker_rebates: Optional[float] = None,
                 tolerance: float = 0.50,
-                inclusive: bool = False) -> CrossCheck:
+                inclusive: bool = False,
+                fees_complete: bool = True) -> CrossCheck:
     """Compare the registry's PnL against the venue-side replay.
 
     `expected_gap` is `taker fees − maker rebates`: the registry reports what we
@@ -327,7 +335,10 @@ def cross_check(registry_pnl: Optional[float], replay: Optional[Replay],
         venue_pnl=venue_pnl,
         expected_gap=expected,
         tolerance=tolerance,
-        complete=complete,
+        # A fee total taken from a truncated walk is a floor, so the expected
+        # gap built on it is a floor too, and a verdict resting on it would be
+        # arithmetic on a number known to be short.
+        complete=complete and fees_complete,
     )
 
 
@@ -391,9 +402,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     replay = replay_cashflow(args.funder)
     fees = lifetime_taker_fees(args.funder)
+    if fees is not None and not fees.complete:
+        print("taker fees: TRUNCATED -- the fee walk stopped at the activity "
+              "row cap, so the expected gap below is a floor.")
     check = cross_check(registry_pnl, replay,
                         taker_fees=None if fees is None else fees.fees_usd,
-                        tolerance=args.tolerance, inclusive=args.inclusive)
+                        tolerance=args.tolerance, inclusive=args.inclusive,
+                        fees_complete=fees is not None and fees.complete)
     print(format_report(check, replay))
     return 0 if check.explained else 1
 

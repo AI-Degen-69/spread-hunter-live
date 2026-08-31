@@ -116,6 +116,66 @@ def days_to_resolve(end_iso: Optional[str],
     return (end - now).total_seconds() / 86400.0
 
 
+def market_start_iso(m: dict) -> Optional[str]:
+    """The event's scheduled start, when the venue states one.
+
+    Sports markets open for trading before the event begins and carry
+    `gameStartTime`; everything else has no start signal here and returns None,
+    which reads as "already trading" downstream. `startDate` is deliberately
+    NOT used: on most markets it is the listing date, hours or days before the
+    market became quotable, so it says nothing about whether the underlying
+    event is under way.
+    """
+    if not isinstance(m, dict):
+        return None
+    direct = m.get("_start_iso") or m.get("gameStartTime")
+    if direct:
+        return str(direct)
+    events = m.get("events") or []
+    if isinstance(events, list) and events and isinstance(events[0], dict):
+        nested = events[0].get("gameStartTime")
+        if nested:
+            return str(nested)
+    return None
+
+
+def pre_start(start_iso: Optional[str],
+              now_iso: Optional[str] = None) -> tuple[bool, str]:
+    """Has this market's event not started yet?
+
+    A tennis market opens before the first serve and sits flat with zero tape
+    until the match begins: 4.3 hours on Vilius Gaubas at 0.23 with 1,777
+    shares ahead and nothing traded. The [0.20, 0.80] mid gate cannot catch it
+    -- a pre-start 0.45/0.55 is squarely inside the band -- so the start time
+    is its own gate.
+
+    Unknown is NOT pre-start. Most markets state no start time at all, and
+    refusing every one of them would empty the universe on a missing field.
+
+    `now_iso` is the test seam, matching `days_to_resolve`.
+    """
+    if not start_iso:
+        return False, ""
+    try:
+        start = datetime.fromisoformat(str(start_iso).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return False, ""
+    now = (datetime.fromisoformat(now_iso.replace("Z", "+00:00"))
+           if now_iso else datetime.now(timezone.utc))
+    # Venue times are UTC by convention; the same aware/naive care
+    # `days_to_resolve` takes, for the same reason.
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    seconds = (start - now).total_seconds()
+    if seconds <= 0:
+        return False, ""
+    hours = seconds / 3600.0
+    when = f"{hours:.1f}h" if hours >= 1.0 else f"{seconds / 60.0:.0f}m"
+    return True, f"pre-start: event has not started (starts in {when})"
+
+
 def tradable(volume_24h: Optional[float],
              days: Optional[float],
              title: object = "", slug: object = "",
@@ -308,6 +368,11 @@ def gamma_spread_universe(session: requests.Session,
                 # Quoting minimum, which is the venue's order minimum here --
                 # there is no reward score to qualify for, so rewardsMinSize
                 # would only inflate the lot the allocator has to buy.
+                # Sports markets open before the event does; this is what the
+                # pre-start gate reads. Absent on everything else, which reads
+                # as "already trading".
+                "_start_iso": (m.get("gameStartTime")
+                               or ((m.get("events") or [{}])[0] or {}).get("gameStartTime")),
                 "_order_min": float(m.get("orderMinSize") or 5),
                 "_volume_24h": vol,
                 "_spread": spread,
@@ -407,6 +472,19 @@ def evaluate(session: requests.Session, rate: float, m: dict,
             "cid": m.get("condition_id"),
             "title": m.get("question", "")[:90],
             "slug": m.get("market_slug", ""),
+        }
+    # THE PRE-START GATE, before the two book fetches below. A market whose
+    # event has not begun prints nothing at any price, so paying for its books
+    # buys a reading of a book that cannot move.
+    not_started, start_reason = pre_start(market_start_iso(m))
+    if not_started:
+        return {
+            "source": source, "eligible": False,
+            "reject_reason": start_reason,
+            "cid": m.get("condition_id"),
+            "title": m.get("question", "")[:90],
+            "slug": m.get("market_slug", ""),
+            "volume_24h": round(volume_24h, 2) if volume_24h is not None else None,
         }
     # THE MAKER-QUEUE BAR, before the two book fetches below rather than
     # after them. A market whose queue at our own price never clears cannot be
@@ -604,6 +682,10 @@ def _cause(reason: str) -> str:
         return "horizon"
     if "income" in r:
         return "income"
+    # The pre-start reason embeds the countdown, so bucketing on the raw text
+    # would make one card per market. The gate is the bucket.
+    if "pre-start" in r:
+        return "pre-start"
     # The book gate embeds the measured value in the reason -- "YES: spread
     # 0.8250 > 0.0600" -- so splitting on " $" left one bucket per spread
     # level (23 buckets in one live run). The side still matters (YES-side vs

@@ -97,3 +97,68 @@ def test_screener_header_has_a_slot_for_the_filter_uptime():
     # Assert
     assert 'id="scan-filter-uptime"' in html
     assert "renderFilterUptime" in app_js
+
+
+# --- the rendered header (#31) ---------------------------------------------
+# Driven through node against the real dashboard/static/app.js, so these are
+# the strings the header would actually print.
+
+import json
+import shutil
+import subprocess
+
+HARNESS = Path(__file__).resolve().parent / "js" / "filter_uptime_harness.cjs"
+
+requires_node = pytest.mark.skipif(shutil.which("node") is None,
+                                   reason="node is not installed on this host")
+
+
+def _readings(payloads: list[dict]) -> list[str]:
+    out = subprocess.run([shutil.which("node"), str(HARNESS), json.dumps(payloads)],
+                         capture_output=True, text=True, check=True,
+                         encoding="utf-8")
+    return json.loads(out.stdout)["readings"]
+
+
+def _status(running: bool, started_at: float | None = None,
+            uptime_sec: float | None = None) -> dict:
+    return {"services": {"filter": {"running": running,
+                                    "started_at": started_at,
+                                    "uptime_sec": uptime_sec}}}
+
+
+@requires_node
+def test_the_header_reads_the_uptime_as_a_stopwatch():
+    # Arrange / Act
+    readings = _readings([_status(True, 100.0, 3660.0)])
+
+    # Assert
+    assert readings == [" · up 1h 01m"]
+
+
+@requires_node
+def test_the_uptime_never_ticks_backwards_for_the_same_process():
+    # Arrange — the second poll reports LESS elapsed time for the same
+    # `started_at`, which is what a host clock correction looks like.
+    payloads = [_status(True, 100.0, 90.0), _status(True, 100.0, 30.0)]
+
+    # Act
+    readings = _readings(payloads)
+
+    # Assert
+    assert readings == [" · up 1m 30s", " · up 1m 30s"]
+
+
+@requires_node
+def test_a_restarted_service_counts_from_its_new_start_time():
+    # Arrange — stopped, then started again: a new `started_at`, so the
+    # ratchet must not hold the old figure.
+    payloads = [_status(True, 100.0, 900.0),
+                _status(False),
+                _status(True, 500.0, 5.0)]
+
+    # Act
+    readings = _readings(payloads)
+
+    # Assert
+    assert readings == [" · up 15m 00s", "", " · up 5s"]

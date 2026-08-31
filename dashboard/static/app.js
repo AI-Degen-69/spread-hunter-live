@@ -2792,9 +2792,24 @@ function renderFilterUptime() {
 function setFilterUptime(status) {
   const filter = status?.services?.filter;
   const uptime = filter?.running ? filter.uptime_sec : null;
-  filterUptimeAnchor = (uptime === null || uptime === undefined)
-    ? null
-    : { uptimeSec: Number(uptime), receivedAtMs: monotonicMs() };
+  if (uptime === null || uptime === undefined) {
+    // Stopped: drop the anchor entirely, so a later start counts from zero.
+    filterUptimeAnchor = null;
+    renderFilterUptime();
+    return;
+  }
+  const startedAt = filter?.started_at ?? null;
+  const now = monotonicMs();
+  let uptimeSec = Number(uptime);
+  // Same process (same start time) means the stopwatch may only move forward.
+  // A host clock correction can hand back a smaller elapsed figure, and an
+  // uptime that jumps backwards reads as a restart that did not happen. A
+  // genuine restart carries a new `started_at`, which resets the anchor.
+  if (filterUptimeAnchor && filterUptimeAnchor.startedAt === startedAt) {
+    const shown = filterUptimeAnchor.uptimeSec + (now - filterUptimeAnchor.receivedAtMs) / 1000;
+    uptimeSec = Math.max(uptimeSec, shown);
+  }
+  filterUptimeAnchor = { uptimeSec, startedAt, receivedAtMs: now };
   renderFilterUptime();
 }
 

@@ -1624,6 +1624,25 @@ def _read_cycle_intent_rows(db_path: Path | str, limit: int = 200) -> list[dict]
                 pass
 
 
+@app.get("/api/trial-readiness")
+def get_trial_readiness():
+    """Whether the near-miss evidence licenses a controlled gate trial.
+
+    The ranker writes one line per rank to `runtime/near_misses.jsonl` and
+    `runtime/volume_near_misses.jsonl`. Nothing read them back, so the evidence
+    accumulated and was discarded: the screener could show that markets were
+    refused, never that they were refused consistently enough to change a bar
+    on purpose. Read-only, and a missing log reads as "no evidence yet" rather
+    than as an error.
+    """
+    from core_brain.trial_readiness import readiness
+
+    return readiness(
+        resolve_runtime_file("near_misses.jsonl", root=LIVE_ROOT),
+        resolve_runtime_file("volume_near_misses.jsonl", root=LIVE_ROOT),
+    )
+
+
 @app.get("/api/scan-state")
 def get_scan_state():
     """SCANNING / IDLE / STALLED plus per-cycle skip/pass rationale (read-only)."""

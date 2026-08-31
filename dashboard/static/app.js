@@ -2920,8 +2920,11 @@ function gateBar(value, fallback) {
 }
 
 function getStageHero(key, funnel) {
-  const volGate = funnel?.volume_gate_usd || 250000;
-  const depthGate = funnel?.depth_gate_usd || 1000;
+  // The shipped bars, not the pre-2026-08-25 ones. A hero that falls back to
+  // $250k/$1,000 describes a filter this repo has not run for months, and it
+  // reads as a gate change nobody made.
+  const volGate = gateBar(funnel?.volume_gate_usd, 125000);
+  const depthGate = gateBar(funnel?.depth_gate_usd, 500);
   const spreadGate = gateBar(funnel?.spread_gate, 0.06);
   const horizonDays = gateBar(funnel?.horizon_gate_days, 30);
   const rewardIncome = gateBar(funnel?.reward_min_income_usd_day, 1.5);
@@ -2971,6 +2974,53 @@ function getStageHero(key, funnel) {
     default:
       return { param: 'GATE TEST', value: '--' };
   }
+}
+
+// TRIAL READINESS. The ranker's near-miss logs say whether a gate's refusals
+// are consistent enough to license a controlled loosening. Rendered as two
+// tracker cards plus a banner, so the evidence becomes a decision instead of
+// accumulating in a JSONL nobody reads.
+function trackerCard(tracker) {
+  if (!tracker) return '';
+  const t = tracker.thresholds || {};
+  const ready = tracker.ready === true;
+  const cls = ready ? 'filled' : 'stopped';
+  const blockers = (tracker.blockers || []).join(' · ');
+  const label = String(tracker.gate || '').toUpperCase();
+  return `<span class="pill ${cls}" style="font-size:11px" title="${esc(blockers || 'all thresholds met')}">`
+    + `${esc(label)} ${ready ? 'TRIAL READY' : 'gathering'}`
+    + `</span> <span style="color:var(--text-secondary)">`
+    + `${tracker.days.toFixed(1)}d/${t.min_days ?? '--'} · `
+    + `${tracker.unique_markets}/${t.min_unique ?? '--'} markets · `
+    + `${tracker.small_margin}/${t.min_small_margin ?? '--'} near · `
+    + `${Math.round((tracker.stability || 0) * 100)}%/${Math.round((t.min_stability ?? 0) * 100)}% stable`
+    + `</span>`;
+}
+
+function renderTrialReadiness(readiness) {
+  const banner = document.getElementById('trial-ready-banner');
+  const trackers = document.getElementById('trial-trackers');
+  if (!banner || !trackers) return;
+  if (!readiness) {
+    banner.style.display = 'none';
+    trackers.style.display = 'none';
+    return;
+  }
+
+  const gates = readiness.ready_gates || [];
+  if (readiness.trial_ready && gates.length) {
+    banner.style.display = '';
+    banner.className = 'pill filled mono';
+    banner.textContent = 'TRIAL READY: ' + gates.join(' + ').toUpperCase();
+    banner.title = 'The near-miss evidence for this gate meets every readiness '
+      + 'threshold. Readiness is not profitability — the trial measures that.';
+  } else {
+    banner.style.display = 'none';
+  }
+
+  trackers.style.display = 'flex';
+  trackers.innerHTML = `<div>${trackerCard(readiness.depth)}</div>`
+    + `<div>${trackerCard(readiness.volume)}</div>`;
 }
 
 function renderScreener(kpi, scanState) {
@@ -3337,11 +3387,12 @@ async function pollStatus() {
   if (isPolling) return;
   isPolling = true;
   try {
-    const [state, status, kpi, scanState, guardAlerts, guardHealth] = await Promise.all([
+    const [state, status, kpi, scanState, trialReadiness, guardAlerts, guardHealth] = await Promise.all([
       safeJsonFetch('/api/state'),
       safeJsonFetch('/api/system/status'),
       safeJsonFetch('/api/kpi'),
       safeJsonFetch('/api/scan-state'),
+      safeJsonFetch('/api/trial-readiness'),
       safeJsonFetch('/api/guardrail-alerts'),
       safeJsonFetch('/api/guardrail-health'),
     ]);
@@ -3381,6 +3432,12 @@ async function pollStatus() {
     if (currentKpi) {
       renderScreener(currentKpi, scanState);
     }
+
+    // Trial readiness rides on its own endpoint, so it renders whether or not
+    // the KPI read succeeded.
+    if (trialReadiness) {
+      renderTrialReadiness(trialReadiness);
+    }
   } catch (e) {
     // Non-fatal transient error swallowed gracefully
   } finally {
@@ -3407,5 +3464,5 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity };
+  module.exports = { renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity };
 }

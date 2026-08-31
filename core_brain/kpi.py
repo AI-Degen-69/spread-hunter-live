@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from core_brain.statistical_analytics import build as build_statistical_analytics
 from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
 from core_brain.config import MakerConfig, load as load_cfg
 from core_brain.runtime_paths import resolve_runtime_file
@@ -1603,6 +1604,13 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
 
         # Win rate + expectancy + risk-adjusted factors (Level 1)
         "trade_analytics": trade_analytics,
+
+        # The five analytics charts read this. Built from closes, fills and
+        # markouts; a section with no input is omitted rather than synthesised,
+        # so a chart says "unmeasured" instead of drawing a curve through
+        # nothing. See core_brain/statistical_analytics.py.
+        "statistical_analytics": build_statistical_analytics(
+            closes, fills, markouts, starting_capital),
 
         # Adverse selection & rebate
         "adverse_selection": adverse_selection,

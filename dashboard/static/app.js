@@ -1561,17 +1561,17 @@ function renderPositionDistributionChart(stats) {
     }
     if (footer) {
       footer.innerHTML = `
-        <div class="chart-footer-item"><span>Sample Mean (μ):</span> <b style="color:var(--text-muted)">0.00%</b></div>
-        <div class="chart-footer-item"><span>Std Dev (σ):</span> <b>±0.00%</b></div>
-        <div class="chart-footer-item"><span>Standard Error (SE):</span> <b>0.00%</b></div>
-        <div class="chart-footer-item"><span>${currentCiLevel}% Confidence Interval:</span> <b>[0.00%, 0.00%]</b></div>
+        <div class="chart-footer-item"><span>Sample Mean (μ):</span> <b style="color:var(--text-muted)">unmeasured</b></div>
+        <div class="chart-footer-item"><span>Std Dev (σ):</span> <b>unmeasured</b></div>
+        <div class="chart-footer-item"><span>Standard Error (SE):</span> <b>unmeasured</b></div>
+        <div class="chart-footer-item"><span>${currentCiLevel}% Confidence Interval:</span> <b>unmeasured</b></div>
         <div class="chart-footer-item"><span>Distribution Sample Universe:</span> <b>N = 0 observations</b></div>
         <div class="chart-footer-item"><span>Statistical Edge:</span> <b style="color:var(--text-muted)">STANDBY (ACCUMULATING)</b></div>
       `;
     }
     if (badge) {
       badge.className = 'badge-tag stopped';
-      badge.textContent = `${currentCiLevel}% CI: [0.00%, 0.00%] · STANDBY`;
+      badge.textContent = `${currentCiLevel}% CI: unmeasured · STANDBY`;
     }
     if (banner) {
       banner.innerHTML = `
@@ -1607,52 +1607,76 @@ function renderPositionDistributionChart(stats) {
   let formatVal = (v) => v.toFixed(2);
 
   if (currentDistMetric === 'pnl_pct') {
-    rawValues = positions.map(p => p.pnl_pct);
+    rawValues = positions.map(p => p.pnl_pct).filter(v => v != null);
     mean = pr.mean_pnl_pct != null ? pr.mean_pnl_pct : (rawValues.reduce((a,b)=>a+b,0)/rawValues.length);
-    stdev = pr.stdev_pnl_pct != null ? pr.stdev_pnl_pct : 0.42;
-    sem = pr.sem_pnl_pct != null ? pr.sem_pnl_pct : 0.102;
-    const z = currentCiLevel === 95 ? 1.96 : 1.645;
-    ciLower = mean - z * sem;
-    ciUpper = mean + z * sem;
+    // NO INVENTED SPREAD. A sample of one has a mean and no deviation, and the
+    // backend says so by omitting these. Substituting a constant here is how a
+    // single trade rendered as "90% CI [+5.10%, +5.43%] · EDGE CONFIRMED".
+    stdev = pr.stdev_pnl_pct != null ? pr.stdev_pnl_pct : null;
+    sem = pr.sem_pnl_pct != null ? pr.sem_pnl_pct : null;
+    if (sem != null) {
+      const z = currentCiLevel === 95 ? 1.96 : 1.645;
+      ciLower = mean - z * sem;
+      ciUpper = mean + z * sem;
+    }
     const minVal = Math.min(...rawValues);
     const maxVal = Math.max(...rawValues);
-    const maxSpread = Math.max(Math.abs(minVal - mean), Math.abs(maxVal - mean), 3.0 * stdev, 1.8);
+    // `stdev` is null when the sample is too small to have one. Feeding that
+    // into the axis maths yields NaN geometry, so the spread term drops out
+    // and the observed range sets the scale.
+    const spreadTerm = stdev != null ? 3.0 * stdev : 0;
+    const maxSpread = Math.max(Math.abs(minVal - mean), Math.abs(maxVal - mean), spreadTerm, 1.8);
     delta = Math.ceil(maxSpread * 1.15 * 10) / 10;
     unit = '%';
     formatVal = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
   } else if (currentDistMetric === 'pnl_usd') {
-    rawValues = positions.map(p => p.pnl_usd);
+    rawValues = positions.map(p => p.pnl_usd).filter(v => v != null);
     mean = pr.mean_pnl_usd != null ? pr.mean_pnl_usd : (rawValues.reduce((a,b)=>a+b,0)/rawValues.length);
-    stdev = pr.stdev_pnl_usd != null ? pr.stdev_pnl_usd : 0.042;
-    sem = pr.sem_pnl_usd != null ? pr.sem_pnl_usd : 0.010;
-    const z = currentCiLevel === 95 ? 1.96 : 1.645;
-    ciLower = mean - z * sem;
-    ciUpper = mean + z * sem;
+    stdev = pr.stdev_pnl_usd != null ? pr.stdev_pnl_usd : null;
+    sem = pr.sem_pnl_usd != null ? pr.sem_pnl_usd : null;
+    if (sem != null) {
+      const z = currentCiLevel === 95 ? 1.96 : 1.645;
+      ciLower = mean - z * sem;
+      ciUpper = mean + z * sem;
+    }
     const minVal = Math.min(...rawValues);
     const maxVal = Math.max(...rawValues);
-    const maxSpread = Math.max(Math.abs(minVal - mean), Math.abs(maxVal - mean), 3.0 * stdev, 0.18);
+    const spreadTerm = stdev != null ? 3.0 * stdev : 0;
+    const maxSpread = Math.max(Math.abs(minVal - mean), Math.abs(maxVal - mean), spreadTerm, 0.18);
     delta = Math.ceil(maxSpread * 1.15 * 100) / 100;
     unit = '$';
     formatVal = (v) => `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(3)}`;
   } else if (currentDistMetric === 'spread_cost') {
     const pc = stats?.pair_costs || {};
-    mean = pc.mean || 0.981;
-    stdev = pc.stdev || 0.008;
-    sem = stdev / Math.sqrt(pc.samples_count || 60);
+    mean = pc.mean != null ? pc.mean : null;
+    stdev = pc.stdev != null ? pc.stdev : null;
+    sem = (stdev != null && pc.samples_count)
+      ? stdev / Math.sqrt(pc.samples_count)
+      : null;
     const z = currentCiLevel === 95 ? 1.96 : 1.645;
     ciLower = mean - z * sem;
     ciUpper = mean + z * sem;
     delta = 0.035;
     unit = '$';
     formatVal = (v) => `$${v.toFixed(3)}`;
-    rawValues = positions.map(p => p.spread_cost || 0.982);
+    // Only positions that actually carry a cost. The fallback constant that
+    // used to sit here invented one for every position that did not.
+    rawValues = positions.map(p => p.spread_cost).filter(v => v != null);
   } else { // outcome_prob
-    mean = 50.0;
-    stdev = 18.0;
-    sem = 18.0 / Math.sqrt(60);
-    const z = currentCiLevel === 95 ? 1.96 : 1.645;
-    ciLower = mean - z * sem;
-    ciUpper = mean + z * sem;
+    // Read from the measured bell rather than a fixed N(50, 18^2) that
+    // described no run in particular.
+    const pb = stats?.probability_bell || {};
+    mean = pb.mean != null ? pb.mean * 100 : null;
+    stdev = pb.stdev != null ? pb.stdev * 100 : null;
+    sem = (stdev != null && pb.samples_count)
+      ? stdev / Math.sqrt(pb.samples_count) : null;
+    if (sem != null && mean != null) {
+      const z = currentCiLevel === 95 ? 1.96 : 1.645;
+      ciLower = mean - z * sem;
+      ciUpper = mean + z * sem;
+    }
+    rawValues = (pb.bins || []).flatMap(
+      b => Array(b.empirical_count || 0).fill(b.bin * 100));
     delta = 45.0;
     unit = '%';
     formatVal = (v) => `${v.toFixed(1)}%`;
@@ -1664,11 +1688,38 @@ function renderPositionDistributionChart(stats) {
   const maxDomain = mean + delta;
   const span = 2 * delta;
 
+  // Every value for this metric may be unmeasured even when positions exist --
+  // closes with no cost basis carry no percentage, for instance. Deriving axis
+  // bounds from an empty set yields Infinity, so the chart says so instead of
+  // drawing geometry from it.
+  if (!rawValues.length || mean == null || !isFinite(mean)) {
+    if (container) {
+      container.innerHTML = `<div class="empty-state" style="padding:40px;text-align:center"><div class="empty-state-title" style="color:var(--text-muted)">Metric unmeasured</div><div class="empty-state-msg" style="font-size:12px;color:var(--text-muted);margin-top:4px">${posCount} closed position${posCount === 1 ? '' : 's'} recorded · none carry this measurement</div></div>`;
+    }
+    if (badge) {
+      badge.className = 'badge-tag stopped';
+      badge.textContent = `${currentCiLevel}% CI: unmeasured · metric not recorded`;
+    }
+    if (footer) {
+      footer.innerHTML = `<div class="chart-footer-item"><span>Metric:</span> <b style="color:var(--text-muted)">unmeasured on ${posCount} recorded close${posCount === 1 ? '' : 's'}</b></div>`;
+    }
+    return;
+  }
+
   // Update prominent badge
   if (badge) {
     const isPos = ciLower > 0;
     badge.className = `badge-tag ${isPos ? 'live' : 'warn'}`;
-    badge.textContent = `${currentCiLevel}% CI: [${formatVal(ciLower)}, ${formatVal(ciUpper)}] · ${isPos ? `LOWER BOUND POSITIVE (${formatVal(ciLower)} > 0) · EDGE CONFIRMED` : 'ZERO CROSSING'}`;
+    if (sem == null) {
+      // One observation, or a metric the payload could not measure a spread
+      // for. There is no interval to state and no edge to confirm.
+      badge.className = 'badge-tag stopped';
+      badge.textContent = `${currentCiLevel}% CI: unmeasured · `
+        + `${posCount} observation${posCount === 1 ? '' : 's'} · `
+        + `NEEDS 2+ TO ESTIMATE SPREAD`;
+    } else {
+      badge.textContent = `${currentCiLevel}% CI: [${formatVal(ciLower)}, ${formatVal(ciUpper)}] · ${isPos ? `LOWER BOUND POSITIVE (${formatVal(ciLower)} > 0) · EDGE CONFIRMED` : 'ZERO CROSSING'}`;
+    }
   }
 
   const w = 620;
@@ -1734,7 +1785,13 @@ function renderPositionDistributionChart(stats) {
   // Individual scatter points
   let dotsSvg = '';
   positions.forEach((pos, idx) => {
-    const val = currentDistMetric === 'pnl_pct' ? pos.pnl_pct : (currentDistMetric === 'pnl_usd' ? pos.pnl_usd : (currentDistMetric === 'spread_cost' ? (pos.spread_cost || 0.982) : 50 + (idx % 7) * 4));
+    // One dot per OBSERVATION. The outcome-probability arm used to place dots
+    // at `50 + (idx % 7) * 4` -- points derived from a row's position in the
+    // list, drawn as though they were measurements.
+    const val = currentDistMetric === 'pnl_pct' ? pos.pnl_pct
+      : (currentDistMetric === 'pnl_usd' ? pos.pnl_usd
+        : (currentDistMetric === 'spread_cost' ? pos.spread_cost : null));
+    if (val == null || !isFinite(val)) return;
     const dotX = Math.min(Math.max(padL + 2, getX(val)), w - padR - 2);
     const jitterY = padT + plotH - 10 - ((idx % 3) * 6);
     const isProfit = (currentDistMetric === 'pnl_pct' || currentDistMetric === 'pnl_usd') ? val >= 0 : true;
@@ -1852,11 +1909,11 @@ function renderPositionDistributionChart(stats) {
   if (footer) {
     footer.innerHTML = `
       <div class="chart-footer-item"><span>Sample Mean (μ):</span> <b style="color:#38bdf8">${formatVal(mean)}</b></div>
-      <div class="chart-footer-item"><span>Std Dev (σ):</span> <b>±${formatVal(stdev).replace('+', '')}</b></div>
-      <div class="chart-footer-item"><span>Standard Error (SE):</span> <b>${formatVal(sem).replace('+', '')}</b></div>
-      <div class="chart-footer-item"><span>${currentCiLevel}% Confidence Interval:</span> <b style="color:#34d399">[${formatVal(ciLower)}, ${formatVal(ciUpper)}]</b></div>
+      <div class="chart-footer-item"><span>Std Dev (σ):</span> <b>${stdev == null ? 'unmeasured' : '±' + formatVal(stdev).replace('+', '')}</b></div>
+      <div class="chart-footer-item"><span>Standard Error (SE):</span> <b>${sem == null ? 'unmeasured' : formatVal(sem).replace('+', '')}</b></div>
+      <div class="chart-footer-item"><span>${currentCiLevel}% Confidence Interval:</span> <b style="color:${sem == null ? 'var(--text-muted)' : '#34d399'}">${sem == null ? 'unmeasured' : `[${formatVal(ciLower)}, ${formatVal(ciUpper)}]`}</b></div>
       <div class="chart-footer-item"><span>Distribution Sample Universe:</span> <b>N = ${posCount} observations</b></div>
-      <div class="chart-footer-item"><span>Statistical Edge:</span> <b style="color:var(--signal)">H₁: μ &gt; 0 CONFIRMED</b></div>
+      <div class="chart-footer-item"><span>Statistical Edge:</span> <b style="color:${sem == null ? 'var(--text-muted)' : 'var(--signal)'}">${sem == null ? 'ACCUMULATING (needs 2+ observations)' : 'H₁: μ &gt; 0 CONFIRMED'}</b></div>
     `;
   }
 }
@@ -1921,11 +1978,17 @@ function renderPairCostKdeChart(stats) {
 
   const pc = stats?.pair_costs || {};
   const bins = pc.bins || [];
-  const mean = pc.mean || 0.981;
-  const stdev = pc.stdev || 0.008;
-  const median = pc.median || 0.982;
+  // No fallback constant here. The one that used to sit in this line rendered
+  // a plausible mean pair cost for a run that had assembled no pairs at all,
+  // which is a number the operator would have acted on.
+  const mean = pc.mean != null ? pc.mean : null;
+  const stdev = pc.stdev != null ? pc.stdev : null;
+  const median = pc.median != null ? pc.median : null;
 
-  if (medianBadge && pc.median != null) medianBadge.textContent = `Median: $${median.toFixed(3)}`;
+  if (medianBadge) {
+    medianBadge.textContent = median == null
+      ? 'Median: unmeasured' : `Median: $${median.toFixed(3)}`;
+  }
 
   if (!bins || bins.length === 0) {
     container.innerHTML = `<div class="empty-state"><div class="empty-state-title">Distribution unmeasured</div></div>`;
@@ -2019,10 +2082,10 @@ function renderPairCostKdeChart(stats) {
 
   if (footer) {
     footer.innerHTML = `
-      <div class="chart-footer-item"><span>Mean Cost (μ):</span> <b style="color:#38bdf8">$${mean.toFixed(3)}</b></div>
-      <div class="chart-footer-item"><span>Std Dev (σ):</span> <b>±$${stdev.toFixed(3)}</b></div>
-      <div class="chart-footer-item"><span>Min Observed:</span> <b>$${(pc.min_observed || 0.945).toFixed(3)}</b></div>
-      <div class="chart-footer-item"><span>Scanned Quote Sample Universe:</span> <b>${pc.samples_count || 60} pairs (${stats?.closed_positions?.length || 17} executed)</b></div>
+      <div class="chart-footer-item"><span>Mean Cost (μ):</span> <b style="color:#38bdf8">${mean == null ? 'unmeasured' : '$' + mean.toFixed(3)}</b></div>
+      <div class="chart-footer-item"><span>Std Dev (σ):</span> <b>${stdev == null ? 'unmeasured' : '±$' + stdev.toFixed(3)}</b></div>
+      <div class="chart-footer-item"><span>Min Observed:</span> <b>${pc.min_observed == null ? 'unmeasured' : '$' + pc.min_observed.toFixed(3)}</b></div>
+      <div class="chart-footer-item"><span>Executed Pairs:</span> <b>${pc.samples_count == null ? 'unmeasured' : pc.samples_count + ' merged'}${Array.isArray(stats?.closed_positions) ? ` (${stats.closed_positions.length} closes)` : ''}</b></div>
     `;
   }
 }
@@ -2117,12 +2180,16 @@ function renderMonteCarloChart(stats, cyclesCount = 100) {
 
   if (footer) {
     const endP50 = dataSteps[dataSteps.length - 1].p50;
-    const profitProb = (mc.prob_positive_return != null ? mc.prob_positive_return * 100 : 98.4).toFixed(1);
+    // `prob_positive_return` arrives as a percentage already. Multiplying it
+    // again rendered 98.4% as 9840%, and the fallback asserted a probability
+    // for a simulation that was never run.
+    const profitProb = mc.prob_positive_return != null
+      ? mc.prob_positive_return.toFixed(1) : null;
     footer.innerHTML = `
-      <div class="chart-footer-item"><span>P(Profit &gt; 0):</span> <b style="color:var(--signal)">${profitProb}%</b></div>
+      <div class="chart-footer-item"><span>P(Profit &gt; 0):</span> <b style="color:var(--signal)">${profitProb == null ? 'unmeasured' : profitProb + '%'}</b></div>
       <div class="chart-footer-item"><span>Median Return:</span> <b style="color:var(--signal)">+$${(endP50 - 100).toFixed(2)}</b></div>
-      <div class="chart-footer-item"><span>Worst-Case Drawdown:</span> <b style="color:#f87171">-${mc.worst_case_drawdown_pct || 1.85}%</b></div>
-      <div class="chart-footer-item"><span>Simulations:</span> <b>1,000 Paths</b></div>
+      <div class="chart-footer-item"><span>Worst-Case Drawdown:</span> <b style="color:#f87171">${mc.worst_case_drawdown_pct == null ? 'unmeasured' : mc.worst_case_drawdown_pct.toFixed(2) + '%'}</b></div>
+      <div class="chart-footer-item"><span>Simulations:</span> <b>${mc.paths == null ? 'unmeasured' : mc.paths.toLocaleString() + ' Paths'}</b></div>
     `;
   }
 }
@@ -2206,10 +2273,10 @@ function renderProbabilityBellChart(stats) {
 
   if (footer) {
     footer.innerHTML = `
-      <div class="chart-footer-item"><span>Mean Probability:</span> <b>50.0%</b></div>
-      <div class="chart-footer-item"><span>Std Deviation:</span> <b>±18.0%</b></div>
-      <div class="chart-footer-item"><span>Sweet Spot Concentration:</span> <b style="color:var(--signal)">82.5%</b></div>
-      <div class="chart-footer-item"><span>Model:</span> <b>Gaussian $\\mathcal{N}(0.5, 0.18^2)$</b></div>
+      <div class="chart-footer-item"><span>Mean Probability:</span> <b>${pb.mean == null ? 'unmeasured' : (pb.mean * 100).toFixed(1) + '%'}</b></div>
+      <div class="chart-footer-item"><span>Std Deviation:</span> <b>${pb.stdev == null ? 'unmeasured' : '±' + (pb.stdev * 100).toFixed(1) + '%'}</b></div>
+      <div class="chart-footer-item"><span>Sweet Spot Concentration:</span> <b style="color:var(--signal)">${pb.sweet_spot_pct == null ? 'unmeasured' : pb.sweet_spot_pct.toFixed(1) + '%'}</b></div>
+      <div class="chart-footer-item"><span>Executed Sample:</span> <b>${pb.samples_count == null ? 'unmeasured' : pb.samples_count + ' fills'}</b></div>
     `;
   }
 }
@@ -2280,11 +2347,24 @@ function renderMarkoutChart(stats) {
   `;
 
   if (footer) {
+    // Read off the horizons that actually matured. The four constants that
+    // used to sit in this footer reported a clean bill of health -- zero drift,
+    // a favourable retention figure, a sample count and a HEALTHY verdict --
+    // for a measurement nobody had taken.
+    const lastInterval = intervals.length ? intervals[intervals.length - 1] : null;
+    const maturedSamples = intervals.length
+      ? intervals.reduce((total, item) => total + (item.samples || 0), 0) : null;
+    const driftColour = lastInterval == null
+      ? 'var(--text-muted)'
+      : (lastInterval.displacement_bps < 0 ? '#f87171' : 'var(--signal)');
+    const markoutStatus = lastInterval == null
+      ? 'UNMEASURED'
+      : (lastInterval.displacement_bps < 0 ? 'ADVERSE' : 'FAVOURABLE');
     footer.innerHTML = `
-      <div class="chart-footer-item"><span>Adverse Drift:</span> <b style="color:var(--signal)">0.0 bps (Zero Toxic Flow)</b></div>
-      <div class="chart-footer-item"><span>Favorable Retention:</span> <b style="color:var(--signal)">+2.2 bps @ 300s</b></div>
-      <div class="chart-footer-item"><span>Matured Samples:</span> <b>48 fills</b></div>
-      <div class="chart-footer-item"><span>Markout Status:</span> <b style="color:var(--signal)">HEALTHY</b></div>
+      <div class="chart-footer-item"><span>Longest Horizon:</span> <b>${lastInterval == null ? 'unmeasured' : lastInterval.horizon}</b></div>
+      <div class="chart-footer-item"><span>Displacement:</span> <b style="color:${driftColour}">${lastInterval == null ? 'unmeasured' : (lastInterval.displacement_bps >= 0 ? '+' : '') + lastInterval.displacement_bps.toFixed(1) + ' bps'}</b></div>
+      <div class="chart-footer-item"><span>Matured Samples:</span> <b>${maturedSamples == null ? 'unmeasured' : maturedSamples + ' fills'}</b></div>
+      <div class="chart-footer-item"><span>Markout Status:</span> <b style="color:${driftColour}">${markoutStatus}</b></div>
     `;
   }
 }
@@ -3620,5 +3700,5 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity };
+  module.exports = { renderPositionDistributionChart, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity };
 }

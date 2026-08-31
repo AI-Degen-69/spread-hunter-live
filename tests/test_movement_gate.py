@@ -216,3 +216,35 @@ def test_evaluate_refuses_a_flat_market_once_the_bar_is_set(monkeypatch):
     assert row is not None
     assert row["eligible"] is False
     assert "no movement" in row["reject_reason"]
+
+
+def test_non_finite_and_negative_prints_are_skipped():
+    # Arrange — venue garbage: `inf` would make any market look active, and a
+    # negative print would subtract real activity from the window.
+    session = _TapeSession([_trade(NOW - 30, 0.50, 100.0),
+                            _trade(NOW - 30, float("inf"), 10.0),
+                            _trade(NOW - 30, float("nan"), 10.0),
+                            _trade(NOW - 30, -0.50, 100.0),
+                            _trade(NOW - 30, 0.50, -100.0)])
+
+    # Act
+    measured = traded_notional(session, "0xmarket", window_sec=WINDOW, now_ts=NOW)
+
+    # Assert — only the one good print counts.
+    assert measured == pytest.approx(50.0)
+
+
+def test_non_finite_env_overrides_are_refused(monkeypatch):
+    # Arrange — `inf` would refuse every market on earth; `nan` compares false
+    # against everything and silently disables the gate.
+    from scoring.config import load
+
+    monkeypatch.setenv("HUNTER_MIN_MOVEMENT_USD", "inf")
+    monkeypatch.setenv("HUNTER_MOVEMENT_WINDOW_SEC", "nan")
+
+    # Act
+    cfg = load()
+
+    # Assert — the shipped defaults stand.
+    assert cfg.select_min_movement_usd == 0.0
+    assert cfg.select_movement_window_sec == 900.0

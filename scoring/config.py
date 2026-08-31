@@ -829,17 +829,21 @@ def load() -> MakerConfig:
     mvmt = os.environ.get("HUNTER_MIN_MOVEMENT_USD") or ""
     if mvmt.strip():
         try:
-            kw["select_min_movement_usd"] = max(0.0, float(mvmt))
+            bar = float(mvmt)
         except ValueError:
-            pass
+            bar = None
+        # inf/nan are not bars. `inf` would refuse every market on earth and
+        # `nan` compares false against everything, silently disabling the gate.
+        if bar is not None and math.isfinite(bar):
+            kw["select_min_movement_usd"] = max(0.0, bar)
     mwin = os.environ.get("HUNTER_MOVEMENT_WINDOW_SEC") or ""
     if mwin.strip():
         try:
             window = float(mwin)
-            if window > 0:
-                kw["select_movement_window_sec"] = window
         except ValueError:
-            pass
+            window = None
+        if window is not None and math.isfinite(window) and window > 0:
+            kw["select_movement_window_sec"] = window
     vtri = os.environ.get("HUNTER_VOLUME_TRIAL_USD") or ""
     if vtri.strip():
         kw["select_min_volume_24h_usd_trial"] = float(vtri)

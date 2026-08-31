@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures as cf
 import json
+import math
 import os
 import re
 import sys
@@ -212,6 +213,13 @@ def traded_notional(session: requests.Session, condition_id: str,
             price = float(t.get("price") or 0.0)
             size = float(t.get("size") or 0.0)
         except (TypeError, ValueError):
+            continue
+        # inf/nan or a negative print is venue garbage, and either one would
+        # travel straight into the gate: `inf` makes every market look active,
+        # a negative subtracts real activity from the window.
+        if not all(math.isfinite(x) for x in (ts, price, size)):
+            continue
+        if price < 0 or size < 0:
             continue
         # A row we cannot place in time cannot be counted toward a windowed
         # figure. Skipping it under-counts, which is the safe direction for a

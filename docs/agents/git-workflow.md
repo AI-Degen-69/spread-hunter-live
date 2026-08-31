@@ -101,6 +101,19 @@ CodeRabbit reviews this repo automatically, and is configured entirely through i
 repository UI — this repo has no `.coderabbit.yaml`, and adding one would silently
 override every UI setting.
 
+#### Where the handle is allowed
+
+`@coderabbitai` may appear in exactly four places, and nowhere else:
+
+| Use | Where |
+| --- | --- |
+| `@coderabbitai` | the PR **title** placeholder, set once at creation |
+| `@coderabbitai summary` | one line in the PR **body**, set once at creation |
+| `@coderabbitai resolve` | its own comment, closing the threads you accepted |
+| `@coderabbitai autofix` | its own comment, once per round, after triage |
+
+Every other use is banned, and the two below are the ones that cost real money.
+
 **Never post `@coderabbitai review` or `@coderabbitai full review` in a comment, at any
 point.** There is nothing to request:
 
@@ -113,16 +126,31 @@ how a two-round review turns into six.
 
 ### Working a round
 
-1. Read every comment and judge it. Implement the ones that are correct and worth it.
-2. **Batch every accepted fix into one commit and push once.** Each separate push is its
-   own incremental review, so four pushes cost four reviews for one round of feedback.
-3. Post **one** summary comment: what you changed, what you declined, and why. Plain text,
-   and the `@coderabbitai` handle must not appear anywhere in it — mentioning the handle in
-   a comment risks re-triggering a review. (The title and body placeholders set at PR
-   creation are the exception, and they are set once, never re-posted.) Declining is fine
-   when the suggestion is wrong, out of scope, or lands on a vendored path; say so plainly.
-4. In a **separate** comment, post `@coderabbitai resolve` to close the accepted threads.
+Judgment stays with the agent; the typing does not have to. CodeRabbit's Autofix
+implements the fixes for threads you accepted, so the agent spends its tokens deciding
+what is right rather than retyping what a reviewer already described.
+
+1. **Wait for the review to finish.** Autofix acts on the review that has landed; firing
+   it while a review is still in flight fixes a half-posted round. `gh pr checks <n>`
+   showing the CodeRabbit check as `pass` / `Review completed` is the signal.
+2. **Triage every comment.** Accept the ones that are correct and worth it. Decline the
+   rest **on their own threads**, one concise sentence each — wrong, out of scope, or on a
+   vendored path. Autofix only touches threads that are still unresolved, so a declined
+   thread you resolved is a thread it will leave alone.
+3. **Post exactly one `@coderabbitai autofix` comment.** One per round, never two: each
+   autofix commit is itself a push, and a second one buys a second incremental review for
+   the same round of feedback. Anything Autofix cannot do — a fix that needs a design
+   decision, or one it got wrong — the agent implements by hand, batched into ONE commit
+   and pushed ONCE.
+4. **Judge the autofix commit like any other diff.** It is a machine's patch on your
+   branch: read it, run `python -m pytest -q`, and revert or amend anything that is wrong.
+   An autofix commit that lands unread is worse than no autofix at all.
+5. Post **one** summary comment per round: what changed, what you declined, and why.
+6. In a **separate** comment, post `@coderabbitai resolve` to close the accepted threads.
    `resolve` does not start a review.
+
+Autofix requires CodeRabbit Pro and is enabled by default. If it does not run, hand-fix
+the round instead of retrying it — a stalled loop costs more than the typing.
 
 ### Fix by severity, not by comment count
 

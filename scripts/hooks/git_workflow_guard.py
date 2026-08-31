@@ -47,8 +47,12 @@ Before this push, from {DOC}:
   * Batch every accepted fix into ONE commit and push ONCE. Each push is its own
     incremental review, so four pushes cost four reviews for one round.
   * Post ONE summary comment per round: what changed, what you declined, why.
-    The `@coderabbitai` handle must not appear anywhere in that comment.
+  * Triage first, then post ONE `@coderabbitai autofix` per round -- after the
+    review has finished, never while one is in flight -- and read the commit it
+    pushes before merging.
   * Post `@coderabbitai resolve` as a SEPARATE comment.
+  * The handle is allowed in four places only: the PR title placeholder, the
+    body summary line, `resolve`, and `autofix`.
   * Never post `@coderabbitai review` or `full review`. Reviews fire on their own.
 """
 

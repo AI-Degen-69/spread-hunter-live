@@ -782,6 +782,19 @@ class MakerConfig:
     # doubles median lifetime to ~23s. 2c leaves too much churn; 4c and up hold
     # a price the book has left behind.
     requote_dead_band: float = 0.03
+    # THE QUEUE HOLD (#131). Shares-ahead threshold under which a resting order
+    # is kept through a price move it would otherwise be re-quoted for. Under
+    # price-time priority a cancel sends the order to the back of a new level,
+    # and on this venue the queue -- not the price -- is what produces fills:
+    # shadow-02 rested 25 orders for 20 minutes behind 25 to 47,469 shares and
+    # filled none of them, and the best position of the run was re-quoted away
+    # six seconds after it was posted.
+    #
+    # Ships at 0.0 -- the hold is OFF. Every cancel now records its reason and
+    # the queue it held (`orders.cancel_reason`, `orders.cancel_queue_ahead`),
+    # and picking this threshold is what that record is for. The hold never
+    # overrides the pair-cost re-gate.
+    requote_hold_queue_shares: float = 0.0
     poll_interval_sec: float = 1.0
 
     # Only quote while the window is open enough to resolve sensibly.

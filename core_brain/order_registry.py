@@ -173,6 +173,13 @@ CREATE TABLE IF NOT EXISTS orders (
     last_polled_ts INTEGER NOT NULL,
     pair_id TEXT,
     max_pair_cost_at_post REAL,
+    -- Why this order was cancelled, and where it stood in its queue at the
+    -- moment it was. Without these a cancel that defended the strategy (the
+    -- book moved, or the pair-cost re-gate fired) is indistinguishable from
+    -- churn that threw away queue position for nothing, and neither one can be
+    -- tuned. See core_brain/trader_loop.plan_orders.
+    cancel_reason TEXT,
+    cancel_queue_ahead REAL,
     run_id TEXT
 );
 
@@ -417,6 +424,15 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE fills ADD COLUMN recorded_ts INTEGER")
     if "run_id" not in cols:
         conn.execute("ALTER TABLE fills ADD COLUMN run_id TEXT")
+
+    # Check columns in orders
+    cur = conn.execute("PRAGMA table_info(orders)")
+    cols = {row["name"] for row in cur.fetchall()}
+    if cols:
+        if "cancel_reason" not in cols:
+            conn.execute("ALTER TABLE orders ADD COLUMN cancel_reason TEXT")
+        if "cancel_queue_ahead" not in cols:
+            conn.execute("ALTER TABLE orders ADD COLUMN cancel_queue_ahead REAL")
 
     # Check columns in markouts
     cur = conn.execute("PRAGMA table_info(markouts)")
@@ -988,18 +1004,30 @@ class OrderRegistry:
         )
 
     def update_order_status(
-        self, local_id: str, status: str, last_polled_ts: int
+        self, local_id: str, status: str, last_polled_ts: int,
+        cancel_reason: str | None = None,
+        cancel_queue_ahead: float | None = None,
     ) -> None:
-        """Update order status and last_polled_ts."""
+        """Update order status and last_polled_ts.
+
+        `cancel_reason` and `cancel_queue_ahead` are recorded when the caller
+        knows them, and left alone otherwise -- a later status change must not
+        erase why an order was cancelled or where it stood when it happened.
+        """
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
+            sets = ["status = ?", "last_polled_ts = ?"]
+            params: list = [status, last_polled_ts]
+            if cancel_reason is not None:
+                sets.append("cancel_reason = ?")
+                params.append(str(cancel_reason))
+            if cancel_queue_ahead is not None:
+                sets.append("cancel_queue_ahead = ?")
+                params.append(float(cancel_queue_ahead))
+            params.append(local_id)
             cur = conn.execute(
-                """
-                UPDATE orders
-                SET status = ?, last_polled_ts = ?
-                WHERE id = ?
-                """,
-                (status, last_polled_ts, local_id),
+                f"UPDATE orders SET {', '.join(sets)} WHERE id = ?",
+                tuple(params),
             )
             if cur.rowcount != 1:
                 conn.rollback()
@@ -1430,6 +1458,29 @@ class OrderRegistry:
         with self._conn() as conn:
             rows = conn.execute("SELECT * FROM market_events ORDER BY ts ASC").fetchall()
             return [dict(r) for r in rows]
+
+    def queue_ahead_by_local_id(self, local_ids) -> dict:
+        """Shares resting ahead of each of these orders when it was posted.
+
+        Read from `quotes.queue_ahead`, which both the live and the rehearsal
+        paths write at post time. Orders whose quote row carries no measurement
+        are simply absent from the result -- an unknown queue position is not a
+        good one, and the caller must be able to tell the difference.
+        """
+        ids = [str(i) for i in (local_ids or []) if i]
+        if not ids:
+            return {}
+        out: dict[str, float] = {}
+        with self._conn() as conn:
+            marks = ",".join("?" for _ in ids)
+            rows = conn.execute(
+                f"SELECT local_id, queue_ahead FROM quotes "
+                f"WHERE local_id IN ({marks}) AND queue_ahead IS NOT NULL",
+                tuple(ids),
+            ).fetchall()
+        for row in rows:
+            out[str(row["local_id"])] = float(row["queue_ahead"])
+        return out
 
     def get_all_markouts(self) -> list[dict]:
         with self._conn() as conn:

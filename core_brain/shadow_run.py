@@ -495,8 +495,13 @@ def build_shadow_seam(
                 cancelled += 1
                 continue
             try:
-                reg.update_order_status(match.id, status="cancelled",
-                                        last_polled_ts=now_ms)
+                # The rehearsal is where the cancel evidence is gathered, so
+                # the reason and queue position have to survive here too --
+                # `plan_orders` attaches both to the order dict it hands over.
+                reg.update_order_status(
+                    match.id, status="cancelled", last_polled_ts=now_ms,
+                    cancel_reason=o.get("cancel_reason"),
+                    cancel_queue_ahead=o.get("cancel_queue_ahead"))
             except (KeyError, sqlite3.Error) as e:
                 log.warning("shadow cancel of %s failed: %s", match.id, e)
                 continue

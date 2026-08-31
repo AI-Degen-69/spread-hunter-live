@@ -32,6 +32,7 @@ The numbers a shadow run produces are rehearsal, not results.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -47,6 +48,59 @@ log = logging.getLogger("shadow_run")
 
 # Deprecated compatibility alias; operational callers must provide a per-run path.
 DEFAULT_SHADOW_DB = Path("data/shadow.db")
+
+# A shadow run is not part of the supervised stack -- it does not appear in
+# `runtime/processes.json`, so `dashboard.server.get_system_status` cannot see
+# it the way it sees the filter, query and decide services. This heartbeat is
+# how the rehearsal publishes its own liveness: written when the run starts,
+# refreshed once per rotation, and marked finished when the time box expires so
+# a clean end is distinguishable from a crash (a crash simply stops refreshing,
+# and the reader calls a stale heartbeat ended).
+SHADOW_HEARTBEAT_NAME = "shadow_run.json"
+
+
+def shadow_heartbeat_path(root=None) -> Path:
+    """Where a shadow run publishes its liveness (writer path)."""
+    from core_brain.runtime_paths import runtime_file
+    return runtime_file(SHADOW_HEARTBEAT_NAME, root=root)
+
+
+def write_shadow_heartbeat(
+    *,
+    db_path,
+    run_id: str,
+    minutes: float,
+    interval: float,
+    started_at: float,
+    finished: bool = False,
+    path: Optional[Path] = None,
+) -> Optional[Path]:
+    """Publish (or refresh) the rehearsal's heartbeat file.
+
+    Best-effort by design: a rehearsal must never die because the dashboard's
+    convenience file could not be written, so every failure degrades to a debug
+    line and None.
+    """
+    target = Path(path) if path is not None else shadow_heartbeat_path()
+    payload = {
+        "pid": os.getpid(),
+        "run_id": run_id,
+        "started_at": float(started_at),
+        "minutes": float(minutes),
+        "interval": float(interval),
+        "db_path": str(Path(db_path).resolve()),
+        "heartbeat_ts": time.time(),
+        "finished": bool(finished),
+    }
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(target)
+    except OSError as e:
+        log.debug("shadow heartbeat write failed: %s", e)
+        return None
+    return target
 
 
 def shadow_run_id() -> str:
@@ -663,8 +717,19 @@ def run_shadow(
     shadow_sweep._resolve_fn = resolve_markets_fn  # type: ignore[attr-defined]
     seam.sweep_fn = shadow_sweep
 
-    deadline_ts = time.time() + max(0.0, minutes * 60.0)
+    started_at = time.time()
+    deadline_ts = started_at + max(0.0, minutes * 60.0)
     resolved_sleep_fn = sleep_fn if sleep_fn is not None else make_deadline_sleep(deadline_ts)
+
+    heartbeat_kwargs = dict(db_path=db_path, run_id=run_id, minutes=minutes,
+                            interval=interval, started_at=started_at)
+    write_shadow_heartbeat(**heartbeat_kwargs)
+
+    def beating_sleep(seconds: float) -> None:
+        """Refresh the heartbeat once per rotation, then sleep as before."""
+        write_shadow_heartbeat(**heartbeat_kwargs)
+        resolved_sleep_fn(seconds)
+
     results = loop_run(
         seam,
         interval=interval,
@@ -672,8 +737,12 @@ def run_shadow(
         live=True,  # safe: submit/cancel are recorders, the client cannot sign
         markets=markets,
         markets_fn=dynamic_markets_fn,
-        sleep_fn=resolved_sleep_fn,
+        sleep_fn=beating_sleep,
     )
+    # Only a clean end is marked finished. A crash leaves the heartbeat
+    # unrefreshed, which the reader calls ended once it goes stale -- so the
+    # two endings stay distinguishable.
+    write_shadow_heartbeat(**heartbeat_kwargs, finished=True)
     return ShadowResult(
         results=results,
         intents=list(intents_sink),

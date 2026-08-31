@@ -471,6 +471,69 @@ def _is_pid_alive(pid: int | None, started_at: float | None = None) -> bool:
     return abs(created - float(started_at)) <= PID_START_TOLERANCE_S
 
 
+# A heartbeat older than this many rotations means nobody is refreshing it:
+# the rehearsal ended or died. A stopwatch that keeps ticking for a dead
+# process is worse than no stopwatch.
+SHADOW_HEARTBEAT_STALE_ROTATIONS = 3.0
+SHADOW_HEARTBEAT_MIN_STALE_S = 30.0
+
+
+def read_shadow_run(active_db_path: str | None, now: float | None = None) -> dict | None:
+    """The shadow rehearsal writing THIS store, or None.
+
+    A shadow run is not in `runtime/processes.json`, so it publishes its own
+    liveness in `runtime/shadow_run.json` (see
+    `core_brain.shadow_run.write_shadow_heartbeat`). Only a heartbeat whose
+    `db_path` matches the store this page is reading is surfaced: a stopwatch
+    for a run writing somewhere else would be describing numbers that are not
+    on the screen.
+    """
+    path = resolve_runtime_file("shadow_run.json", root=LIVE_ROOT)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+
+    heartbeat_db = raw.get("db_path")
+    if not heartbeat_db or not active_db_path:
+        return None
+    try:
+        if Path(heartbeat_db).resolve() != Path(active_db_path).resolve():
+            return None
+    except OSError:
+        return None
+
+    now = time.time() if now is None else now
+    try:
+        started_at = float(raw.get("started_at"))
+        heartbeat_ts = float(raw.get("heartbeat_ts"))
+        interval = float(raw.get("interval") or 5.0)
+    except (TypeError, ValueError):
+        return None
+
+    heartbeat_age = max(0.0, now - heartbeat_ts)
+    stale_after = max(SHADOW_HEARTBEAT_MIN_STALE_S,
+                      SHADOW_HEARTBEAT_STALE_ROTATIONS * interval)
+    finished = bool(raw.get("finished"))
+    ended = finished or heartbeat_age > stale_after
+    return {
+        "run_id": raw.get("run_id"),
+        "pid": raw.get("pid"),
+        "started_at": started_at,
+        "minutes": raw.get("minutes"),
+        "interval": interval,
+        "heartbeat_age_sec": heartbeat_age,
+        # Elapsed at the last heartbeat, not at `now`: once a run ends the
+        # stopwatch must stop where it stopped.
+        "elapsed_sec": max(0.0, (heartbeat_ts if ended else now) - started_at),
+        "running": not ended,
+        "ended": ended,
+        "finished": finished,
+    }
+
+
 def get_system_status() -> dict:
     """Return live running status for 3 sub-services (Market Filter, Query Polymarket, Decide & Execute) and Telemetry."""
     procs_file = resolve_runtime_file("processes.json", root=LIVE_ROOT)
@@ -557,6 +620,9 @@ def get_system_status() -> dict:
         "db_path": db_identity["path"],
         "db_mode": db_identity["mode"],
         "db_is_production": db_identity["is_production"],
+        # The rehearsal writing this store, when there is one. None otherwise:
+        # the header shows no stopwatch rather than another run's clock.
+        "shadow_run": read_shadow_run(db_identity["path"]),
         "starting_capital": get_starting_capital(),
         "timestamp": time.time(),
     }

@@ -612,10 +612,17 @@ function Stop-ShadowDashboard {
         Stop-Process -Id $inst.pid -Force -ErrorAction SilentlyContinue
         $deadline = (Get-Date).AddSeconds(10)
         while ((Get-Date) -lt $deadline -and (Test-Port)) { Start-Sleep -Milliseconds 300 }
-        Lsh-Ok "Shadow dashboard stopped."
-        $stopped = $true
+        if (Wait-ProcessGone -ProcessId $inst.pid) {
+            Lsh-Ok "Shadow dashboard stopped."
+            $stopped = $true
+            Remove-Item $ShadowPidFile -ErrorAction SilentlyContinue
+        } else {
+            # Keep the record: the dashboard is still ours and still running,
+            # and discarding the pidfile would orphan it from every later stop.
+            Lsh-Warn "Shadow dashboard PID $($inst.pid) did not exit; record kept."
+        }
     }
-    Remove-Item $ShadowPidFile -ErrorAction SilentlyContinue
+    if ($null -eq $inst) { Remove-Item $ShadowPidFile -ErrorAction SilentlyContinue }
     if (Test-Port) {
         # If live still occupies the port, that's expected — shadow is down but port stays LISTENING.
         $liveInst = Get-DashInstance
@@ -630,6 +637,14 @@ function Stop-ShadowDashboard {
 }
 
 function Stop-ShadowRun {
+    <# Scope note: matching stays keyed on $ProjectPath, the same ownership
+    predicate Test-OrphanStackProcess uses, so detection and termination cannot
+    disagree about what belongs to this checkout. Every rehearsal this menu
+    launches passes an absolute --db under the project, so a menu-created
+    orphan always carries the project path and is always caught. A rehearsal
+    hand-started from a shell with a relative --db carries no project marker at
+    all and is deliberately left alone: it is not this checkout's to kill.
+    A failed scan returns $null (unknown), never $false. #>
     <# Kill the shadow rehearsal bot (shadow_run) plus its scoped stop-loss
     watcher, matched by command line inside THIS repo. Live processes never pass
     --db <per-run-shadow-db>, so the production stack is never matched. Used by the
@@ -638,17 +653,29 @@ function Stop-ShadowRun {
         $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop |
             Where-Object {
                 $_.Name -match '^python' -and $_.CommandLine -and `
+                ($_.CommandLine -like "*$ProjectPath*") -and `
                 (($_.CommandLine -like "*core_brain.shadow_run*") -or `
-                 ($_.CommandLine -like "*$ProjectPath*" -and $_.CommandLine -like "*scripts.global_stop_loss*" -and ($_.CommandLine -like "*shadow_*.db*" -or $_.CommandLine -like "*shadow.db*")))
+                 ($_.CommandLine -like "*scripts.global_stop_loss*" -and ($_.CommandLine -like "*shadow_*.db*" -or $_.CommandLine -like "*shadow.db*")))
             })
-    } catch { return $false }
+    } catch {
+        # An unreadable process table is not proof of an empty one. $null means
+        # "unknown" here, matching Test-OrphanStackProcess; callers must not
+        # report "nothing running" on it.
+        Lsh-Warn "Could not read the process table; shadow process scan is inconclusive."
+        return $null
+    }
     if ($procs.Count -eq 0) { return $false }
     $killed = $false
     foreach ($p in $procs) {
-        Lsh-Step "Stopping shadow process PID $($p.ProcessId)..."
+        $what = if ($p.CommandLine -like "*core_brain.shadow_run*") { "rehearsal loop" } else { "shadow stop-loss watcher" }
+        Lsh-Step "Stopping unrecorded $what PID $($p.ProcessId)..."
         taskkill /F /T /PID $p.ProcessId 2>$null | Out-Null
-        Lsh-Ok "Shadow process stopped."
-        $killed = $true
+        if (Wait-ProcessGone -ProcessId $p.ProcessId) {
+            Lsh-Ok "Unrecorded $what stopped."
+            $killed = $true
+        } else {
+            Lsh-Warn "Unrecorded $what PID $($p.ProcessId) did not exit; still running."
+        }
     }
     return $killed
 }
@@ -695,8 +722,12 @@ function Stop-TsBridge {
         foreach ($p in $procs) {
             Lsh-Step "Stopping TS bridge PID $($p.ProcessId)..."
             taskkill /F /T /PID $p.ProcessId 2>$null | Out-Null
-            Lsh-Ok "TS bridge stopped."
-            $killed = $true
+            if (Wait-ProcessGone -ProcessId $p.ProcessId) {
+                Lsh-Ok "TS bridge stopped."
+                $killed = $true
+            } else {
+                Lsh-Warn "TS bridge PID $($p.ProcessId) did not exit; still running."
+            }
         }
     } catch {}
     return $killed
@@ -1438,6 +1469,22 @@ function Clear-RuntimeState {
     Lsh-Ok "Runtime state wiped ($removed artifact(s) removed). data/orders.db untouched."
 }
 
+function Wait-ProcessGone {
+    <# True when the PID is gone within the timeout. Every stop path in this
+    file issues a kill whose failure is suppressed (Stop-Process
+    -ErrorAction SilentlyContinue, taskkill ... 2>$null), so without this
+    check a failed or raced termination still prints [OK] and returns $true --
+    the menu then claims work it did not do, which is the fault this whole
+    shadow-stop change exists to remove. #>
+    param([int]$ProcessId, [int]$TimeoutSeconds = 10)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-PidAlive -ProcessId $ProcessId)) { return $true }
+        Start-Sleep -Milliseconds 200
+    }
+    return (-not (Test-PidAlive -ProcessId $ProcessId))
+}
+
 function Kill-RecordedPid {
     <# Kill a recorded PID only when it is alive AND its start time matches the
     record, so a recycled PID is never touched. #>
@@ -1451,6 +1498,10 @@ function Kill-RecordedPid {
         }
         Lsh-Step "Stopping $Name PID $TargetPid..."
         taskkill /F /T /PID $TargetPid 2>$null | Out-Null
+        if (-not (Wait-ProcessGone -ProcessId $TargetPid)) {
+            Lsh-Warn "$Name PID $TargetPid did not exit; still running."
+            return $false
+        }
         Lsh-Ok "$Name stopped."
         return $true
     } catch {
@@ -1873,8 +1924,10 @@ function Invoke-LiveAction {
         "5" {
             $sessStopped = Stop-ShadowSession
             $runStopped = Stop-ShadowRun
-            if ($sessStopped -or $runStopped) {
+            if ($sessStopped -or ($runStopped -eq $true)) {
                 Lsh-Ok "Shadow session stopped."
+            } elseif ($null -eq $runStopped) {
+                Lsh-Warn "Shadow session stop finished, but the process scan was inconclusive; verify with option 1."
             } else {
                 Lsh-Warn "No shadow session or process is running."
             }

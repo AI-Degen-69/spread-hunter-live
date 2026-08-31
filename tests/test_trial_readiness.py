@@ -252,3 +252,14 @@ def test_the_screener_has_the_tracker_and_banner_slots():
     assert 'id="trial-ready-banner"' in html
     assert 'id="trial-trackers"' in html
     assert "renderTrialReadiness" in app_js
+
+
+def test_a_failed_readiness_fetch_hides_the_trackers():
+    # Arrange — the poll must call the renderer even when the fetch returned
+    # nothing, or the last reading stays on screen as if it were current.
+    app_js = (_STATIC / "app.js").read_text(encoding="utf-8")
+
+    # Act / Assert — called unconditionally, and null hides.
+    assert "if (trialReadiness) {\n      renderTrialReadiness" not in app_js
+    assert "renderTrialReadiness(trialReadiness);" in app_js
+    assert "if (!readiness) {" in app_js

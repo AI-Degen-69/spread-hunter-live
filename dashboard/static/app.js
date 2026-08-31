@@ -3434,10 +3434,10 @@ async function pollStatus() {
     }
 
     // Trial readiness rides on its own endpoint, so it renders whether or not
-    // the KPI read succeeded.
-    if (trialReadiness) {
-      renderTrialReadiness(trialReadiness);
-    }
+    // the KPI read succeeded -- and it is called even when the readiness fetch
+    // FAILED, so a dead endpoint hides the trackers rather than leaving the
+    // last reading on screen as if it were current.
+    renderTrialReadiness(trialReadiness);
   } catch (e) {
     // Non-fatal transient error swallowed gracefully
   } finally {

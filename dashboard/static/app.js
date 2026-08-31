@@ -2748,6 +2748,46 @@ function fmtAge(sec) {
   return Math.floor(sec / 3600) + 'h ago';
 }
 
+// Market Filter uptime stopwatch. The poll carries the service's uptime in
+// seconds; the ticker below extrapolates from it every second so the header
+// reads as a stopwatch instead of stepping once per poll. Anchoring on the
+// server-sent elapsed time rather than on `started_at` keeps the reading
+// correct even when the browser's clock disagrees with the host's.
+let filterUptimeAnchor = null;
+
+function fmtUptime(sec) {
+  if (sec === null || sec === undefined || !isFinite(sec) || sec < 0) return '';
+  const total = Math.floor(sec);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (h > 0) return 'up ' + h + 'h ' + String(m).padStart(2, '0') + 'm';
+  if (m > 0) return 'up ' + m + 'm ' + String(s).padStart(2, '0') + 's';
+  return 'up ' + s + 's';
+}
+
+function renderFilterUptime() {
+  const el = document.getElementById('scan-filter-uptime');
+  if (!el) return;
+  // A stopped service has no uptime: show nothing rather than `up 0s`, which
+  // the STOPPED pill beside it would immediately contradict.
+  if (!filterUptimeAnchor) {
+    el.textContent = '';
+    return;
+  }
+  const drift = (Date.now() - filterUptimeAnchor.receivedAtMs) / 1000;
+  el.textContent = ' · ' + fmtUptime(filterUptimeAnchor.uptimeSec + drift);
+}
+
+function setFilterUptime(status) {
+  const filter = status?.services?.filter;
+  const uptime = filter?.running ? filter.uptime_sec : null;
+  filterUptimeAnchor = (uptime === null || uptime === undefined)
+    ? null
+    : { uptimeSec: Number(uptime), receivedAtMs: Date.now() };
+  renderFilterUptime();
+}
+
 function categorizeGate(cause) {
   const c = (cause || '').toLowerCase();
   if (c.includes('depth')) return 'depth';
@@ -2819,7 +2859,8 @@ function getStageHero(key, funnel) {
   }
 }
 
-function renderScreener(kpi, scanState) {
+function renderScreener(kpi, scanState, status) {
+  setFilterUptime(status);
   const board = document.getElementById('kanban-board');
   const headerPill = document.getElementById('scan-state-pill');
   const headerAge = document.getElementById('scan-snapshot-age');
@@ -3220,7 +3261,7 @@ async function pollStatus() {
 
     // Render screener kanban (Tab 3)
     if (currentKpi) {
-      renderScreener(currentKpi, scanState);
+      renderScreener(currentKpi, scanState, status);
     }
   } catch (e) {
     // Non-fatal transient error swallowed gracefully
@@ -3242,10 +3283,11 @@ if (typeof module === 'undefined' || !module.exports) {
   renderParameters();
   setInterval(pollStatus, POLL_MS);
   setInterval(renderShadowClock, 1000);
+  setInterval(renderFilterUptime, 1000);
 }
 
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket };
+  module.exports = { renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket };
 }

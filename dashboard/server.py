@@ -533,6 +533,37 @@ def read_shadow_run(active_db_path: str | None, now: float | None = None) -> dic
         "finished": finished,
     }
 
+def _service_started_at(pid: int | None, info: dict, running: bool) -> float | None:
+    """Unix start time for a running service, or None.
+
+    Prefers the OS-reported creation time -- the same source `_is_pid_alive`
+    trusts to defeat PID recycling -- and falls back to the time recorded in
+    `processes.json` when the OS will not answer. A stopped service has no
+    uptime: reporting one would be a lie the STOPPED pill contradicts.
+    """
+    if not running or not pid:
+        return None
+    created = _process_start_time(int(pid))
+    if created is not None:
+        return created
+    recorded = info.get("started_at")
+    try:
+        return float(recorded) if recorded is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _uptime_sec(started_at: float | None, now: float | None = None) -> float | None:
+    """Seconds a service has been up, or None when it is not running.
+
+    Sent alongside `started_at` so the page can tick a stopwatch against its
+    own clock without inheriting any skew between the browser and this host.
+    """
+    if started_at is None:
+        return None
+    elapsed = (time.time() if now is None else now) - float(started_at)
+    return max(0.0, elapsed)
+
 
 def get_system_status() -> dict:
     """Return live running status for 3 sub-services (Market Filter, Query Polymarket, Decide & Execute) and Telemetry."""
@@ -571,11 +602,16 @@ def get_system_status() -> dict:
     decide_pid = decide_info.get("pid")
     decide_running = _is_pid_alive(decide_pid, decide_info.get("started_at"))
 
+    filter_started_at = _service_started_at(filter_pid, filter_info, filter_running)
+    query_started_at = _service_started_at(query_pid, query_info, query_running)
+    decide_started_at = _service_started_at(decide_pid, decide_info, decide_running)
+
     configured_sweep_interval = resolve_sweep_interval()
     running_sweep_interval = query_info.get("sweep_interval_sec") if query_running else None
 
     dash_running = True
     dash_pid = os.getpid()
+    dash_started_at = _process_start_time(dash_pid)
 
     bot_running = bool(filter_running or query_running or decide_running)
 
@@ -587,11 +623,15 @@ def get_system_status() -> dict:
                 "name": "Market Filter",
                 "running": filter_running,
                 "pid": filter_pid if filter_running else None,
+                "started_at": filter_started_at,
+                "uptime_sec": _uptime_sec(filter_started_at),
             },
             "query": {
                 "name": "Query Polymarket",
                 "running": query_running,
                 "pid": query_pid if query_running else None,
+                "started_at": query_started_at,
+                "uptime_sec": _uptime_sec(query_started_at),
                 "sweep_interval_sec": configured_sweep_interval,
                 "running_sweep_interval_sec": running_sweep_interval,
             },
@@ -599,11 +639,15 @@ def get_system_status() -> dict:
                 "name": "Decide & Execute",
                 "running": decide_running,
                 "pid": decide_pid if decide_running else None,
+                "started_at": decide_started_at,
+                "uptime_sec": _uptime_sec(decide_started_at),
             },
             "dash": {
                 "name": "Telemetry (dash)",
                 "running": dash_running,
                 "pid": dash_pid,
+                "started_at": dash_started_at,
+                "uptime_sec": _uptime_sec(dash_started_at),
                 "port": _ACTIVE_PORT,
             },
         },

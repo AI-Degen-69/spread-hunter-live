@@ -617,7 +617,11 @@ const SERVICE_DEFS = [
 function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
   const isRunning = status?.bot_state === 'RUNNING' || (status?.services && Object.values(status.services).some(s => s.running));
   const isProd = status?.db_is_production === true;
-  lastDbIsProduction = isProd;
+  // `lastDbIsProduction` is the START guard's flag and `renderDbMode` owns it.
+  // Writing it from here too gave one safety flag two writers: a status payload
+  // that carries service state but not `db_is_production` silently reset the
+  // guard, and whether that ends up safe depended purely on call order. This
+  // function still reads the local `isProd` for its own copy.
 
   // Master Control Header & Buttons
   const masterIndicator = document.getElementById('master-status-indicator');
@@ -1078,10 +1082,16 @@ function portfolioEquity(kpi, status) {
   const p = kpi?.portfolio || {};
   const ta = kpi?.trade_analytics || {};
   const startingCap = status?.starting_capital ?? p.starting_capital ?? 100;
-  const realizedPnL = p.realized_pnl ?? ta.total_realized_pnl ?? 0;
+  // An unread realized figure is NOT a flat run. The arithmetic below needs a
+  // number, so it gets one, but `realizedMeasured` travels with it so the card
+  // can print `--` rather than a confident +$0.00 nobody measured.
+  const realizedRaw = p.realized_pnl ?? ta.total_realized_pnl;
+  const realizedMeasured = realizedRaw !== null && realizedRaw !== undefined;
+  const realizedPnL = realizedMeasured ? Number(realizedRaw) : 0;
   return {
     startingCap,
     realizedPnL,
+    realizedMeasured,
     totalVal: p.total_value ?? (startingCap + realizedPnL),
     // Kept, labelled, as a secondary figure: the gap between wallet and
     // registry equity is real information (simulated or unsettled gains), it
@@ -1094,7 +1104,8 @@ function renderBrokerPortfolioOverview(kpi, status) {
   if (!kpi) return;
   const p = kpi.portfolio || {};
   const ta = kpi.trade_analytics || {};
-  const { startingCap, realizedPnL, totalVal, venueVal } = portfolioEquity(kpi, status);
+  const { startingCap, realizedPnL, realizedMeasured, totalVal, venueVal } =
+    portfolioEquity(kpi, status);
   const pnlPct = startingCap ? (realizedPnL / startingCap) * 100 : 0;
   lastStartingCapital = startingCap;
 
@@ -1106,8 +1117,16 @@ function renderBrokerPortfolioOverview(kpi, status) {
   const elStartCap = document.getElementById('broker-starting-cap');
 
   if (elEquity) elEquity.textContent = fmtUSD(totalVal);
-  if (elPnlAmount) elPnlAmount.textContent = `${realizedPnL >= 0 ? '+' : ''}${fmtUSD(realizedPnL)}`;
-  if (elPnlPct) elPnlPct.textContent = `(${realizedPnL >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`;
+  if (elPnlAmount) {
+    elPnlAmount.textContent = realizedMeasured
+      ? `${realizedPnL >= 0 ? '+' : ''}${fmtUSD(realizedPnL)}`
+      : '--';
+  }
+  if (elPnlPct) {
+    elPnlPct.textContent = realizedMeasured
+      ? `(${realizedPnL >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)`
+      : '(unmeasured)';
+  }
   if (elPnlPill) {
     elPnlPill.className = `broker-pnl-pill ${realizedPnL >= 0 ? 'positive' : 'negative'}`;
   }
@@ -1139,8 +1158,9 @@ function renderBrokerPortfolioOverview(kpi, status) {
   const activePairs = (kpi.funnel?.graduated || []).length;
   const n = ta.n_closes ?? (ta.closes_count || 0);
   const winRate = ta.win_rate != null && n > 0 ? (ta.win_rate * 100).toFixed(1) : '0.0';
-  const wins = ta.wins ?? 0;
-  const losses = ta.losses ?? 0;
+  // A count the payload did not carry is unknown, not zero.
+  const wins = ta.wins == null ? null : ta.wins;
+  const losses = ta.losses == null ? null : ta.losses;
   const expectancy = ta.expectancy_usd != null && n > 0 ? fmtUSD(ta.expectancy_usd) : '$0.000';
   const profitFactor = ta.profit_factor != null && n > 0 ? `${ta.profit_factor.toFixed(2)}x` : '0.00x';
   const sharpe = ta.sharpe_ratio != null && n > 0 ? ta.sharpe_ratio.toFixed(2) : '0.00';
@@ -1164,7 +1184,10 @@ function renderBrokerPortfolioOverview(kpi, status) {
   if (elSpread) elSpread.textContent = `${realizedPnL >= 0 ? '+' : ''}${fmtUSD(realizedPnL)}`;
   if (elExpectancy) elExpectancy.textContent = `Avg ${expectancy} / close`;
   if (elWinrate) elWinrate.textContent = `${winRate}%`;
-  if (elWins) elWins.textContent = `${wins} Wins / ${losses} Flat`;
+  if (elWins) {
+    elWins.textContent = `${wins == null ? '--' : wins} Wins / `
+      + `${losses == null ? '--' : losses} Flat`;
+  }
   if (elPf) elPf.innerHTML = `${profitFactor} <span style="font-size:10px;color:var(--text-muted);font-weight:500">· SR ${sharpe}</span>`;
 
   // Render Line Chart
@@ -2322,8 +2345,8 @@ function decisionGatesRows(ta, stats, n, kpi) {
   const required = ta.required_observations != null ? Number(ta.required_observations) : 120;
   const progressPct = required > 0 ? Math.min(100, Math.round((n / required) * 100)) : 0;
   const sweetSpot = stats?.probability_bell?.sweet_spot_pct;
-  const markoutSamples = Number(
-    markout.markout_samples ?? ta.markout_samples ?? 0);
+  const samplesRaw = markout.markout_samples ?? ta.markout_samples;
+  const markoutSamples = samplesRaw == null ? null : Number(samplesRaw);
   const driftRaw = markout.adverse_selection ?? ta.adverse_selection;
   const drift = driftRaw != null ? Number(driftRaw) : null;
   // The baseline-corrected figure, when the sampler recorded peers for it.
@@ -2340,7 +2363,7 @@ function decisionGatesRows(ta, stats, n, kpi) {
   const powerState = n >= required ? 'go' : (n > 0 ? 'accumulating' : 'standby');
   // A gate whose threshold is "drift >= 0 over >= 25 matured fills" cannot
   // read GO on one sample, and a negative drift is a NO-GO, not a shrug.
-  const markoutState = markoutSamples <= 0
+  const markoutState = (markoutSamples == null || markoutSamples <= 0)
     ? 'standby'
     : (drift != null && drift < 0
         ? 'nogo'
@@ -2395,7 +2418,7 @@ function decisionGatesRows(ta, stats, n, kpi) {
         ? `${markoutSamples} samples · ${(drift * 100).toFixed(2)}¢/share`
           + (excess != null ? ` (excess ${(excess * 100).toFixed(2)}¢)` : '')
         : `${markoutSamples} samples`,
-      measured: markoutSamples > 0,
+      measured: markoutSamples != null && markoutSamples > 0,
       state: markoutState,
     },
     {
@@ -3120,7 +3143,8 @@ function trackerCard(tracker) {
     + `${tracker.days.toFixed(1)}d/${t.min_days ?? '--'} · `
     + `${tracker.unique_markets}/${t.min_unique ?? '--'} markets · `
     + `${tracker.small_margin}/${t.min_small_margin ?? '--'} near · `
-    + `${Math.round((tracker.stability || 0) * 100)}%/${Math.round((t.min_stability ?? 0) * 100)}% stable`
+    + `${Math.round((tracker.stability || 0) * 100)}%/`
+    + `${t.min_stability == null ? '--' : Math.round(t.min_stability * 100) + '%'} stable`
     + `</span>`;
 }
 

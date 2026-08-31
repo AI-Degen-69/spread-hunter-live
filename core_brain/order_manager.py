@@ -1274,9 +1274,16 @@ def merge(condition_id: str,
 
     # Routing, before anything is encoded or signed. `neg_risk` may be passed by
     # a caller that already knows (the fleet holds a LiveMarket); otherwise it
-    # is read here.
+    # is read from the venue -- but only on the live path. A dry run makes no
+    # network call by contract, so an unprovided flag stays unknown there and
+    # is reported as deferred rather than refused: the check that protects the
+    # money happens where the money is spent.
+    routing_deferred = False
     if neg_risk is None:
-        neg_risk = resolve_neg_risk(condition_id)
+        if live:
+            neg_risk = resolve_neg_risk(condition_id)
+        else:
+            routing_deferred = True
     try:
         call_target = merge_target(neg_risk)
     except ValueError:
@@ -1345,32 +1352,6 @@ def merge(condition_id: str,
     # preview reports exactly what --live would do. A preview that succeeds where
     # --live refuses manufactures false confidence in the operator.
     guard_failures: list[str] = []
-    if call_target is None:
-        guard_failures.append(
-            f"Cannot determine the negRisk flag for {condition_id}, so the merge "
-            f"has no routable target: a negRisk market merges through the NegRisk "
-            f"collateral adapter and the CTF call would revert. Retry, or pass the "
-            f"flag explicitly."
-        )
-    elif funder:
-        # Routing the call correctly is half of it. The adapter also has to be
-        # an approved operator for our conditional tokens, and a wallet that
-        # has only ever merged standard markets has never approved the negRisk
-        # adapter -- so the first negRisk merge would revert on approval.
-        approved = is_approved_for_all(funder, call_target)
-        if approved is False:
-            guard_failures.append(
-                f"{funder} has not approved {call_target} as an operator on the "
-                f"CTF, so this merge would revert. Call setApprovalForAll on the "
-                f"CTF for that contract first."
-            )
-        elif approved is None:
-            guard_failures.append(
-                f"Could not read whether {funder} has approved {call_target} as "
-                f"an operator (every RPC endpoint failed). Unapproved and "
-                f"unreadable are different states, and this refuses rather than "
-                f"submitting a merge that may revert."
-            )
     if balance_error is not None:
         guard_failures.append(
             f"{balance_error}. Holdings are unknown, not zero -- refusing rather "
@@ -1401,10 +1382,44 @@ def merge(condition_id: str,
 
     routing = ("negRisk -> NegRisk collateral adapter" if neg_risk
                else "standard -> CTF" if neg_risk is False
-               else "UNKNOWN")
+               else "not read in a dry run; pass --neg-risk to preview the target"
+               if routing_deferred else "UNKNOWN")
+    # Routing and approval are LIVE concerns and are checked last: a market
+    # that is already resolved, or a balance we do not hold, makes the merge
+    # wrong regardless of which contract it would have gone to, and that is the
+    # more useful thing to tell the operator first.
+    if live:
+        if call_target is None:
+            guard_failures.append(
+                f"Cannot determine the negRisk flag for {condition_id}, so the merge "
+                f"has no routable target: a negRisk market merges through the NegRisk "
+                f"collateral adapter and the CTF call would revert. Retry, or pass the "
+                f"flag explicitly."
+            )
+        elif funder:
+            # Routing the call correctly is half of it. The adapter also has to
+            # be an approved operator for our conditional tokens, and a wallet
+            # that has only ever merged standard markets has never approved the
+            # negRisk adapter -- so the first negRisk merge would revert on
+            # approval rather than on routing.
+            approved = is_approved_for_all(funder, call_target)
+            if approved is False:
+                guard_failures.append(
+                    f"{funder} has not approved {call_target} as an operator on the "
+                    f"CTF, so this merge would revert. Call setApprovalForAll on the "
+                    f"CTF for that contract first."
+                )
+            elif approved is None:
+                guard_failures.append(
+                    f"Could not read whether {funder} has approved {call_target} as "
+                    f"an operator (every RPC endpoint failed). Unapproved and "
+                    f"unreadable are different states, and this refuses rather than "
+                    f"submitting a merge that may revert."
+                )
+
     print("action          MERGE (gasless via Polymarket Relayer)")
     print(f"neg_risk        {neg_risk if neg_risk is not None else 'unknown'} ({routing})")
-    print(f"target          {call_target or '(unroutable)'}")
+    print(f"target          {call_target or ('(read on --live)' if routing_deferred else '(unroutable)')}")
     print(f"safe_funder     {funder or '(POLY_FUNDER not set)'}")
     print(f"signer_eoa      {signer or '(POLY_PRIVATE_KEY not set)'}")
     print(f"condition_id    {condition_id}")

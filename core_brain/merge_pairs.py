@@ -22,6 +22,36 @@ from eth_utils import keccak
 # mergePositions; the payout read and the relayer payload also target it, so
 # live_exec imports this constant rather than defining a second copy.
 CTF_CONTRACT = "0x4D97DCd97eC945f40cF65F87097ACe5EA0476045"
+
+# A negative-risk market does not merge on the CTF. Polymarket routes it
+# through its own collateral adapter, and calling the wrong contract reverts --
+# which for us means a pair that assembled and then cannot be closed until the
+# market resolves, the one state this strategy exists to avoid.
+#
+# Addresses from the Polymarket docs' "Merge Positions" steps: approve
+# `setApprovalForAll` on the adapter for the market type, then call
+# `mergePositions` on that same adapter. The ABI is the CTF's, unchanged, so
+# `encode_merge_positions` needs no variant -- only the call `target` differs.
+#
+# The CLOB v1 Neg Risk Adapter (0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296) is
+# deprecated as of 2026-07-14 and is deliberately NOT used here.
+NEG_RISK_CTF_COLLATERAL_ADAPTER = "0xadA2005600Dec949baf300f4C6120000bDB6eAab"
+
+
+def merge_target(neg_risk: bool | None) -> str:
+    """Which contract a merge for this market must be sent to.
+
+    `None` is not `False`. A market whose negRisk flag could not be read is a
+    market whose routing is unknown, and guessing has exactly one failure mode:
+    a reverted merge on a pair we are already holding. Raise instead.
+    """
+    if neg_risk is None:
+        raise ValueError(
+            "cannot route a merge without the market's negRisk flag: a negRisk "
+            "market must merge through the NegRisk collateral adapter and the "
+            "CTF call would revert"
+        )
+    return NEG_RISK_CTF_COLLATERAL_ADAPTER if neg_risk else CTF_CONTRACT
 # Collateral token (USDC.e on Polygon) and the empty bytes32 parent collection.
 USDC_E_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
 ZERO_BYTES32 = "0x0000000000000000000000000000000000000000000000000000000000000000"
@@ -138,8 +168,14 @@ def encode_merge_positions(collateral_token: str, parent_collection_id: str,
     return "0x" + selector + p_col + p_parent + p_cond + offset + p_amount + len_idx + elem_idx
 
 
-def build_redeem_typed_data(funder: str, nonce: int, deadline: int, call_data: str) -> tuple[dict, dict, dict]:
-    """Build EIP-712 typed data structures for DepositWallet.Batch."""
+def build_redeem_typed_data(funder: str, nonce: int, deadline: int, call_data: str,
+                            target: str = CTF_CONTRACT) -> tuple[dict, dict, dict]:
+    """Build EIP-712 typed data structures for DepositWallet.Batch.
+
+    `target` is the contract the batch call is sent to. It defaults to the CTF
+    -- redeem's contract, and a standard market's merge -- and is passed
+    explicitly for a negRisk merge, which routes through the adapter.
+    """
     domain = {
         "name": "DepositWallet",
         "version": "1",
@@ -166,7 +202,7 @@ def build_redeem_typed_data(funder: str, nonce: int, deadline: int, call_data: s
         "deadline": int(deadline),
         "calls": [
             {
-                "target": CTF_CONTRACT,
+                "target": target,
                 "value": 0,
                 "data": call_bytes,
             }
@@ -175,9 +211,14 @@ def build_redeem_typed_data(funder: str, nonce: int, deadline: int, call_data: s
     return domain, types, message
 
 
-def sign_redeem_transaction(key: str, funder: str, nonce: int, deadline: int, call_data: str) -> tuple[str, str]:
-    """Sign DepositWallet EIP-712 Batch transaction with EOA key."""
-    domain, types, message = build_redeem_typed_data(funder, nonce, deadline, call_data)
+def sign_redeem_transaction(key: str, funder: str, nonce: int, deadline: int, call_data: str,
+                            target: str = CTF_CONTRACT) -> tuple[str, str]:
+    """Sign DepositWallet EIP-712 Batch transaction with EOA key.
+
+    The signature covers the call `target`, so a merge signed for the CTF
+    cannot be replayed against the adapter, or the other way round.
+    """
+    domain, types, message = build_redeem_typed_data(funder, nonce, deadline, call_data, target)
     typed = encode_typed_data(domain_data=domain, message_types=types, message_data=message)
     signer_acc = Account.from_key(key)
     signed = signer_acc.sign_message(typed)

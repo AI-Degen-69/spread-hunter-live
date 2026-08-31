@@ -41,6 +41,12 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <!-- KaTeX typesets the hypothesis notation in the decision-gates panel. Both
+       files are optional by design: `typesetMath` leaves the element's Unicode
+       fallback text in place when the library did not load, so a dashboard on a
+       box with no internet reads `H₁: μ > 0` rather than raw LaTeX. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
   <link rel="stylesheet" href="/static/styles.css">
 </head>
 <body>
@@ -355,7 +361,7 @@
         <div id="card-position-returns-dist" class="card stats-chart-card featured-dist-card" data-section="distributions" style="grid-column: 1 / -1;">
           <div class="stats-chart-head" style="flex-wrap:wrap;gap:12px;align-items:flex-start">
             <div>
-              <div class="font-display" style="font-size:14px;letter-spacing:0.04em">POSITION RETURN DISTRIBUTION &amp; STATISTICAL EXPECTANCY (𝒩(μ, σ²))</div>
+              <div class="font-display" style="font-size:14px;letter-spacing:0.04em">POSITION RETURN DISTRIBUTION &amp; STATISTICAL EXPECTANCY (<span class="math-inline" data-math="\mathcal{N}(\mu, \sigma^2)">N(μ, σ²)</span>)</div>
               <div style="font-size:11px;color:var(--text-muted)">Empirical density across all executed positions (Merged round-trips &amp; single unwinds) with normal distribution curve &amp; confidence interval band</div>
             </div>
             <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">

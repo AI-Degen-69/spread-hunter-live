@@ -2261,6 +2261,170 @@ function renderMarkoutChart(stats) {
   }
 }
 
+// STATISTICAL DECISION GATES.
+//
+// Four verdict states, and every one of them has to be visible: GO (green),
+// NO-GO (red), ACCUMULATING (amber), STANDBY (neutral). The panel used to emit
+// a `stopped` class with no CSS rule behind it, so STANDBY rendered as
+// unstyled text and could not be told from a caption.
+const GATE_VERDICTS = {
+  go: { cls: 'go', label: 'GO' },
+  confirmed: { cls: 'go', label: 'GO (CONFIRMED)' },
+  active: { cls: 'go', label: 'ACTIVE RULE' },
+  nogo: { cls: 'nogo', label: 'NO-GO' },
+  accumulating: { cls: 'accumulating', label: 'ACCUMULATING' },
+  standby: { cls: 'standby', label: 'STANDBY' },
+};
+
+function gateBadge(state) {
+  const verdict = GATE_VERDICTS[state] || GATE_VERDICTS.standby;
+  return `<span class="analytics-gate-badge ${verdict.cls}">${verdict.label}</span>`;
+}
+
+// A value nobody has measured is not a value. Printing a plausible number for
+// an unmeasured gate is how a panel that reads GO ends up describing a run
+// that produced no observations at all.
+function gateObserved(text, measured) {
+  return `<td class="gate-observed">${measured ? esc(String(text)) : '<span class="analytics-unmeasured">unmeasured</span>'}</td>`;
+}
+
+// `data-math` carries the LaTeX; the element's text is the Unicode fallback
+// that stays put when KaTeX did not load. Never raw LaTeX on screen.
+function mathSpan(tex, fallback) {
+  return `<span class="math-inline" data-math="${esc(tex)}">${esc(fallback)}</span>`;
+}
+
+function typesetMath(root) {
+  const scope = root || document;
+  const nodes = scope.querySelectorAll ? scope.querySelectorAll('[data-math]') : [];
+  if (!nodes.length) return;
+  const katex = (typeof window !== 'undefined') ? window.katex : undefined;
+  if (!katex || typeof katex.render !== 'function') return;
+  nodes.forEach(node => {
+    try {
+      katex.render(node.getAttribute('data-math'), node, {
+        throwOnError: false,
+        displayMode: false,
+      });
+    } catch (e) {
+      // Leave the Unicode fallback exactly where it is.
+    }
+  });
+}
+
+function decisionGatesRows(ta, stats, n) {
+  const lower = ta.ci90_lower_pct != null ? Number(ta.ci90_lower_pct) : null;
+  const winRate = ta.win_rate != null ? Number(ta.win_rate) * 100 : null;
+  const required = ta.required_observations != null ? Number(ta.required_observations) : 120;
+  const progressPct = required > 0 ? Math.min(100, Math.round((n / required) * 100)) : 0;
+  const sweetSpot = stats?.probability_bell?.sweet_spot_pct;
+  const markoutSamples = Number(ta.markout_samples || 0);
+  const drift = ta.adverse_selection != null ? Number(ta.adverse_selection) : null;
+  const drawdown = ta.max_drawdown_pct != null ? Number(ta.max_drawdown_pct) : null;
+
+  const edgeState = n >= 10 && lower != null && lower > 0
+    ? 'confirmed'
+    : (n > 0 ? 'accumulating' : 'standby');
+  const neutralityState = n >= 5 && winRate != null && winRate >= 50
+    ? 'go'
+    : (n > 0 ? 'accumulating' : 'standby');
+  const powerState = n >= required ? 'go' : (n > 0 ? 'accumulating' : 'standby');
+  // A gate whose threshold is "drift >= 0 over >= 25 matured fills" cannot
+  // read GO on one sample, and a negative drift is a NO-GO, not a shrug.
+  const markoutState = markoutSamples <= 0
+    ? 'standby'
+    : (drift != null && drift < 0
+        ? 'nogo'
+        : (markoutSamples >= 25 ? 'go' : 'accumulating'));
+  // Same correction: the drawdown gate used to read GO for any run with a
+  // close in it, including one that had blown straight through the envelope.
+  const drawdownState = n <= 0
+    ? 'standby'
+    : (drawdown != null && Math.abs(drawdown) > 5.0 ? 'nogo' : 'go');
+
+  return [
+    {
+      group: 'Constant settings',
+      name: 'Strategy Pricing Band',
+      standard: 'Implied contract probability sweet-spot filter',
+      threshold: '$0.15 &le; P &le; $0.85',
+      observed: sweetSpot != null ? `$0.15 – $0.85 (${Number(sweetSpot).toFixed(1)}% in band)` : '$0.15 – $0.85',
+      measured: true,
+      state: 'active',
+    },
+    {
+      group: 'Accumulating gates',
+      name: `Edge Viability ${mathSpan('H_1: \\mu > 0', 'H₁: μ > 0')}`,
+      standard: '90% confidence lower bound of realised spread',
+      threshold: '&gt; 0.00% (strictly positive)',
+      observed: lower != null ? `${lower.toFixed(2)}%` : '',
+      measured: n > 0 && lower != null,
+      state: edgeState,
+    },
+    {
+      name: 'Directional Neutrality (win rate)',
+      standard: 'Closed round-trips merged at $1.00',
+      threshold: '&gt; 50.0%',
+      observed: winRate != null ? `${winRate.toFixed(1)}%` : '',
+      measured: n > 0 && winRate != null,
+      state: neutralityState,
+    },
+    {
+      name: 'Statistical Power Target',
+      standard: 'Observations required to reject the null hypothesis',
+      threshold: `&ge; ${required} closes`,
+      observed: `${n} / ${required} (${progressPct}%)`,
+      measured: true,
+      state: powerState,
+    },
+    {
+      group: 'Confirmed gates',
+      name: 'Adverse Selection Markout',
+      standard: 'Post-trade price drift across the matured horizon',
+      threshold: '&ge; 25 matured fills, drift &ge; 0',
+      observed: drift != null
+        ? `${markoutSamples} samples · ${(drift * 100).toFixed(2)}¢/share`
+        : `${markoutSamples} samples`,
+      measured: markoutSamples > 0,
+      state: markoutState,
+    },
+    {
+      name: 'Max Drawdown Guard',
+      standard: 'Peak-to-trough equity degradation envelope',
+      threshold: '&le; 5.00%',
+      observed: drawdown != null ? `${drawdown.toFixed(2)}%` : '',
+      measured: n > 0 && drawdown != null,
+      state: drawdownState,
+    },
+  ];
+}
+
+function decisionGatesHtml(ta, stats, n) {
+  const rows = decisionGatesRows(ta || {}, stats || {}, n || 0);
+  let body = '';
+  for (const row of rows) {
+    if (row.group) {
+      body += `<tr class="gate-group"><th colspan="5">${esc(row.group)}</th></tr>`;
+    }
+    body += `<tr>
+      <td class="gate-name">${row.name}</td>
+      <td class="gate-standard">${row.standard}</td>
+      <td class="gate-threshold">${row.threshold}</td>
+      ${gateObserved(row.observed, row.measured)}
+      <td>${gateBadge(row.state)}</td>
+    </tr>`;
+  }
+  return `
+    <div class="section-title-row" style="margin-bottom:10px">
+      <div class="font-display" style="font-size:13px;letter-spacing:0.06em">STATISTICAL DECISION GATES &amp; HYPOTHESIS TESTING</div>
+    </div>
+    <table>
+      <thead><tr><th>Hypothesis / decision gate</th><th>Parameter &amp; standard</th><th>Required threshold</th><th>Observed value</th><th>Gate verdict</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+  `;
+}
+
 function renderAnalyticsSurface(kpi, status) {
   const grid = document.getElementById('kpi-grid');
   const gates = document.getElementById('analytics-gates');
@@ -2312,59 +2476,12 @@ function renderAnalyticsSurface(kpi, status) {
   try { renderProbabilityBellChart(stats); } catch (e) { console.error('Error rendering probability bell chart', e); }
   try { renderMarkoutChart(stats); } catch (e) { console.error('Error rendering markout chart', e); }
 
-  // Render Decision Gates Table with Strategy Pricing Band as constant parameter
-  gates.innerHTML = `
-    <div class="section-title-row" style="margin-bottom:10px">
-      <div class="font-display" style="font-size:13px;letter-spacing:0.06em">STATISTICAL DECISION GATES &amp; HYPOTHESIS TESTING</div>
-    </div>
-    <table>
-      <thead><tr><th>Hypothesis / Decision Gate</th><th>Parameter &amp; Standard</th><th>Required Threshold</th><th>Observed Value</th><th>Gate Verdict</th></tr></thead>
-      <tbody>
-        <tr>
-          <td><b>Strategy Pricing Band (Constant Setting)</b></td>
-          <td>Implied contract probability sweet spot filter</td>
-          <td>$0.15 &le; P &le; $0.85 Constant</td>
-          <td class="mono font-weight-700">$0.15 – $0.85 (82.5% In Sweet Spot)</td>
-          <td><span class="analytics-gate-badge go">ACTIVE RULE</span></td>
-        </tr>
-        <tr>
-          <td><b>Edge Viability ($H_1: \\mu &gt; 0$)</b></td>
-          <td>90% Confidence Lower Bound of Realized Spread</td>
-          <td>&gt; 0.00% (Strictly Positive)</td>
-          <td class="mono font-weight-700">${Number(lower).toFixed(2)}%</td>
-          <td><span class="analytics-gate-badge ${n >= 10 && lower > 0 ? 'go' : (n > 0 ? 'inconclusive' : 'stopped')}">${n >= 10 && lower > 0 ? 'GO (CONFIRMED)' : (n > 0 ? 'ACCUMULATING' : 'STANDBY')}</span></td>
-        </tr>
-        <tr>
-          <td><b>Directional Neutrality (Win Rate)</b></td>
-          <td>Percent of closed round-trips merged at $1.00</td>
-          <td>&gt; 50.0%</td>
-          <td class="mono font-weight-700">${n > 0 ? winRate.toFixed(1) + '%' : '0.0%'}</td>
-          <td><span class="analytics-gate-badge ${n >= 5 && winRate >= 50 ? 'go' : (n > 0 ? 'inconclusive' : 'stopped')}">${n >= 5 && winRate >= 50 ? 'GO' : (n > 0 ? 'ACCUMULATING' : 'STANDBY')}</span></td>
-        </tr>
-        <tr>
-          <td><b>Statistical Power Target</b></td>
-          <td>Statistical observations required to reject null hypothesis</td>
-          <td>&ge; 120 Closes</td>
-          <td class="mono">${n} / 120 (${progressPct}%)</td>
-          <td><span class="analytics-gate-badge ${n >= 120 ? 'go' : (n > 0 ? 'inconclusive' : 'stopped')}">${n >= 120 ? 'GO' : (n > 0 ? 'ACCUMULATING' : 'STANDBY')}</span></td>
-        </tr>
-        <tr>
-          <td><b>Adverse Selection Markout</b></td>
-          <td>Post-trade price drift across 300s horizon</td>
-          <td>&ge; 25 Matured Fills (Drift &ge; 0)</td>
-          <td class="mono">${ta.markout_samples || 0} Samples (${n > 0 ? '+2.2 bps' : '0.0 bps'})</td>
-          <td><span class="analytics-gate-badge ${ta.markout_samples > 0 ? 'go' : 'stopped'}">${ta.markout_samples > 0 ? 'GO' : 'STANDBY'}</span></td>
-        </tr>
-        <tr>
-          <td><b>Max Drawdown Guard</b></td>
-          <td>Peak-to-trough equity degradation envelope</td>
-          <td>&le; 5.00%</td>
-          <td class="mono">${ta.max_drawdown_pct && n > 0 ? fmtPct(ta.max_drawdown_pct) : '0.00%'}</td>
-          <td><span class="analytics-gate-badge ${n > 0 ? 'go' : 'stopped'}">${n > 0 ? 'GO' : 'STANDBY'}</span></td>
-        </tr>
-      </tbody>
-    </table>
-  `;
+  // Render the decision gates. The math is typeset after injection, so the
+  // Unicode fallback in each `data-math` element is what shows if KaTeX never
+  // loaded -- raw LaTeX on screen is the failure this replaced.
+  gates.innerHTML = decisionGatesHtml(ta, stats, n);
+  typesetMath(gates);
+  typesetMath(document.getElementById('tab-2'));
 
   // Update sample count in sub-nav
   const samplePill = document.getElementById('stats-live-sample-count');
@@ -3464,5 +3581,5 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity };
+  module.exports = { decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity };
 }

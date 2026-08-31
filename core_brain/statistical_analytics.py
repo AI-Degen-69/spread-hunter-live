@@ -136,16 +136,30 @@ def pair_costs(closes: Sequence[dict]) -> dict[str, Any]:
     for i in range(PAIR_COST_BINS):
         low = PAIR_COST_FLOOR + i * width
         high = low + width
-        count = sum(1 for c in costs
-                    if low <= c < high or (i == PAIR_COST_BINS - 1 and c == high))
+        count = sum(1 for c in costs if low <= c < high)
         bins.append({
             "min": round(low, 4),
             "max": round(high, 4),
             "label": f"${low:.3f}",
             "count": count,
             "density": round(count / len(costs), 6),
-            "status": "profit" if high <= PAIR_COST_CEILING else "loss",
+            "status": "profit",
         })
+
+    # THE OVERFLOW BIN. A pair assembled at or above $1.00 is a booked loss --
+    # the instrument pays exactly a dollar -- and it is the single outcome this
+    # whole strategy exists to prevent. Without a bin to land in it would fall
+    # off the end of the chart: counted in the mean, invisible in the density,
+    # which is the one place an operator would look for it.
+    over = sum(1 for c in costs if c >= PAIR_COST_CEILING)
+    bins.append({
+        "min": round(PAIR_COST_CEILING, 4),
+        "max": None,
+        "label": f"${PAIR_COST_CEILING:.2f}+",
+        "count": over,
+        "density": round(over / len(costs), 6),
+        "status": "loss",
+    })
 
     return {
         "bins": bins,

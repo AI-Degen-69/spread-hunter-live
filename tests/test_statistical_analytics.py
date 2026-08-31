@@ -133,8 +133,11 @@ def test_the_pair_cost_bins_frame_the_dollar_the_instrument_pays():
     out = pair_costs([_close(0.30)])
 
     # Act / Assert
-    assert out["bins"][0]["min"] == pytest.approx(0.90)
-    assert out["bins"][-1]["max"] == pytest.approx(1.00)
+    profit_bins = [b for b in out["bins"] if b["status"] == "profit"]
+    assert profit_bins[0]["min"] == pytest.approx(0.90)
+    assert profit_bins[-1]["max"] == pytest.approx(1.00)
+    # Plus the overflow bin for anything at or above the dollar.
+    assert out["bins"][-1]["status"] == "loss"
     assert sum(b["count"] for b in out["bins"]) == 1
 
 
@@ -377,3 +380,57 @@ def test_the_renderer_carries_no_invented_statistics():
     for invented in (": 0.42", ": 0.102", ": 0.042", "|| 0.981", "|| 0.008",
                      "|| 0.945", "|| 17"):
         assert invented not in source, f"invented statistic back in app.js: {invented}"
+
+
+def test_a_pair_at_or_over_a_dollar_lands_in_a_visible_loss_bin():
+    # Arrange — the outcome the whole strategy exists to prevent. Without a bin
+    # to land in it is counted in the mean and invisible in the density, which
+    # is the one place an operator would look for it.
+    out = pair_costs([_close(0.30, cost=5.70, shares=6.0),      # $0.95
+                      _close(-0.02, cost=6.12, shares=6.0)])    # $1.02
+
+    # Act
+    overflow = [b for b in out["bins"] if b["status"] == "loss"]
+
+    # Assert
+    assert len(overflow) == 1
+    assert overflow[0]["count"] == 1
+    assert overflow[0]["max"] is None
+    assert out["samples_count"] == 2
+    assert sum(b["count"] for b in out["bins"]) == 2
+
+
+def test_a_pair_at_exactly_a_dollar_is_a_loss_not_a_profit():
+    # Arrange — the instrument pays exactly $1.00, so a pair assembled AT the
+    # ceiling is a fill slot worth nothing.
+    out = pair_costs([_close(0.0, cost=6.00, shares=6.0)])
+
+    # Act
+    overflow = [b for b in out["bins"] if b["status"] == "loss"]
+
+    # Assert
+    assert overflow[0]["count"] == 1
+    assert all(b["count"] == 0 for b in out["bins"] if b["status"] == "profit")
+
+
+@requires_node
+def test_the_empty_state_says_unmeasured_not_zero():
+    # Arrange / Act — a column of 0.00% reads as a measured flat result.
+    rendered = _render(build([], [], [], 85.42))
+
+    # Assert
+    assert "unmeasured" in rendered["footer"]
+    assert "0.00%" not in rendered["footer"]
+    assert "unmeasured" in rendered["badge"]
+
+
+def test_the_renderer_carries_no_fabricated_analytics_copy():
+    # Arrange — the bell and markout footers were entirely hardcoded:
+    # "82.5%", "+2.2 bps @ 300s", "48 fills", "HEALTHY", "±18.0%".
+    source = _APP_JS.read_text(encoding="utf-8")
+
+    # Act / Assert
+    for invented in ("Zero Toxic Flow", "+2.2 bps @ 300s", "48 fills",
+                     "<b>50.0%</b>", "±18.0%", "1,000 Paths",
+                     "prob_positive_return * 100"):
+        assert invented not in source, f"fabricated analytics back in app.js: {invented}"

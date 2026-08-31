@@ -1561,17 +1561,17 @@ function renderPositionDistributionChart(stats) {
     }
     if (footer) {
       footer.innerHTML = `
-        <div class="chart-footer-item"><span>Sample Mean (μ):</span> <b style="color:var(--text-muted)">0.00%</b></div>
-        <div class="chart-footer-item"><span>Std Dev (σ):</span> <b>±0.00%</b></div>
-        <div class="chart-footer-item"><span>Standard Error (SE):</span> <b>0.00%</b></div>
-        <div class="chart-footer-item"><span>${currentCiLevel}% Confidence Interval:</span> <b>[0.00%, 0.00%]</b></div>
+        <div class="chart-footer-item"><span>Sample Mean (μ):</span> <b style="color:var(--text-muted)">unmeasured</b></div>
+        <div class="chart-footer-item"><span>Std Dev (σ):</span> <b>unmeasured</b></div>
+        <div class="chart-footer-item"><span>Standard Error (SE):</span> <b>unmeasured</b></div>
+        <div class="chart-footer-item"><span>${currentCiLevel}% Confidence Interval:</span> <b>unmeasured</b></div>
         <div class="chart-footer-item"><span>Distribution Sample Universe:</span> <b>N = 0 observations</b></div>
         <div class="chart-footer-item"><span>Statistical Edge:</span> <b style="color:var(--text-muted)">STANDBY (ACCUMULATING)</b></div>
       `;
     }
     if (badge) {
       badge.className = 'badge-tag stopped';
-      badge.textContent = `${currentCiLevel}% CI: [0.00%, 0.00%] · STANDBY`;
+      badge.textContent = `${currentCiLevel}% CI: unmeasured · STANDBY`;
     }
     if (banner) {
       banner.innerHTML = `
@@ -1621,7 +1621,11 @@ function renderPositionDistributionChart(stats) {
     }
     const minVal = Math.min(...rawValues);
     const maxVal = Math.max(...rawValues);
-    const maxSpread = Math.max(Math.abs(minVal - mean), Math.abs(maxVal - mean), 3.0 * stdev, 1.8);
+    // `stdev` is null when the sample is too small to have one. Feeding that
+    // into the axis maths yields NaN geometry, so the spread term drops out
+    // and the observed range sets the scale.
+    const spreadTerm = stdev != null ? 3.0 * stdev : 0;
+    const maxSpread = Math.max(Math.abs(minVal - mean), Math.abs(maxVal - mean), spreadTerm, 1.8);
     delta = Math.ceil(maxSpread * 1.15 * 10) / 10;
     unit = '%';
     formatVal = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
@@ -1637,7 +1641,8 @@ function renderPositionDistributionChart(stats) {
     }
     const minVal = Math.min(...rawValues);
     const maxVal = Math.max(...rawValues);
-    const maxSpread = Math.max(Math.abs(minVal - mean), Math.abs(maxVal - mean), 3.0 * stdev, 0.18);
+    const spreadTerm = stdev != null ? 3.0 * stdev : 0;
+    const maxSpread = Math.max(Math.abs(minVal - mean), Math.abs(maxVal - mean), spreadTerm, 0.18);
     delta = Math.ceil(maxSpread * 1.15 * 100) / 100;
     unit = '$';
     formatVal = (v) => `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(3)}`;
@@ -2138,12 +2143,16 @@ function renderMonteCarloChart(stats, cyclesCount = 100) {
 
   if (footer) {
     const endP50 = dataSteps[dataSteps.length - 1].p50;
-    const profitProb = (mc.prob_positive_return != null ? mc.prob_positive_return * 100 : 98.4).toFixed(1);
+    // `prob_positive_return` arrives as a percentage already. Multiplying it
+    // again rendered 98.4% as 9840%, and the fallback asserted a probability
+    // for a simulation that was never run.
+    const profitProb = mc.prob_positive_return != null
+      ? mc.prob_positive_return.toFixed(1) : null;
     footer.innerHTML = `
-      <div class="chart-footer-item"><span>P(Profit &gt; 0):</span> <b style="color:var(--signal)">${profitProb}%</b></div>
+      <div class="chart-footer-item"><span>P(Profit &gt; 0):</span> <b style="color:var(--signal)">${profitProb == null ? 'unmeasured' : profitProb + '%'}</b></div>
       <div class="chart-footer-item"><span>Median Return:</span> <b style="color:var(--signal)">+$${(endP50 - 100).toFixed(2)}</b></div>
-      <div class="chart-footer-item"><span>Worst-Case Drawdown:</span> <b style="color:#f87171">-${mc.worst_case_drawdown_pct || 1.85}%</b></div>
-      <div class="chart-footer-item"><span>Simulations:</span> <b>1,000 Paths</b></div>
+      <div class="chart-footer-item"><span>Worst-Case Drawdown:</span> <b style="color:#f87171">${mc.worst_case_drawdown_pct == null ? 'unmeasured' : mc.worst_case_drawdown_pct.toFixed(2) + '%'}</b></div>
+      <div class="chart-footer-item"><span>Simulations:</span> <b>${mc.paths == null ? 'unmeasured' : mc.paths.toLocaleString() + ' Paths'}</b></div>
     `;
   }
 }
@@ -2227,10 +2236,10 @@ function renderProbabilityBellChart(stats) {
 
   if (footer) {
     footer.innerHTML = `
-      <div class="chart-footer-item"><span>Mean Probability:</span> <b>50.0%</b></div>
-      <div class="chart-footer-item"><span>Std Deviation:</span> <b>±18.0%</b></div>
-      <div class="chart-footer-item"><span>Sweet Spot Concentration:</span> <b style="color:var(--signal)">82.5%</b></div>
-      <div class="chart-footer-item"><span>Model:</span> <b>Gaussian $\\mathcal{N}(0.5, 0.18^2)$</b></div>
+      <div class="chart-footer-item"><span>Mean Probability:</span> <b>${pb.mean == null ? 'unmeasured' : (pb.mean * 100).toFixed(1) + '%'}</b></div>
+      <div class="chart-footer-item"><span>Std Deviation:</span> <b>${pb.stdev == null ? 'unmeasured' : '±' + (pb.stdev * 100).toFixed(1) + '%'}</b></div>
+      <div class="chart-footer-item"><span>Sweet Spot Concentration:</span> <b style="color:var(--signal)">${pb.sweet_spot_pct == null ? 'unmeasured' : pb.sweet_spot_pct.toFixed(1) + '%'}</b></div>
+      <div class="chart-footer-item"><span>Executed Sample:</span> <b>${pb.samples_count == null ? 'unmeasured' : pb.samples_count + ' fills'}</b></div>
     `;
   }
 }
@@ -2301,11 +2310,24 @@ function renderMarkoutChart(stats) {
   `;
 
   if (footer) {
+    // Read off the horizons that actually matured. The four constants that
+    // used to sit in this footer reported a clean bill of health -- zero drift,
+    // a favourable retention figure, a sample count and a HEALTHY verdict --
+    // for a measurement nobody had taken.
+    const lastInterval = intervals.length ? intervals[intervals.length - 1] : null;
+    const maturedSamples = intervals.length
+      ? intervals.reduce((total, item) => total + (item.samples || 0), 0) : null;
+    const driftColour = lastInterval == null
+      ? 'var(--text-muted)'
+      : (lastInterval.displacement_bps < 0 ? '#f87171' : 'var(--signal)');
+    const markoutStatus = lastInterval == null
+      ? 'UNMEASURED'
+      : (lastInterval.displacement_bps < 0 ? 'ADVERSE' : 'FAVOURABLE');
     footer.innerHTML = `
-      <div class="chart-footer-item"><span>Adverse Drift:</span> <b style="color:var(--signal)">0.0 bps (Zero Toxic Flow)</b></div>
-      <div class="chart-footer-item"><span>Favorable Retention:</span> <b style="color:var(--signal)">+2.2 bps @ 300s</b></div>
-      <div class="chart-footer-item"><span>Matured Samples:</span> <b>48 fills</b></div>
-      <div class="chart-footer-item"><span>Markout Status:</span> <b style="color:var(--signal)">HEALTHY</b></div>
+      <div class="chart-footer-item"><span>Longest Horizon:</span> <b>${lastInterval == null ? 'unmeasured' : lastInterval.horizon}</b></div>
+      <div class="chart-footer-item"><span>Displacement:</span> <b style="color:${driftColour}">${lastInterval == null ? 'unmeasured' : (lastInterval.displacement_bps >= 0 ? '+' : '') + lastInterval.displacement_bps.toFixed(1) + ' bps'}</b></div>
+      <div class="chart-footer-item"><span>Matured Samples:</span> <b>${maturedSamples == null ? 'unmeasured' : maturedSamples + ' fills'}</b></div>
+      <div class="chart-footer-item"><span>Markout Status:</span> <b style="color:${driftColour}">${markoutStatus}</b></div>
     `;
   }
 }

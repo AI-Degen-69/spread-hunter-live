@@ -1149,19 +1149,91 @@ def redeem(condition_id: str, index_sets: list[int] | None = None,
 def resolve_neg_risk(condition_id: str) -> bool | None:
     """The market's negRisk flag, or None when it cannot be read.
 
-    None is the honest answer to a failed venue read, and it is not False: a
-    negRisk market merged against the CTF reverts, so a guess here costs a
-    pair that assembled and then cannot be closed until resolution.
+    Reads the CLOB market record directly rather than going through
+    `fetch_pinned_market`, which refuses a market that is closed or no longer
+    accepting orders. Those are exactly the markets a merge is for: we hold a
+    pair on a book that has stopped trading and want the dollar back. Filtering
+    them out would turn every such merge into "routing unknown" and refuse it.
+
+    None is the honest answer to a failed read, and it is not False: a negRisk
+    market merged against the CTF reverts, so a guess here costs a pair that
+    assembled and then cannot be closed until resolution.
     """
     try:
-        from core_brain.markets import fetch_pinned_market
-        market = fetch_pinned_market(condition_id, require_rewards=False)
+        from core_brain.markets import MARKET_TIMEOUT, _SESSION
+        resp = _SESSION.get(f"https://clob.polymarket.com/markets/{condition_id}",
+                            timeout=MARKET_TIMEOUT)
+        resp.raise_for_status()
+        market = resp.json()
     except Exception:
         return None
-    if market is None:
+    if not isinstance(market, dict):
         return None
-    flag = getattr(market, "neg_risk", None)
+    # Absent is unknown. A market record that never carried the key tells us
+    # nothing about routing, and defaulting it to False is the guess this
+    # function exists to refuse.
+    if "neg_risk" not in market:
+        return None
+    flag = market.get("neg_risk")
     return None if flag is None else bool(flag)
+
+
+# ERC-1155 isApprovedForAll(address,address) on the Conditional Tokens contract.
+# Selector: keccak256("isApprovedForAll(address,address)")[:4].
+_IS_APPROVED_FOR_ALL_SELECTOR = "0xe985e9c5"
+
+
+def is_approved_for_all(owner: str, operator: str,
+                        rpc_url: str | None = None) -> bool | None:
+    """Has `owner` approved `operator` to move its conditional tokens?
+
+    None means the question could not be answered -- every RPC endpoint failed
+    or the reply did not decode. Never False on a failed read: "not approved"
+    and "could not check" are different states, and only one of them is a
+    reason to say the merge would revert.
+
+    Polymarket's merge flow is `setApprovalForAll` on the adapter for the market
+    type, then `mergePositions` on that same adapter. A wallet that has only
+    ever merged standard markets has never approved the negRisk adapter, so the
+    first negRisk merge reverts on approval rather than on routing.
+    """
+    import urllib.request
+
+    if not owner or not operator:
+        return None
+    call_data = (_IS_APPROVED_FOR_ALL_SELECTOR
+                 + owner.lower().replace("0x", "").zfill(64)
+                 + operator.lower().replace("0x", "").zfill(64))
+    req_body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_call",
+        "params": [{"to": CTF_CONTRACT, "data": call_data}, "latest"],
+    }).encode("utf-8")
+
+    endpoints: list[str] = []
+    if rpc_url:
+        endpoints.append(rpc_url)
+    elif os.environ.get("POLYGON_RPC"):
+        endpoints.append(os.environ["POLYGON_RPC"])
+    endpoints.extend([ep for ep in POLYGON_RPC_ENDPOINTS if ep not in endpoints])
+
+    for ep in endpoints:
+        try:
+            req = urllib.request.Request(
+                ep,
+                data=req_body,
+                headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+            result = res.get("result")
+            if not result or result == "0x":
+                continue
+            return int(result, 16) != 0
+        except Exception:
+            continue
+    return None
 
 
 def merge(condition_id: str,
@@ -1280,6 +1352,25 @@ def merge(condition_id: str,
             f"collateral adapter and the CTF call would revert. Retry, or pass the "
             f"flag explicitly."
         )
+    elif funder:
+        # Routing the call correctly is half of it. The adapter also has to be
+        # an approved operator for our conditional tokens, and a wallet that
+        # has only ever merged standard markets has never approved the negRisk
+        # adapter -- so the first negRisk merge would revert on approval.
+        approved = is_approved_for_all(funder, call_target)
+        if approved is False:
+            guard_failures.append(
+                f"{funder} has not approved {call_target} as an operator on the "
+                f"CTF, so this merge would revert. Call setApprovalForAll on the "
+                f"CTF for that contract first."
+            )
+        elif approved is None:
+            guard_failures.append(
+                f"Could not read whether {funder} has approved {call_target} as "
+                f"an operator (every RPC endpoint failed). Unapproved and "
+                f"unreadable are different states, and this refuses rather than "
+                f"submitting a merge that may revert."
+            )
     if balance_error is not None:
         guard_failures.append(
             f"{balance_error}. Holdings are unknown, not zero -- refusing rather "

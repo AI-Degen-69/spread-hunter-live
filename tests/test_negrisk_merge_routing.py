@@ -90,28 +90,47 @@ def test_the_deprecated_v1_adapter_is_not_used():
     assert NEG_RISK_CTF_COLLATERAL_ADAPTER.lower() != deprecated.lower()
 
 
+class _Resp:
+    """Minimal stand-in for the CLOB market response."""
+
+    def __init__(self, payload):
+        self.payload = payload
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.payload
+
+
+def _venue_returns(monkeypatch, payload=None, boom=False):
+    """Point the market read at a canned CLOB record."""
+    from core_brain import markets as markets_mod
+
+    def _get(*args, **kwargs):
+        if boom:
+            raise OSError("venue unreachable")
+        return _Resp(payload)
+
+    monkeypatch.setattr(markets_mod._SESSION, "get", _get)
+
+
 def test_a_venue_read_that_fails_reports_unknown_not_standard(monkeypatch):
     # Arrange — an unreachable venue must not resolve to "standard market".
     from core_brain import order_manager as om
 
-    def _boom(*args, **kwargs):
-        raise OSError("venue unreachable")
+    _venue_returns(monkeypatch, boom=True)
 
-    monkeypatch.setattr("core_brain.markets.fetch_pinned_market", _boom)
-
-    # Act
-    flag = om.resolve_neg_risk("0xdeadbeef")
-
-    # Assert
-    assert flag is None
+    # Act / Assert
+    assert om.resolve_neg_risk("0xdeadbeef") is None
 
 
-def test_a_market_the_venue_does_not_know_reports_unknown(monkeypatch):
-    # Arrange
+def test_a_record_without_the_flag_reports_unknown(monkeypatch):
+    # Arrange — an absent key says nothing about routing, and defaulting it to
+    # False is the guess this refuses to make.
     from core_brain import order_manager as om
 
-    monkeypatch.setattr("core_brain.markets.fetch_pinned_market",
-                        lambda *a, **k: None)
+    _venue_returns(monkeypatch, payload={"condition_id": "0xdeadbeef"})
 
     # Act / Assert
     assert om.resolve_neg_risk("0xdeadbeef") is None
@@ -121,11 +140,21 @@ def test_the_flag_is_read_from_the_market_when_the_venue_answers(monkeypatch):
     # Arrange
     from core_brain import order_manager as om
 
-    class _Market:
-        neg_risk = True
+    _venue_returns(monkeypatch, payload={"neg_risk": True})
 
-    monkeypatch.setattr("core_brain.markets.fetch_pinned_market",
-                        lambda *a, **k: _Market())
+    # Act / Assert
+    assert om.resolve_neg_risk("0xdeadbeef") is True
+
+
+def test_a_closed_market_still_reports_its_routing(monkeypatch):
+    # Arrange — a merge is FOR this case: we hold a pair on a book that has
+    # stopped trading and want the dollar back. A tradability filter here would
+    # report "unknown" and refuse every such merge, leaving the pair stuck.
+    from core_brain import order_manager as om
+
+    _venue_returns(monkeypatch, payload={
+        "neg_risk": True, "closed": True, "accepting_orders": False,
+    })
 
     # Act / Assert
     assert om.resolve_neg_risk("0xdeadbeef") is True
@@ -133,14 +162,14 @@ def test_the_flag_is_read_from_the_market_when_the_venue_answers(monkeypatch):
 
 # --- the merge command itself ---------------------------------------------
 
-def _stub_merge_env(monkeypatch, neg_risk_result):
+def _stub_merge_env(monkeypatch, venue_payload=None, approved=True):
     """Everything `merge()` touches outside routing, stubbed to a no-op."""
     from core_brain import order_manager as om
 
     monkeypatch.setattr(om, "_check_idempotency_guard", lambda *a, **k: None)
     monkeypatch.setattr(om, "get_payout_denominator", lambda *a, **k: 0)
-    monkeypatch.setattr("core_brain.markets.fetch_pinned_market",
-                        lambda *a, **k: neg_risk_result)
+    monkeypatch.setattr(om, "is_approved_for_all", lambda *a, **k: approved)
+    _venue_returns(monkeypatch, payload=venue_payload)
     monkeypatch.delenv("POLY_FUNDER", raising=False)
     monkeypatch.delenv("POLY_PRIVATE_KEY", raising=False)
     return om
@@ -148,7 +177,7 @@ def _stub_merge_env(monkeypatch, neg_risk_result):
 
 def test_a_dry_run_merge_refuses_when_the_routing_is_unknown(monkeypatch, capsys):
     # Arrange — the venue read came back empty, so the target is unknown.
-    om = _stub_merge_env(monkeypatch, None)
+    om = _stub_merge_env(monkeypatch, venue_payload={"condition_id": "0xdeadbeef"})
 
     # Act
     with pytest.raises(SystemExit):
@@ -162,7 +191,7 @@ def test_a_dry_run_merge_refuses_when_the_routing_is_unknown(monkeypatch, capsys
 
 def test_a_dry_run_negrisk_merge_previews_the_adapter(monkeypatch, capsys):
     # Arrange — the caller already knows the flag, so no venue read happens.
-    om = _stub_merge_env(monkeypatch, None)
+    om = _stub_merge_env(monkeypatch)
 
     # Act
     with pytest.raises(SystemExit):
@@ -176,7 +205,7 @@ def test_a_dry_run_negrisk_merge_previews_the_adapter(monkeypatch, capsys):
 
 def test_a_dry_run_standard_merge_previews_the_ctf(monkeypatch, capsys):
     # Arrange
-    om = _stub_merge_env(monkeypatch, None)
+    om = _stub_merge_env(monkeypatch)
 
     # Act
     with pytest.raises(SystemExit):
@@ -186,3 +215,89 @@ def test_a_dry_run_standard_merge_previews_the_ctf(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert f"target          {CTF_CONTRACT}" in out
     assert "standard -> CTF" in out
+
+
+# --- operator approval on the adapter --------------------------------------
+
+def test_a_merge_refuses_when_the_target_is_not_an_approved_operator(monkeypatch, capsys):
+    # Arrange — a wallet that has only ever merged standard markets has never
+    # approved the negRisk adapter, so the first negRisk merge would revert on
+    # approval rather than on routing.
+    om = _stub_merge_env(monkeypatch, approved=False)
+    monkeypatch.setenv("POLY_FUNDER", FUNDER)
+
+    # Act
+    with pytest.raises(SystemExit):
+        om.merge("0xdeadbeef", amount=1.0, neg_risk=True, live=False)
+
+    # Assert
+    out = capsys.readouterr().out
+    assert "has not approved" in out
+    assert NEG_RISK_CTF_COLLATERAL_ADAPTER in out
+
+
+def test_an_unreadable_approval_refuses_rather_than_assuming_approved(monkeypatch, capsys):
+    # Arrange — "not approved" and "could not check" are different states.
+    om = _stub_merge_env(monkeypatch, approved=None)
+    monkeypatch.setenv("POLY_FUNDER", FUNDER)
+
+    # Act
+    with pytest.raises(SystemExit):
+        om.merge("0xdeadbeef", amount=1.0, neg_risk=True, live=False)
+
+    # Assert
+    out = capsys.readouterr().out
+    assert "Could not read whether" in out
+
+
+def test_an_approved_operator_clears_that_guard(monkeypatch, capsys):
+    # Arrange
+    om = _stub_merge_env(monkeypatch, approved=True)
+    monkeypatch.setenv("POLY_FUNDER", FUNDER)
+
+    # Act — it still refuses (no key, so balances are unknown), but not for
+    # approval.
+    with pytest.raises(SystemExit):
+        om.merge("0xdeadbeef", amount=1.0, neg_risk=True, live=False)
+
+    # Assert
+    out = capsys.readouterr().out
+    assert "has not approved" not in out
+    assert "Could not read whether" not in out
+
+
+def test_the_approval_check_reads_the_ctf_and_decodes_the_word(monkeypatch):
+    # Arrange — one canned eth_call reply per case.
+    from core_brain import order_manager as om
+
+    def _fake_urlopen(replies):
+        import contextlib, io as _io, json as _json
+
+        def _open(req, timeout=None):
+            body = _json.dumps({"jsonrpc": "2.0", "id": 1, "result": replies}).encode()
+
+            @contextlib.contextmanager
+            def _cm():
+                yield _io.BytesIO(body)
+
+            return _cm()
+
+        return _open
+
+    import urllib.request
+
+    true_word = "0x" + "0" * 63 + "1"
+    false_word = "0x" + "0" * 64
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen(true_word))
+    assert om.is_approved_for_all(FUNDER, CTF_CONTRACT) is True
+
+    monkeypatch.setattr(urllib.request, "urlopen", _fake_urlopen(false_word))
+    assert om.is_approved_for_all(FUNDER, CTF_CONTRACT) is False
+
+
+def test_an_unset_funder_cannot_be_checked(monkeypatch):
+    # Arrange / Act / Assert — no owner, no answer, and never a False.
+    from core_brain import order_manager as om
+
+    assert om.is_approved_for_all("", CTF_CONTRACT) is None

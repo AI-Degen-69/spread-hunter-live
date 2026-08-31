@@ -91,6 +91,8 @@ from core_brain.runtime_paths import legacy_runtime_file  # noqa: E402
 # core_brain.settlement; the relayer/RPC submit path stays here with the CLI verbs.
 from core_brain.merge_pairs import (
     CTF_CONTRACT,
+    NEG_RISK_CTF_COLLATERAL_ADAPTER,
+    merge_target,
     USDC_E_CONTRACT,
     ZERO_BYTES32,
     encode_merge_positions,
@@ -711,9 +713,13 @@ def get_payout_denominator(condition_id: str, rpc_url: str | None = None) -> int
 
 
 def build_redeem_submit_payload(from_addr: str, funder: str, nonce: int | str,
-                                deadline: int | str, signature: str, call_data: str) -> dict:
+                                deadline: int | str, signature: str, call_data: str,
+                                target: str = CTF_CONTRACT) -> dict:
     """Construct relayer /submit JSON payload for DepositWalletBatchRequest.
     Wire types follow @polymarket/builder-relayer-client@0.0.10 dist/types.d.ts:147-154.
+
+    `target` must match the contract the signature was produced over, and for a
+    negRisk merge that is the collateral adapter, not the CTF.
     """
     return {
         "type": "WALLET",
@@ -726,7 +732,7 @@ def build_redeem_submit_payload(from_addr: str, funder: str, nonce: int | str,
             "deadline": str(deadline),
             "calls": [
                 {
-                    "target": CTF_CONTRACT,
+                    "target": target,
                     "value": "0",
                     "data": call_data,
                 }
@@ -746,6 +752,7 @@ def _submit_and_log(
     payload: dict,
     headers: dict,
     relayer_url: str,
+    target: str = CTF_CONTRACT,
 ) -> None:
     """Submit EIP-712 batch transaction to relayer with crash-safe pre-logging and atomic status updates."""
     import urllib.request
@@ -762,7 +769,7 @@ def _submit_and_log(
         "condition_id": condition_id,
         "safe_funder": funder,
         "signer": signer_addr,
-        "target": CTF_CONTRACT,
+        "target": target,
         "call_data": call_data,
         "nonce": nonce,
         "deadline": deadline,
@@ -789,7 +796,7 @@ def _submit_and_log(
             "condition_id": condition_id,
             "safe_funder": funder,
             "signer": signer_addr,
-            "target": CTF_CONTRACT,
+            "target": target,
             "call_data": call_data,
             "nonce": nonce,
             "deadline": deadline,
@@ -825,7 +832,7 @@ def _submit_and_log(
                 "condition_id": condition_id,
                 "safe_funder": funder,
                 "signer": signer_addr,
-                "target": CTF_CONTRACT,
+                "target": target,
                 "call_data": call_data,
                 "nonce": nonce,
                 "deadline": deadline,
@@ -893,7 +900,7 @@ def _submit_and_log(
             "condition_id": condition_id,
             "safe_funder": funder,
             "signer": signer_addr,
-            "target": CTF_CONTRACT,
+            "target": target,
             "call_data": call_data,
             "nonce": nonce,
             "deadline": deadline,
@@ -1139,14 +1146,111 @@ def redeem(condition_id: str, index_sets: list[int] | None = None,
     )
 
 
+def resolve_neg_risk(condition_id: str) -> bool | None:
+    """The market's negRisk flag, or None when it cannot be read.
+
+    Reads the CLOB market record directly rather than going through
+    `fetch_pinned_market`, which refuses a market that is closed or no longer
+    accepting orders. Those are exactly the markets a merge is for: we hold a
+    pair on a book that has stopped trading and want the dollar back. Filtering
+    them out would turn every such merge into "routing unknown" and refuse it.
+
+    None is the honest answer to a failed read, and it is not False: a negRisk
+    market merged against the CTF reverts, so a guess here costs a pair that
+    assembled and then cannot be closed until resolution.
+    """
+    try:
+        from core_brain.markets import MARKET_TIMEOUT, _SESSION
+        resp = _SESSION.get(f"https://clob.polymarket.com/markets/{condition_id}",
+                            timeout=MARKET_TIMEOUT)
+        resp.raise_for_status()
+        market = resp.json()
+    except Exception:
+        return None
+    if not isinstance(market, dict):
+        return None
+    # Absent is unknown. A market record that never carried the key tells us
+    # nothing about routing, and defaulting it to False is the guess this
+    # function exists to refuse.
+    if "neg_risk" not in market:
+        return None
+    flag = market.get("neg_risk")
+    return None if flag is None else bool(flag)
+
+
+# ERC-1155 isApprovedForAll(address,address) on the Conditional Tokens contract.
+# Selector: keccak256("isApprovedForAll(address,address)")[:4].
+_IS_APPROVED_FOR_ALL_SELECTOR = "0xe985e9c5"
+
+
+def is_approved_for_all(owner: str, operator: str,
+                        rpc_url: str | None = None) -> bool | None:
+    """Has `owner` approved `operator` to move its conditional tokens?
+
+    None means the question could not be answered -- every RPC endpoint failed
+    or the reply did not decode. Never False on a failed read: "not approved"
+    and "could not check" are different states, and only one of them is a
+    reason to say the merge would revert.
+
+    Polymarket's merge flow is `setApprovalForAll` on the adapter for the market
+    type, then `mergePositions` on that same adapter. A wallet that has only
+    ever merged standard markets has never approved the negRisk adapter, so the
+    first negRisk merge reverts on approval rather than on routing.
+    """
+    import urllib.request
+
+    if not owner or not operator:
+        return None
+    call_data = (_IS_APPROVED_FOR_ALL_SELECTOR
+                 + owner.lower().replace("0x", "").zfill(64)
+                 + operator.lower().replace("0x", "").zfill(64))
+    req_body = json.dumps({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "eth_call",
+        "params": [{"to": CTF_CONTRACT, "data": call_data}, "latest"],
+    }).encode("utf-8")
+
+    endpoints: list[str] = []
+    if rpc_url:
+        endpoints.append(rpc_url)
+    elif os.environ.get("POLYGON_RPC"):
+        endpoints.append(os.environ["POLYGON_RPC"])
+    endpoints.extend([ep for ep in POLYGON_RPC_ENDPOINTS if ep not in endpoints])
+
+    for ep in endpoints:
+        try:
+            req = urllib.request.Request(
+                ep,
+                data=req_body,
+                headers={"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                res = json.loads(resp.read().decode("utf-8"))
+            result = res.get("result")
+            if not result or result == "0x":
+                continue
+            return int(result, 16) != 0
+        except Exception:
+            continue
+    return None
+
+
 def merge(condition_id: str,
           amount: float,
           index_sets: list[int] | None = None,
           collateral: str = USDC_E_CONTRACT,
           parent_collection_id: str = ZERO_BYTES32,
           force: bool = False,
+          neg_risk: bool | None = None,
           live: bool = True) -> None:
-    """Gasless merge of full outcome sets (UP + DOWN) back into USDC.e collateral."""
+    """Gasless merge of full outcome sets (UP + DOWN) back into collateral.
+
+    `neg_risk` decides which contract the call goes to: a negative-risk market
+    merges through Polymarket's NegRisk collateral adapter, everything else on
+    the CTF. Left as None it is read from the venue, and a read that fails
+    refuses the merge rather than guessing a target that would revert.
+    """
     from core_brain.config import MakerConfig
     if index_sets is None:
         index_sets = [1, 2]
@@ -1167,6 +1271,16 @@ def merge(condition_id: str,
     ]
     up_tok_id = token_ids[0] if len(token_ids) > 0 else ""
     dn_tok_id = token_ids[1] if len(token_ids) > 1 else ""
+
+    # Routing, before anything is encoded or signed. `neg_risk` may be passed by
+    # a caller that already knows (the fleet holds a LiveMarket); otherwise it
+    # is read here.
+    if neg_risk is None:
+        neg_risk = resolve_neg_risk(condition_id)
+    try:
+        call_target = merge_target(neg_risk)
+    except ValueError:
+        call_target = None
 
     funder = os.environ.get("POLY_FUNDER", "")
     key = os.environ.get("POLY_PRIVATE_KEY")
@@ -1231,6 +1345,32 @@ def merge(condition_id: str,
     # preview reports exactly what --live would do. A preview that succeeds where
     # --live refuses manufactures false confidence in the operator.
     guard_failures: list[str] = []
+    if call_target is None:
+        guard_failures.append(
+            f"Cannot determine the negRisk flag for {condition_id}, so the merge "
+            f"has no routable target: a negRisk market merges through the NegRisk "
+            f"collateral adapter and the CTF call would revert. Retry, or pass the "
+            f"flag explicitly."
+        )
+    elif funder:
+        # Routing the call correctly is half of it. The adapter also has to be
+        # an approved operator for our conditional tokens, and a wallet that
+        # has only ever merged standard markets has never approved the negRisk
+        # adapter -- so the first negRisk merge would revert on approval.
+        approved = is_approved_for_all(funder, call_target)
+        if approved is False:
+            guard_failures.append(
+                f"{funder} has not approved {call_target} as an operator on the "
+                f"CTF, so this merge would revert. Call setApprovalForAll on the "
+                f"CTF for that contract first."
+            )
+        elif approved is None:
+            guard_failures.append(
+                f"Could not read whether {funder} has approved {call_target} as "
+                f"an operator (every RPC endpoint failed). Unapproved and "
+                f"unreadable are different states, and this refuses rather than "
+                f"submitting a merge that may revert."
+            )
     if balance_error is not None:
         guard_failures.append(
             f"{balance_error}. Holdings are unknown, not zero -- refusing rather "
@@ -1259,8 +1399,12 @@ def merge(condition_id: str,
             f"Condition {condition_id} is already resolved (payoutDenominator == {denom} > 0). Use redeem instead."
         )
 
+    routing = ("negRisk -> NegRisk collateral adapter" if neg_risk
+               else "standard -> CTF" if neg_risk is False
+               else "UNKNOWN")
     print("action          MERGE (gasless via Polymarket Relayer)")
-    print(f"target_ctf      {CTF_CONTRACT}")
+    print(f"neg_risk        {neg_risk if neg_risk is not None else 'unknown'} ({routing})")
+    print(f"target          {call_target or '(unroutable)'}")
     print(f"safe_funder     {funder or '(POLY_FUNDER not set)'}")
     print(f"signer_eoa      {signer or '(POLY_PRIVATE_KEY not set)'}")
     print(f"condition_id    {condition_id}")
@@ -1292,6 +1436,8 @@ def merge(condition_id: str,
             deadline=preview_deadline,
             signature=preview_sig,
             call_data=call_data,
+            # The preview shows the contract --live would actually call.
+            target=call_target or CTF_CONTRACT,
         )
         print("\nsubmit_payload_preview (dry run - placeholder nonce/signature):")
         print(json.dumps(preview_payload, indent=2))
@@ -1338,7 +1484,8 @@ def merge(condition_id: str,
 
     # 2. Sign EIP-712 Batch transaction
     deadline = int(time.time()) + REDEEM_DEADLINE_SECONDS
-    signer_addr, signature = sign_redeem_transaction(key, funder, nonce, deadline, call_data)
+    signer_addr, signature = sign_redeem_transaction(
+        key, funder, nonce, deadline, call_data, target=call_target)
 
     # 3. Construct relayer submit payload
     payload = build_redeem_submit_payload(
@@ -1348,6 +1495,7 @@ def merge(condition_id: str,
         deadline=deadline,
         signature=signature,
         call_data=call_data,
+        target=call_target,
     )
 
     # 4. Submit and log
@@ -1362,6 +1510,7 @@ def merge(condition_id: str,
         payload=payload,
         headers=headers,
         relayer_url=relayer_url,
+        target=call_target,
     )
 
 
@@ -3052,6 +3201,10 @@ def main() -> None:
     m.add_argument("--collateral", default=USDC_E_CONTRACT, help="Collateral token (default: USDC.e)")
     m.add_argument("--force", action="store_true",
                    help="Bypass idempotency guard against prior pending/submitted/interrupted orders.")
+    m.add_argument("--neg-risk", action=argparse.BooleanOptionalAction, default=None,
+                   help="Route through the NegRisk collateral adapter (--neg-risk) or the CTF "
+                        "(--no-neg-risk). Read from the venue when omitted; an unreadable flag "
+                        "refuses the merge rather than guessing a target that would revert.")
     m.add_argument("--live", action=argparse.BooleanOptionalAction,
                default=argparse.SUPPRESS,
                help="send to venue (default: True). --no-live works before or after the subcommand.")
@@ -3189,6 +3342,7 @@ def main() -> None:
             index_sets=idx_sets,
             collateral=a.collateral,
             force=a.force,
+            neg_risk=a.neg_risk,
             live=is_live,
         )
     elif a.cmd == "probe":

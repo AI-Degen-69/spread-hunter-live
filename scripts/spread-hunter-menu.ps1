@@ -606,27 +606,45 @@ function Start-ShadowDashboard {
 function Stop-ShadowDashboard {
     <# Stop shadow dashboard we own; leaves foreign processes on :8799 alone. #>
     $inst = Get-ShadowDashInstance
+    $stopped = $false
     if ($null -ne $inst) {
         Lsh-Step "Stopping shadow dashboard PID $($inst.pid)..."
         Stop-Process -Id $inst.pid -Force -ErrorAction SilentlyContinue
         $deadline = (Get-Date).AddSeconds(10)
         while ((Get-Date) -lt $deadline -and (Test-Port)) { Start-Sleep -Milliseconds 300 }
+        if (Wait-ProcessGone -ProcessId $inst.pid) {
+            Lsh-Ok "Shadow dashboard stopped."
+            $stopped = $true
+            Remove-Item $ShadowPidFile -ErrorAction SilentlyContinue
+        } else {
+            # Keep the record: the dashboard is still ours and still running,
+            # and discarding the pidfile would orphan it from every later stop.
+            Lsh-Warn "Shadow dashboard PID $($inst.pid) did not exit; record kept."
+        }
     }
-    Remove-Item $ShadowPidFile -ErrorAction SilentlyContinue
+    if ($null -eq $inst) { Remove-Item $ShadowPidFile -ErrorAction SilentlyContinue }
     if (Test-Port) {
         # If live still occupies the port, that's expected — shadow is down but port stays LISTENING.
         $liveInst = Get-DashInstance
         if ($null -ne $liveInst) {
             Lsh-Warn "Port $ShadowPort still LISTENING (PID $(Get-PortPid)) — live dashboard still owns it."
-            return $true
+            return $stopped
         }
         Lsh-Warn "Port $ShadowPort still LISTENING (PID $(Get-PortPid)) — not owned by shadow menu, left running."
         return $false
     }
-    return $true
+    return $stopped
 }
 
 function Stop-ShadowRun {
+    <# Scope note: matching stays keyed on $ProjectPath, the same ownership
+    predicate Test-OrphanStackProcess uses, so detection and termination cannot
+    disagree about what belongs to this checkout. Every rehearsal this menu
+    launches passes an absolute --db under the project, so a menu-created
+    orphan always carries the project path and is always caught. A rehearsal
+    hand-started from a shell with a relative --db carries no project marker at
+    all and is deliberately left alone: it is not this checkout's to kill.
+    A failed scan returns $null (unknown), never $false. #>
     <# Kill the shadow rehearsal bot (shadow_run) plus its scoped stop-loss
     watcher, matched by command line inside THIS repo. Live processes never pass
     --db <per-run-shadow-db>, so the production stack is never matched. Used by the
@@ -639,12 +657,27 @@ function Stop-ShadowRun {
                 (($_.CommandLine -like "*core_brain.shadow_run*") -or `
                  ($_.CommandLine -like "*scripts.global_stop_loss*" -and ($_.CommandLine -like "*shadow_*.db*" -or $_.CommandLine -like "*shadow.db*")))
             })
-    } catch { return }
-    if ($procs.Count -eq 0) { return }
-    foreach ($p in $procs) {
-        Lsh-Step "Stopping shadow process PID $($p.ProcessId)..."
-        taskkill /F /T /PID $p.ProcessId 2>$null | Out-Null
+    } catch {
+        # An unreadable process table is not proof of an empty one. $null means
+        # "unknown" here, matching Test-OrphanStackProcess; callers must not
+        # report "nothing running" on it.
+        Lsh-Warn "Could not read the process table; shadow process scan is inconclusive."
+        return $null
     }
+    if ($procs.Count -eq 0) { return $false }
+    $killed = $false
+    foreach ($p in $procs) {
+        $what = if ($p.CommandLine -like "*core_brain.shadow_run*") { "rehearsal loop" } else { "shadow stop-loss watcher" }
+        Lsh-Step "Stopping unrecorded $what PID $($p.ProcessId)..."
+        taskkill /F /T /PID $p.ProcessId 2>$null | Out-Null
+        if (Wait-ProcessGone -ProcessId $p.ProcessId) {
+            Lsh-Ok "Unrecorded $what stopped."
+            $killed = $true
+        } else {
+            Lsh-Warn "Unrecorded $what PID $($p.ProcessId) did not exit; still running."
+        }
+    }
+    return $killed
 }
 
 function Start-TsBridge {
@@ -679,6 +712,7 @@ function Stop-TsBridge {
        this repo). The node process command line is just `node server.ts` (no
        full path), so we match on the `server.ts` token, which is unique to
        this project's bridge — the dev MCP processes never run server.ts. #>
+    $killed = $false
     try {
         $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object {
@@ -686,9 +720,17 @@ function Stop-TsBridge {
                 $_.CommandLine -and $_.CommandLine -match 'server\.ts'
             })
         foreach ($p in $procs) {
+            Lsh-Step "Stopping TS bridge PID $($p.ProcessId)..."
             taskkill /F /T /PID $p.ProcessId 2>$null | Out-Null
+            if (Wait-ProcessGone -ProcessId $p.ProcessId) {
+                Lsh-Ok "TS bridge stopped."
+                $killed = $true
+            } else {
+                Lsh-Warn "TS bridge PID $($p.ProcessId) did not exit; still running."
+            }
         }
     } catch {}
+    return $killed
 }
 
 function Open-Dashboard {
@@ -1427,6 +1469,22 @@ function Clear-RuntimeState {
     Lsh-Ok "Runtime state wiped ($removed artifact(s) removed). data/orders.db untouched."
 }
 
+function Wait-ProcessGone {
+    <# True when the PID is gone within the timeout. Every stop path in this
+    file issues a kill whose failure is suppressed (Stop-Process
+    -ErrorAction SilentlyContinue, taskkill ... 2>$null), so without this
+    check a failed or raced termination still prints [OK] and returns $true --
+    the menu then claims work it did not do, which is the fault this whole
+    shadow-stop change exists to remove. #>
+    param([int]$ProcessId, [int]$TimeoutSeconds = 10)
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Test-PidAlive -ProcessId $ProcessId)) { return $true }
+        Start-Sleep -Milliseconds 200
+    }
+    return (-not (Test-PidAlive -ProcessId $ProcessId))
+}
+
 function Kill-RecordedPid {
     <# Kill a recorded PID only when it is alive AND its start time matches the
     record, so a recycled PID is never touched. #>
@@ -1440,6 +1498,10 @@ function Kill-RecordedPid {
         }
         Lsh-Step "Stopping $Name PID $TargetPid..."
         taskkill /F /T /PID $TargetPid 2>$null | Out-Null
+        if (-not (Wait-ProcessGone -ProcessId $TargetPid)) {
+            Lsh-Warn "$Name PID $TargetPid did not exit; still running."
+            return $false
+        }
         Lsh-Ok "$Name stopped."
         return $true
     } catch {
@@ -1463,19 +1525,23 @@ function Stop-ShadowSession {
     <# Stop a menu-driven shadow session before its timebox ends: the market
     screener, the rehearsal loop (shadow_run), the stop-loss watcher, and the
     shadow viewer. Recorded PIDs are killed only when their start times match. #>
+    $killedAny = $false
     if (Test-Path $ShadowSessionFile) {
         $s = $null
         try { $s = Get-Content $ShadowSessionFile -Raw | ConvertFrom-Json } catch {}
         if ($s) {
-            if ($s.screener.pid)   { $null = Kill-RecordedPid -Name "shadow screener" -TargetPid $s.screener.pid   -StartedTicks $s.screener.started_ticks }
-            if ($s.loop.pid)       { $null = Kill-RecordedPid -Name "shadow loop"      -TargetPid $s.loop.pid       -StartedTicks $s.loop.started_ticks }
-            if ($s.watcher.pid)    { $null = Kill-RecordedPid -Name "shadow watcher"   -TargetPid $s.watcher.pid    -StartedTicks $s.watcher.started_ticks }
-            if ($s.observer.pid)   { $null = Kill-RecordedPid -Name "statistics observer" -TargetPid $s.observer.pid -StartedTicks $s.observer.started_ticks }
+            if ($s.screener.pid)   { $res = Kill-RecordedPid -Name "shadow screener" -TargetPid $s.screener.pid   -StartedTicks $s.screener.started_ticks; if ($res) { $killedAny = $true } }
+            if ($s.loop.pid)       { $res = Kill-RecordedPid -Name "shadow loop"      -TargetPid $s.loop.pid       -StartedTicks $s.loop.started_ticks; if ($res) { $killedAny = $true } }
+            if ($s.watcher.pid)    { $res = Kill-RecordedPid -Name "shadow watcher"   -TargetPid $s.watcher.pid    -StartedTicks $s.watcher.started_ticks; if ($res) { $killedAny = $true } }
+            if ($s.observer.pid)   { $res = Kill-RecordedPid -Name "statistics observer" -TargetPid $s.observer.pid -StartedTicks $s.observer.started_ticks; if ($res) { $killedAny = $true } }
         }
         Remove-Item $ShadowSessionFile -ErrorAction SilentlyContinue
     }
-    $null = Stop-TsBridge
-    $null = Stop-ShadowDashboard
+    $tsRes = Stop-TsBridge
+    if ($tsRes) { $killedAny = $true }
+    $dashRes = Stop-ShadowDashboard
+    if ($dashRes) { $killedAny = $true }
+    return $killedAny
 }
 
 function Reset-Environment {
@@ -1518,8 +1584,8 @@ function Reset-Environment {
     Lsh-Phase -Text "PHASE 2 · STOP"
     if (Test-StackAlive) {
         Stop-BotStack
-        Stop-ShadowSession   # recorded rehearsal loop + watcher + viewer
-        Stop-ShadowRun       # any unrecorded rehearsal loop still running
+        $null = Stop-ShadowSession   # recorded rehearsal loop + watcher + viewer
+        $null = Stop-ShadowRun       # any unrecorded rehearsal loop still running
         Stop-Guardrail
         $null = Stop-Dashboard
         $null = Stop-ShadowDashboard
@@ -1856,8 +1922,15 @@ function Invoke-LiveAction {
             $null = Reset-Environment -Mode "statistical"
         }
         "5" {
-            Stop-ShadowSession
-            Lsh-Ok "Shadow session stopped."
+            $sessStopped = Stop-ShadowSession
+            $runStopped = Stop-ShadowRun
+            if ($sessStopped -or ($runStopped -eq $true)) {
+                Lsh-Ok "Shadow session stopped."
+            } elseif ($null -eq $runStopped) {
+                Lsh-Warn "Shadow session stop finished, but the process scan was inconclusive; verify with option 1."
+            } else {
+                Lsh-Warn "No shadow session or process is running."
+            }
         }
         "6" {
             $null = Open-Dashboard -Mode "shadow"

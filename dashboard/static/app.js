@@ -1047,6 +1047,9 @@ function renderRunProfitability(kpi) {
  /* ── Render: KPI Tiles (DT2: empty states) ── */
 /* ── Statistical Analytics Workstation & Chart Renderers ── */
 let currentMcCycles = 100;
+// Starting capital the hero rendered with, so the chart's baseline cannot
+// drift from the one the headline was measured against.
+let lastStartingCapital = null;
 let currentTableFilter = 'all';
 let currentStatsView = 'all';
 let currentBrokerTimeframe = '1D';
@@ -1066,14 +1069,34 @@ function initBrokerPortfolioTimeframe() {
   });
 }
 
+// One basis for the whole Portfolio card: registry equity, the figure the
+// chart ends on and the gain pill is measured against. The headline used to
+// read the venue wallet mark while the chart read the registry, so under a
+// shadow run -- where simulated gains never reach the wallet -- the two
+// disagreed by exactly the run's PnL and the headline never moved.
+function portfolioEquity(kpi, status) {
+  const p = kpi?.portfolio || {};
+  const ta = kpi?.trade_analytics || {};
+  const startingCap = status?.starting_capital ?? p.starting_capital ?? 100;
+  const realizedPnL = p.realized_pnl ?? ta.total_realized_pnl ?? 0;
+  return {
+    startingCap,
+    realizedPnL,
+    totalVal: p.total_value ?? (startingCap + realizedPnL),
+    // Kept, labelled, as a secondary figure: the gap between wallet and
+    // registry equity is real information (simulated or unsettled gains), it
+    // just must not masquerade as the card's headline.
+    venueVal: p.account?.account_value_usd ?? null,
+  };
+}
+
 function renderBrokerPortfolioOverview(kpi, status) {
   if (!kpi) return;
   const p = kpi.portfolio || {};
   const ta = kpi.trade_analytics || {};
-  const startingCap = status?.starting_capital ?? p.starting_capital ?? 100;
-  const totalVal = p.account?.account_value_usd ?? p.total_value ?? (startingCap + (p.realized_pnl || 0));
-  const realizedPnL = p.realized_pnl ?? ta.total_realized_pnl ?? 0;
-  const pnlPct = (realizedPnL / startingCap) * 100;
+  const { startingCap, realizedPnL, totalVal, venueVal } = portfolioEquity(kpi, status);
+  const pnlPct = startingCap ? (realizedPnL / startingCap) * 100 : 0;
+  lastStartingCapital = startingCap;
 
   // Hero Equity & Delta
   const elEquity = document.getElementById('broker-hero-equity');
@@ -1090,8 +1113,26 @@ function renderBrokerPortfolioOverview(kpi, status) {
   }
   if (elStartCap) elStartCap.textContent = fmtUSD(startingCap);
 
+  // Venue wallet, only when it disagrees with registry equity.
+  const elWalletRow = document.getElementById('broker-venue-wallet-row');
+  const elWallet = document.getElementById('broker-venue-wallet');
+  const elWalletNote = document.getElementById('broker-venue-wallet-note');
+  const walletDiverges = venueVal !== null && venueVal !== undefined
+    && Math.abs(venueVal - totalVal) >= 0.01;
+  if (elWalletRow) elWalletRow.style.display = walletDiverges ? '' : 'none';
+  if (walletDiverges) {
+    if (elWallet) elWallet.textContent = fmtUSD(venueVal);
+    if (elWalletNote) {
+      elWalletNote.textContent = lastDbIsProduction
+        ? '— gains not settled to the wallet yet'
+        : '— simulated gains not settled';
+    }
+  }
+
   // Aligned KPI Strip
-  const cashVal = p.account?.cash_usd ?? (totalVal - (p.open_committed_usd || 0));
+  // Derived from the headline, never from the wallet mark: a cash figure on a
+  // different basis than the equity above it cannot be reconciled by eye.
+  const cashVal = totalVal - (p.open_committed_usd || 0);
   const cashPct = totalVal > 0 ? ((cashVal / totalVal) * 100).toFixed(1) : '100.0';
   const committedVal = p.open_committed_usd || (p.account?.positions_value_usd || 0);
   const committedPct = totalVal > 0 ? ((committedVal / totalVal) * 100).toFixed(1) : '0.0';
@@ -1136,8 +1177,10 @@ function renderBrokerPortfolioChart(kpi, timeframe = '1D') {
   if (!container) return;
 
   const p = kpi?.portfolio || {};
-  const startingCap = p.starting_capital || 100;
-  const currentTotal = p.total_value || p.account?.account_value_usd || startingCap;
+  // Same basis the headline and the gain pill use, so the START line, the pill
+  // and the hero cannot describe three different runs.
+  const { startingCap, totalVal: currentTotal } = portfolioEquity(
+    kpi, lastStartingCapital === null ? null : { starting_capital: lastStartingCapital });
 
   // Retrieve or synthesize timeframe series
   let series = p.timeseries ? p.timeseries[timeframe] : null;
@@ -3318,5 +3361,5 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket };
+  module.exports = { renderBrokerPortfolioOverview, portfolioEquity, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket };
 }

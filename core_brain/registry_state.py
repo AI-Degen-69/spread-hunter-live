@@ -37,6 +37,11 @@ REPO_ROOT = LIVE_ROOT
 STALE_THRESHOLD_SEC = 30.0
 
 
+# Close methods that mean the pair was merged back into $1.00 of USDC: the
+# live path writes 'merge', the shadow path 'shadow_merge'.
+MERGE_CLOSE_METHODS = ("merge", "shadow_merge")
+
+
 def _market_identity(condition_id: str, closes_by_cid: dict) -> dict:
     """Who is this market, in words a human recognises."""
     out = {"condition_id": condition_id, "title": None, "slug": None,
@@ -189,6 +194,28 @@ def summarize_state(db_path: Path | str, now: float | None = None) -> dict[str, 
                 slot["last_ts"] = max(slot["last_ts"], float(c_row["last_ts"] or 0.0))
                 slot["methods"].append(c_row["method"] or "?")
 
+        # Markets whose pair was merged back into $1.00 of USDC. The legs no
+        # longer exist as separate positions -- the merge consumed them -- so
+        # the dashboard collapses them into one finished row. Derived here and
+        # never written to `orders.status`: that column is CHECK-constrained,
+        # and 'merged' is a display state, not a venue state.
+        merged_cids = {
+            cid for cid, slot in closes_by_cid.items()
+            if any(m in MERGE_CLOSE_METHODS for m in slot["methods"])
+        }
+
+        # A shadow store records which legs a merge consumed, which is exact
+        # where the close method is only market-wide. Used when present.
+        merged_pair_ids: set[str] = set()
+        if "shadow_merge_legs" in tables:
+            try:
+                merged_pair_ids = {
+                    str(row["pair_id"]) for row in cur.execute(
+                        "SELECT DISTINCT pair_id FROM shadow_merge_legs").fetchall()
+                }
+            except sqlite3.Error:
+                merged_pair_ids = set()
+
         # Query fills
         fills_rows = []
         if "fills" in tables:
@@ -241,6 +268,17 @@ def summarize_state(db_path: Path | str, now: float | None = None) -> dict[str, 
         o["age_sec"] = max(0.0, round((now_ms - o["posted_ts"]) / 1000.0, 1))
         o["size_remaining"] = max(0.0, float(o["original_size"]) - float(o["size_matched"]))
         o["is_unattributed"] = (o.get("status") == "unattributed")
+
+        # Derived display status. Only a filled leg can have been merged; an
+        # open or cancelled order was never part of the position that closed.
+        o["is_merged"] = bool(
+            o.get("status") == "filled"
+            and (
+                (o.get("pair_id") and str(o["pair_id"]) in merged_pair_ids)
+                or o.get("condition_id") in merged_cids
+            )
+        )
+        o["display_status"] = "merged" if o["is_merged"] else o.get("status")
 
         # Committed math
         st = o["status"]

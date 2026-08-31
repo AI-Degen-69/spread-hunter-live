@@ -1,0 +1,218 @@
+"""Recent movement is measured, and can be required, before quoting (#74).
+
+24h volume says a market traded SOMETIME. It cannot say whether anything is
+happening now: the shadow run sat 4.3 hours on a market at 0.23 with 1,777
+shares ahead and zero traded, inside every existing bar the whole time, tying
+up resting capital that was never going to fill.
+
+The gate ships in RECORD-ONLY mode — `select_min_movement_usd` is 0.0, so every
+scanned market carries its measured `movement_usd` and nothing is refused until
+someone sets a bar from that evidence.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timedelta, timezone
+
+import pytest
+
+from scripts.filter_markets import _cause, evaluate, movement_reject, traded_notional
+
+NOW = 1_788_000_000.0
+WINDOW = 900.0
+
+
+class _TapeSession:
+    """A session that answers the trades endpoint with a canned payload."""
+
+    def __init__(self, payload, boom: bool = False):
+        self.payload = payload
+        self.boom = boom
+        self.calls = 0
+
+    def get(self, url, params=None, timeout=None):
+        self.calls += 1
+        if self.boom:
+            raise OSError("tape unreachable")
+        payload = self.payload
+
+        class _Resp:
+            def json(self_inner):
+                return payload
+
+        return _Resp()
+
+
+def _trade(ts: float, price: float, size: float) -> dict:
+    return {"timestamp": ts, "price": price, "size": size}
+
+
+def test_only_trades_inside_the_window_are_counted():
+    # Arrange — one print inside the 15m window, one well outside it.
+    session = _TapeSession([_trade(NOW - 60, 0.50, 100.0),
+                            _trade(NOW - 4000, 0.50, 900.0)])
+
+    # Act
+    measured = traded_notional(session, "0xmarket", window_sec=WINDOW, now_ts=NOW)
+
+    # Assert — $50 inside, the older $450 ignored.
+    assert measured == pytest.approx(50.0)
+
+
+def test_a_flat_market_measures_zero_rather_than_unknown():
+    # Arrange — the tape answered; nothing traded in the window.
+    session = _TapeSession([_trade(NOW - 7200, 0.23, 500.0)])
+
+    # Act
+    measured = traded_notional(session, "0xflat", window_sec=WINDOW, now_ts=NOW)
+
+    # Assert — zero is a measurement, and it is the one the gate acts on.
+    assert measured == 0.0
+
+
+def test_an_unreadable_tape_is_unmeasured_not_flat():
+    # Arrange
+    failed = _TapeSession(None, boom=True)
+    wrong_shape = _TapeSession({"error": "nope"})
+
+    # Act / Assert — None, never 0.0: a failed HTTP call must not read as
+    # "this market is dead".
+    assert traded_notional(failed, "0xmarket", now_ts=NOW) is None
+    assert traded_notional(wrong_shape, "0xmarket", now_ts=NOW) is None
+
+
+def test_garbage_rows_are_skipped_not_fatal():
+    # Arrange
+    session = _TapeSession([_trade(NOW - 30, 0.50, 100.0),
+                            {"timestamp": "nope", "price": "x", "size": None},
+                            "not-a-row"])
+
+    # Act
+    measured = traded_notional(session, "0xmarket", window_sec=WINDOW, now_ts=NOW)
+
+    # Assert
+    assert measured == pytest.approx(50.0)
+
+
+def test_the_gate_is_inert_at_the_shipped_record_only_bar():
+    # Arrange / Act / Assert — a stone-dead market is still admitted while the
+    # bar is 0.0, because the column exists to CHOOSE the bar.
+    assert movement_reject(0.0, min_movement_usd=0.0) == (False, "")
+
+
+def test_a_flat_market_is_refused_once_a_bar_is_set():
+    # Arrange / Act
+    flagged, reason = movement_reject(0.0, min_movement_usd=100.0, window_sec=WINDOW)
+
+    # Assert
+    assert flagged is True
+    assert "no movement" in reason
+    assert "flat" in reason
+    assert "15m" in reason
+
+
+def test_a_moving_market_clears_the_bar():
+    # Arrange / Act
+    flagged, reason = movement_reject(250.0, min_movement_usd=100.0)
+
+    # Assert
+    assert flagged is False
+    assert reason == ""
+
+
+def test_an_unmeasured_market_is_never_refused_for_movement():
+    # Arrange — the tape read failed; refusing here would empty the universe
+    # on one bad minute at the venue.
+    flagged, _ = movement_reject(None, min_movement_usd=100.0)
+
+    # Assert
+    assert flagged is False
+
+
+def test_movement_rejections_bucket_as_one_gate():
+    # Arrange — the reason carries the measured dollars, so raw text would
+    # make one dashboard card per market.
+    reasons = ["no movement: $0 traded in last 15m under $100 (flat)",
+               "no movement: $12 traded in last 15m under $100 (flat)"]
+
+    # Act / Assert
+    assert {_cause(r) for r in reasons} == {"no movement"}
+
+
+# --- the gate inside evaluate ---------------------------------------------
+
+class _MarketSession:
+    """Books for both tokens plus the tape, on one session."""
+
+    def __init__(self, tape):
+        self.tape = tape
+        self.tape_calls = 0
+
+    def get(self, url, params=None, timeout=None):
+        payload: object
+        if "trades" in url:
+            self.tape_calls += 1
+            payload = self.tape
+        else:
+            payload = {
+                "bids": [{"price": "0.48", "size": "5000"},
+                         {"price": "0.47", "size": "5000"}],
+                "asks": [{"price": "0.52", "size": "5000"},
+                         {"price": "0.53", "size": "5000"}],
+            }
+
+        class _Resp:
+            def json(self_inner):
+                return payload
+
+        return _Resp()
+
+
+def _candidate() -> dict:
+    return {
+        "condition_id": "0xliquid",
+        "question": "Will BTC close above 100k?",
+        "market_slug": "btc-100k",
+        "category": "Crypto",
+        "market_type": "",
+        "market_group": "",
+        "series_title": "Bitcoin",
+        "event_title": "Bitcoin price",
+        "tokens": [{"token_id": "111"}, {"token_id": "222"}],
+        "rewards": {"max_spread": 3.5, "min_size": 50},
+        "minimum_tick_size": 0.01,
+        # Two days out: inside the horizon gate, so the movement gate is the
+        # one under test rather than the one that fires first.
+        "end_date_iso": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+        "_order_min": 5,
+        "_spread": 0.04,
+    }
+
+
+def test_evaluate_records_the_measured_movement_on_every_row():
+    # Arrange — a market that is trading right now.
+    import time as _time
+    session = _MarketSession([_trade(_time.time() - 30, 0.50, 400.0)])
+
+    # Act
+    row = evaluate(session, 5.0, _candidate(), volume_24h=250_000.0, source="spread")
+
+    # Assert — measured and carried, so a bar can be chosen from evidence.
+    assert row is not None
+    assert row["movement_usd"] == pytest.approx(200.0)
+    assert row["movement_window_sec"] == 900.0
+    assert session.tape_calls == 1
+
+
+def test_evaluate_refuses_a_flat_market_once_the_bar_is_set(monkeypatch):
+    # Arrange — nothing has traded in the window, and enforcement is on.
+    import scripts.filter_markets as fm
+    monkeypatch.setattr(fm, "MIN_MOVEMENT_USD", 100.0)
+    session = _MarketSession([_trade(1.0, 0.23, 500.0)])
+
+    # Act
+    row = evaluate(session, 5.0, _candidate(), volume_24h=250_000.0, source="spread")
+
+    # Assert
+    assert row is not None
+    assert row["eligible"] is False
+    assert "no movement" in row["reject_reason"]

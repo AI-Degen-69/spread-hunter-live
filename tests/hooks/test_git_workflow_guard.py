@@ -98,3 +98,35 @@ def test_a_push_is_blocked_at_the_round_limit(monkeypatch):
 
     # Assert — the guard's one real block still fires after the removal.
     assert code == 2
+
+
+# --- the autofix round protocol (#43) --------------------------------------
+
+def test_round_rules_direct_the_autofix_loop():
+    # Arrange / Act
+    rules = guard.ROUND_RULES
+
+    # Assert — triage, then exactly one autofix per round, then read the commit.
+    assert "autofix" in rules
+    assert "ONE" in rules
+    assert "in flight" in rules
+
+
+def test_round_rules_no_longer_ban_the_handle_outright():
+    # Arrange — the old text forbade the handle in any comment, which would
+    # forbid the autofix trigger the loop now depends on.
+    rules = guard.ROUND_RULES
+
+    # Act / Assert
+    assert "must not appear anywhere" not in rules
+    assert "four places only" in rules
+
+
+def test_round_rules_still_enforce_one_push_and_one_summary():
+    # Arrange / Act
+    rules = guard.ROUND_RULES
+
+    # Assert — the round discipline the autofix loop rides on is unchanged.
+    assert "ONE commit and push ONCE" in rules
+    assert "ONE summary comment per round" in rules
+    assert "Never post `@coderabbitai review`" in rules

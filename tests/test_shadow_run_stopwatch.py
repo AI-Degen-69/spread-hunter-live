@@ -63,11 +63,20 @@ def test_heartbeat_is_written_with_the_fields_the_dashboard_needs(tmp_path):
     assert payload["minutes"] == 30.0
     assert payload["db_path"] == str(db.resolve())
     assert payload["finished"] is False
-    assert payload["heartbeat_ts"] >= payload["started_at"] or payload["heartbeat_ts"] > 0
+    # The interval travels with the heartbeat: dashboard/server.py sizes its
+    # stale window off it, so a writer that stopped publishing it would silently
+    # move every run to the 30s floor.
+    assert payload["interval"] == 5.0
+    assert payload["heartbeat_ts"] > 0
 
 
-def test_heartbeat_refresh_moves_the_timestamp_forward(tmp_path):
-    # Arrange
+def test_heartbeat_refresh_moves_the_timestamp_forward(tmp_path, monkeypatch):
+    # Arrange — a clock that advances a rotation between the two writes, so
+    # "refreshed" is asserted strictly rather than by wall-clock luck.
+    from core_brain import shadow_run as sr
+
+    ticks = iter([STARTED_AT + 5.0, STARTED_AT + 10.0])
+    monkeypatch.setattr(sr.time, "time", lambda: next(ticks))
     target = tmp_path / "shadow_run.json"
     kwargs = dict(db_path=tmp_path / "shadow.db", run_id="shadow-abc123",
                   minutes=30.0, interval=5.0, started_at=STARTED_AT, path=target)
@@ -79,7 +88,7 @@ def test_heartbeat_refresh_moves_the_timestamp_forward(tmp_path):
     second = json.loads(target.read_text(encoding="utf-8"))["heartbeat_ts"]
 
     # Assert
-    assert second >= first
+    assert second > first
 
 
 def test_a_fresh_heartbeat_reads_as_a_running_rehearsal(tmp_path, monkeypatch):
@@ -160,6 +169,16 @@ def test_run_shadow_publishes_and_refreshes_its_heartbeat(tmp_path, monkeypatch)
     target = tmp_path / "runtime" / "shadow_run.json"
     monkeypatch.setattr(sr, "shadow_heartbeat_path", lambda root=None: target)
 
+    # A clock that steps one rotation per read, so a run that stopped
+    # refreshing the heartbeat fails this test instead of passing on ties.
+    clock = {"t": STARTED_AT}
+
+    def tick():
+        clock["t"] += 5.0
+        return clock["t"]
+
+    monkeypatch.setattr(sr.time, "time", tick)
+
     writes: list[dict] = []
 
     def fake_loop_run(seam, **kwargs):
@@ -181,6 +200,6 @@ def test_run_shadow_publishes_and_refreshes_its_heartbeat(tmp_path, monkeypatch)
 
     # Assert — refreshed on every rotation, then marked finished on clean end.
     assert len(writes) == 2
-    assert writes[1]["heartbeat_ts"] >= writes[0]["heartbeat_ts"]
+    assert writes[1]["heartbeat_ts"] > writes[0]["heartbeat_ts"]
     assert writes[0]["finished"] is False
     assert final["finished"] is True

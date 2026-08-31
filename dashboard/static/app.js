@@ -1607,13 +1607,18 @@ function renderPositionDistributionChart(stats) {
   let formatVal = (v) => v.toFixed(2);
 
   if (currentDistMetric === 'pnl_pct') {
-    rawValues = positions.map(p => p.pnl_pct);
+    rawValues = positions.map(p => p.pnl_pct).filter(v => v != null);
     mean = pr.mean_pnl_pct != null ? pr.mean_pnl_pct : (rawValues.reduce((a,b)=>a+b,0)/rawValues.length);
-    stdev = pr.stdev_pnl_pct != null ? pr.stdev_pnl_pct : 0.42;
-    sem = pr.sem_pnl_pct != null ? pr.sem_pnl_pct : 0.102;
-    const z = currentCiLevel === 95 ? 1.96 : 1.645;
-    ciLower = mean - z * sem;
-    ciUpper = mean + z * sem;
+    // NO INVENTED SPREAD. A sample of one has a mean and no deviation, and the
+    // backend says so by omitting these. Substituting a constant here is how a
+    // single trade rendered as "90% CI [+5.10%, +5.43%] · EDGE CONFIRMED".
+    stdev = pr.stdev_pnl_pct != null ? pr.stdev_pnl_pct : null;
+    sem = pr.sem_pnl_pct != null ? pr.sem_pnl_pct : null;
+    if (sem != null) {
+      const z = currentCiLevel === 95 ? 1.96 : 1.645;
+      ciLower = mean - z * sem;
+      ciUpper = mean + z * sem;
+    }
     const minVal = Math.min(...rawValues);
     const maxVal = Math.max(...rawValues);
     const maxSpread = Math.max(Math.abs(minVal - mean), Math.abs(maxVal - mean), 3.0 * stdev, 1.8);
@@ -1621,13 +1626,15 @@ function renderPositionDistributionChart(stats) {
     unit = '%';
     formatVal = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
   } else if (currentDistMetric === 'pnl_usd') {
-    rawValues = positions.map(p => p.pnl_usd);
+    rawValues = positions.map(p => p.pnl_usd).filter(v => v != null);
     mean = pr.mean_pnl_usd != null ? pr.mean_pnl_usd : (rawValues.reduce((a,b)=>a+b,0)/rawValues.length);
-    stdev = pr.stdev_pnl_usd != null ? pr.stdev_pnl_usd : 0.042;
-    sem = pr.sem_pnl_usd != null ? pr.sem_pnl_usd : 0.010;
-    const z = currentCiLevel === 95 ? 1.96 : 1.645;
-    ciLower = mean - z * sem;
-    ciUpper = mean + z * sem;
+    stdev = pr.stdev_pnl_usd != null ? pr.stdev_pnl_usd : null;
+    sem = pr.sem_pnl_usd != null ? pr.sem_pnl_usd : null;
+    if (sem != null) {
+      const z = currentCiLevel === 95 ? 1.96 : 1.645;
+      ciLower = mean - z * sem;
+      ciUpper = mean + z * sem;
+    }
     const minVal = Math.min(...rawValues);
     const maxVal = Math.max(...rawValues);
     const maxSpread = Math.max(Math.abs(minVal - mean), Math.abs(maxVal - mean), 3.0 * stdev, 0.18);
@@ -1636,9 +1643,11 @@ function renderPositionDistributionChart(stats) {
     formatVal = (v) => `${v >= 0 ? '+' : '-'}$${Math.abs(v).toFixed(3)}`;
   } else if (currentDistMetric === 'spread_cost') {
     const pc = stats?.pair_costs || {};
-    mean = pc.mean || 0.981;
-    stdev = pc.stdev || 0.008;
-    sem = stdev / Math.sqrt(pc.samples_count || 60);
+    mean = pc.mean != null ? pc.mean : null;
+    stdev = pc.stdev != null ? pc.stdev : null;
+    sem = (stdev != null && pc.samples_count)
+      ? stdev / Math.sqrt(pc.samples_count)
+      : null;
     const z = currentCiLevel === 95 ? 1.96 : 1.645;
     ciLower = mean - z * sem;
     ciUpper = mean + z * sem;
@@ -1668,7 +1677,16 @@ function renderPositionDistributionChart(stats) {
   if (badge) {
     const isPos = ciLower > 0;
     badge.className = `badge-tag ${isPos ? 'live' : 'warn'}`;
-    badge.textContent = `${currentCiLevel}% CI: [${formatVal(ciLower)}, ${formatVal(ciUpper)}] · ${isPos ? `LOWER BOUND POSITIVE (${formatVal(ciLower)} > 0) · EDGE CONFIRMED` : 'ZERO CROSSING'}`;
+    if (sem == null) {
+      // One observation, or a metric the payload could not measure a spread
+      // for. There is no interval to state and no edge to confirm.
+      badge.className = 'badge-tag stopped';
+      badge.textContent = `${currentCiLevel}% CI: unmeasured · `
+        + `${posCount} observation${posCount === 1 ? '' : 's'} · `
+        + `NEEDS 2+ TO ESTIMATE SPREAD`;
+    } else {
+      badge.textContent = `${currentCiLevel}% CI: [${formatVal(ciLower)}, ${formatVal(ciUpper)}] · ${isPos ? `LOWER BOUND POSITIVE (${formatVal(ciLower)} > 0) · EDGE CONFIRMED` : 'ZERO CROSSING'}`;
+    }
   }
 
   const w = 620;
@@ -1852,11 +1870,11 @@ function renderPositionDistributionChart(stats) {
   if (footer) {
     footer.innerHTML = `
       <div class="chart-footer-item"><span>Sample Mean (μ):</span> <b style="color:#38bdf8">${formatVal(mean)}</b></div>
-      <div class="chart-footer-item"><span>Std Dev (σ):</span> <b>±${formatVal(stdev).replace('+', '')}</b></div>
-      <div class="chart-footer-item"><span>Standard Error (SE):</span> <b>${formatVal(sem).replace('+', '')}</b></div>
-      <div class="chart-footer-item"><span>${currentCiLevel}% Confidence Interval:</span> <b style="color:#34d399">[${formatVal(ciLower)}, ${formatVal(ciUpper)}]</b></div>
+      <div class="chart-footer-item"><span>Std Dev (σ):</span> <b>${stdev == null ? 'unmeasured' : '±' + formatVal(stdev).replace('+', '')}</b></div>
+      <div class="chart-footer-item"><span>Standard Error (SE):</span> <b>${sem == null ? 'unmeasured' : formatVal(sem).replace('+', '')}</b></div>
+      <div class="chart-footer-item"><span>${currentCiLevel}% Confidence Interval:</span> <b style="color:${sem == null ? 'var(--text-muted)' : '#34d399'}">${sem == null ? 'unmeasured' : `[${formatVal(ciLower)}, ${formatVal(ciUpper)}]`}</b></div>
       <div class="chart-footer-item"><span>Distribution Sample Universe:</span> <b>N = ${posCount} observations</b></div>
-      <div class="chart-footer-item"><span>Statistical Edge:</span> <b style="color:var(--signal)">H₁: μ &gt; 0 CONFIRMED</b></div>
+      <div class="chart-footer-item"><span>Statistical Edge:</span> <b style="color:${sem == null ? 'var(--text-muted)' : 'var(--signal)'}">${sem == null ? 'ACCUMULATING (needs 2+ observations)' : 'H₁: μ &gt; 0 CONFIRMED'}</b></div>
     `;
   }
 }
@@ -1921,8 +1939,11 @@ function renderPairCostKdeChart(stats) {
 
   const pc = stats?.pair_costs || {};
   const bins = pc.bins || [];
-  const mean = pc.mean || 0.981;
-  const stdev = pc.stdev || 0.008;
+  // No fallback constant here. The one that used to sit in this line rendered
+  // a plausible mean pair cost for a run that had assembled no pairs at all,
+  // which is a number the operator would have acted on.
+  const mean = pc.mean != null ? pc.mean : null;
+  const stdev = pc.stdev != null ? pc.stdev : null;
   const median = pc.median || 0.982;
 
   if (medianBadge && pc.median != null) medianBadge.textContent = `Median: $${median.toFixed(3)}`;
@@ -2019,10 +2040,10 @@ function renderPairCostKdeChart(stats) {
 
   if (footer) {
     footer.innerHTML = `
-      <div class="chart-footer-item"><span>Mean Cost (μ):</span> <b style="color:#38bdf8">$${mean.toFixed(3)}</b></div>
-      <div class="chart-footer-item"><span>Std Dev (σ):</span> <b>±$${stdev.toFixed(3)}</b></div>
-      <div class="chart-footer-item"><span>Min Observed:</span> <b>$${(pc.min_observed || 0.945).toFixed(3)}</b></div>
-      <div class="chart-footer-item"><span>Scanned Quote Sample Universe:</span> <b>${pc.samples_count || 60} pairs (${stats?.closed_positions?.length || 17} executed)</b></div>
+      <div class="chart-footer-item"><span>Mean Cost (μ):</span> <b style="color:#38bdf8">${mean == null ? 'unmeasured' : '$' + mean.toFixed(3)}</b></div>
+      <div class="chart-footer-item"><span>Std Dev (σ):</span> <b>${stdev == null ? 'unmeasured' : '±$' + stdev.toFixed(3)}</b></div>
+      <div class="chart-footer-item"><span>Min Observed:</span> <b>${pc.min_observed == null ? 'unmeasured' : '$' + pc.min_observed.toFixed(3)}</b></div>
+      <div class="chart-footer-item"><span>Executed Pairs:</span> <b>${pc.samples_count == null ? 'unmeasured' : pc.samples_count + ' merged'}${Array.isArray(stats?.closed_positions) ? ` (${stats.closed_positions.length} closes)` : ''}</b></div>
     `;
   }
 }
@@ -3620,5 +3641,5 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity };
+  module.exports = { renderPositionDistributionChart, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity };
 }

@@ -26,10 +26,12 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None,
                                 reason="node is not installed on this host")
 
 
-def _render(trade_analytics: dict, n: int, statistical: dict | None = None) -> dict:
+def _render(trade_analytics: dict, n: int, statistical: dict | None = None,
+            kpi: dict | None = None) -> dict:
     payload = {"trade_analytics": trade_analytics,
                "statistical_analytics": statistical or {},
-               "n": n}
+               "n": n,
+               "kpi": kpi or {}}
     out = subprocess.run([shutil.which("node"), str(HARNESS), json.dumps(payload)],
                          capture_output=True, text=True, check=True, encoding="utf-8")
     return json.loads(out.stdout)
@@ -158,3 +160,20 @@ def test_katex_is_loaded_and_the_distribution_heading_is_math():
     assert "katex.min.js" in html
     assert "katex.min.css" in html
     assert 'data-math="\\mathcal{N}(\\mu, \\sigma^2)"' in html
+
+
+def test_the_markout_row_reads_the_top_level_payload_fields():
+    # Arrange — `markout_samples` and `adverse_selection` live at the top level
+    # of the KPI payload, not inside trade_analytics. Reading only `ta` made
+    # this row report "0 samples" on runs that had measured plenty.
+    # trade_analytics deliberately carries the WRONG values, so the test fails
+    # if the renderer goes back to reading them from there.
+    ta = {**_healthy(), "markout_samples": 0, "adverse_selection": None}
+    rendered = _render(ta, 40, kpi={"markout_samples": 30,
+                                    "adverse_selection": 0.0022,
+                                    "adverse_selection_excess": 0.0009})
+
+    # Act / Assert — samples, raw drift, and the baseline-corrected figure.
+    assert "30 samples" in rendered["html"]
+    assert "0.22¢/share" in rendered["html"]
+    assert "excess 0.09¢" in rendered["html"]

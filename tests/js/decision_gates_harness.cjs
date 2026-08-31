@@ -48,8 +48,8 @@ new Function('module', 'exports', 'document', 'window', 'localStorage', 'EventSo
   mod, mod.exports, global.document, global.window, global.localStorage, global.EventSource);
 const app = mod.exports;
 
-const html = app.decisionGatesHtml(input.trade_analytics, input.statistical_analytics, input.n);
-const rows = app.decisionGatesRows(input.trade_analytics || {}, input.statistical_analytics || {}, input.n || 0);
+const html = app.decisionGatesHtml(input.trade_analytics, input.statistical_analytics, input.n, input.kpi || {});
+const rows = app.decisionGatesRows(input.trade_analytics || {}, input.statistical_analytics || {}, input.n || 0, input.kpi || {});
 
 process.stdout.write(JSON.stringify({
   html,

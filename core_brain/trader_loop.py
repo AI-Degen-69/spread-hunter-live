@@ -51,6 +51,16 @@ class LiveFleetResult:
     error: str = ""
 
 
+# Why an order was cancelled. Recorded on the row so a cancel that defended the
+# strategy can be told apart from one that threw away queue position for
+# nothing -- on shadow-02, 23 of 25 orders were cancelled with a median lifetime
+# of 37s and nothing in the registry said which kind each one was.
+CANCEL_NOT_QUOTED = "not_quoted"          # we no longer quote this token at all
+CANCEL_PRICE_MOVED = "price_moved"        # the desired price left the tolerance
+CANCEL_REGATE_PAIR_COST = "regate_pair_cost"  # holding would break max_pair_cost
+CANCEL_MARKET_DROPPED = "market_dropped"  # the market left the active universe
+
+
 def plan_orders(
     open_orders: list[dict],
     intents: list[QuoteIntent],
@@ -60,6 +70,9 @@ def plan_orders(
     cfg=None,
     hedge_asks: Optional[dict] = None,
     hedge_held: Optional[set] = None,
+    reasons: Optional[dict] = None,
+    queue_ahead: Optional[dict] = None,
+    hold_queue_shares: float = 0.0,
 ) -> tuple[list[dict], list[QuoteIntent]]:
     """Split open orders + desired intents into (cancel, submit).
 
@@ -104,6 +117,30 @@ def plan_orders(
     intent for that token IS submitted in its place. Cancelling without
     replacing would leave the market dark for a cycle on a price that is
     still quotable.
+
+    `reasons` is an optional out-parameter: pass a dict and it comes back keyed
+    by order id with one of the CANCEL_* constants. It exists because a cancel
+    with no recorded reason cannot be tuned -- see #131.
+
+    THE QUEUE HOLD. `queue_ahead` maps order id -> shares resting ahead of that
+    order at its own price, and `hold_queue_shares` is the front-of-queue
+    threshold. An order that is inside the threshold is KEPT through a price
+    move it would otherwise be re-quoted for, because under price-time priority
+    a cancel sends it to the back of a new level and the queue is what produces
+    fills here: on shadow-02 the best position of the run, 25 shares from the
+    front, was re-quoted away six seconds after it was posted.
+
+    The hold is deliberately narrow. It never applies when:
+
+      * the token is no longer quoted at all -- there is nothing to hold for;
+      * the re-gate fails -- holding would carry a completable pair over
+        `max_pair_cost`, and queue position is not worth a booked loss;
+      * the re-gate is not ARMED (`cfg` or `hedge_asks` absent) -- with nothing
+        checking the economics of a stale price, holding is an unmeasured bet.
+
+    `hold_queue_shares` ships at 0.0, which disables the hold entirely. The
+    reasons above are recorded either way, and choosing the threshold is what
+    that record is for.
     """
     tolerance = max(float(price_eps), float(dead_band))
 
@@ -111,20 +148,53 @@ def plan_orders(
     for i in intents:
         wanted.setdefault(i.token_id, []).append(i)
 
+    def _record(order: dict, reason: str) -> None:
+        if reasons is not None:
+            key = order.get("id") or order.get("order_id")
+            if key is not None:
+                reasons[str(key)] = reason
+
+    def _near_front(order: dict) -> bool:
+        """Is this order close enough to the front to be worth holding?"""
+        if not hold_queue_shares or hold_queue_shares <= 0 or not queue_ahead:
+            return False
+        key = order.get("id") or order.get("order_id")
+        ahead = queue_ahead.get(str(key)) if key is not None else None
+        if ahead is None:
+            # An unknown position is not a good one. Holding on a queue we
+            # never measured is the same guess the hold rule exists to replace.
+            return False
+        return float(ahead) <= float(hold_queue_shares)
+
     kept: dict[str, list[dict]] = {}
     to_cancel: list[dict] = []
     for o in open_orders:
         tok = o["token_id"]
         targets = wanted.get(tok)
-        if not targets or not any(
-            abs(i.price - o["price"]) <= tolerance for i in targets
-        ):
+        if not targets:
+            _record(o, CANCEL_NOT_QUOTED)
             to_cancel.append(o)
             continue
-        if (cfg is not None and hedge_asks is not None
-                and tok not in (hedge_held or ())
-                and risk.completable_pair_block(
-                    cfg, float(o["price"]), hedge_asks.get(tok))):
+
+        regate_armed = (cfg is not None and hedge_asks is not None
+                        and tok not in (hedge_held or ()))
+        regate_blocks = regate_armed and risk.completable_pair_block(
+            cfg, float(o["price"]), hedge_asks.get(tok))
+
+        if not any(abs(i.price - o["price"]) <= tolerance for i in targets):
+            # The price moved out of tolerance. This is the ONLY cancel the
+            # queue hold may override, and only with the re-gate armed and
+            # passing: something has to be checking the economics of the stale
+            # price we would be keeping.
+            if regate_armed and not regate_blocks and _near_front(o):
+                kept.setdefault(tok, []).append(o)
+                continue
+            _record(o, CANCEL_PRICE_MOVED)
+            to_cancel.append(o)
+            continue
+
+        if regate_blocks:
+            _record(o, CANCEL_REGATE_PAIR_COST)
             to_cancel.append(o)
             continue
         kept.setdefault(tok, []).append(o)
@@ -416,6 +486,9 @@ def _cancel_dropped_markets(
                 "id": o.id,
                 "side": o.side,
                 "status": o.status,
+                # Not churn and not a gate: the market left the universe, and
+                # a cancel with no recorded reason reads as either.
+                "cancel_reason": CANCEL_MARKET_DROPPED,
             }
             for o in dropped
             if o.condition_id == dropped_cid and getattr(o, "status", "") == "open"
@@ -530,10 +603,17 @@ def _visit_one(
             hedge_held.add(up_tok)
         if ev.inventory.avg("UP") > 0:
             hedge_held.add(dn_tok)
+        # Why each cancel happened, and where the order stood in its queue when
+        # it did. Both travel to the registry with the status change: a cancel
+        # with no recorded reason cannot be told from churn afterwards.
+        cancel_reasons: dict[str, str] = {}
+        queue_ahead = _queue_ahead_for(seam, open_orders)
         to_cancel, to_submit = (plan_fn or plan_orders)(
             open_orders, intents,
             dead_band=float(getattr(cfg, "requote_dead_band", 0.0)),
             cfg=cfg, hedge_asks=hedge_asks, hedge_held=hedge_held,
+            reasons=cancel_reasons, queue_ahead=queue_ahead,
+            hold_queue_shares=float(getattr(cfg, "requote_hold_queue_shares", 0.0)),
         )
     except Exception as e:
         emit_fn(service="decide", cycle=cycle, phase="quoting",
@@ -564,6 +644,12 @@ def _visit_one(
         # prevents exceeding MAX_TOTAL_USD notional exposure and avoids double
         # quoting if replacement submission occurs while stale orders rest.
         if to_cancel:
+            for row in to_cancel:
+                key = str(row.get("id") or row.get("order_id") or "")
+                if key in cancel_reasons:
+                    row["cancel_reason"] = cancel_reasons[key]
+                if queue_ahead and key in queue_ahead:
+                    row["cancel_queue_ahead"] = queue_ahead[key]
             cancelled = seam.cancel_fn(seam.client, seam.registry, to_cancel)
             if cancelled < len(to_cancel):
                 still_resting = _still_resting(seam, to_cancel)
@@ -858,6 +944,27 @@ def _submit_intents(client, registry, market, intents, cfg) -> int:
     return placed
 
 
+def _queue_ahead_for(seam, open_orders: list[dict]) -> dict:
+    """Shares resting ahead of each open order, keyed by order id.
+
+    Read from the registry's own `quotes.queue_ahead`, recorded at post time.
+    Deliberately NOT from the rehearsal's queue store: the live loop must not
+    import the shadow model, and `tests/test_shadow_run.py` enforces that line.
+    An order whose quote carried no measurement is absent from the result,
+    which the hold rule reads as "position unknown" and declines to act on.
+
+    Never raises: a queue we cannot read must not stop the rotation.
+    """
+    registry = getattr(seam, "registry", None)
+    if registry is None or not hasattr(registry, "queue_ahead_by_local_id"):
+        return {}
+    ids = [o.get("id") or o.get("order_id") for o in open_orders]
+    try:
+        return registry.queue_ahead_by_local_id(ids)
+    except Exception:
+        return {}
+
+
 def _cancel_orders(client, registry, orders) -> int:
     """Cancel resting orders and mark the matching registry rows cancelled."""
     from py_clob_client_v2.clob_types import OrderPayload
@@ -874,8 +981,11 @@ def _cancel_orders(client, registry, orders) -> int:
             continue
         for row in registry.get_active_orders():
             if row.order_id == v_id or (row_id and row.id == row_id):
-                registry.update_order_status(row.id, status="cancelled",
-                                             last_polled_ts=now_ms)
+                registry.update_order_status(
+                    row.id, status="cancelled", last_polled_ts=now_ms,
+                    cancel_reason=o.get("cancel_reason"),
+                    cancel_queue_ahead=o.get("cancel_queue_ahead"),
+                )
                 break
         cancelled += 1
     return cancelled

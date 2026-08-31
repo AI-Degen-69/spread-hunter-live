@@ -1,0 +1,100 @@
+"""Tests for the PreToolUse git workflow guard's entry point.
+
+The guard's policy checks shell out to `gh`, so they are not exercised here.
+What is covered is the contract every caller depends on: it takes no arguments,
+and unexpected input degrades to allow rather than wedging the repo.
+"""
+from __future__ import annotations
+
+import io
+import json
+import sys
+
+import pytest
+
+sys.path.insert(0, "scripts/hooks")
+
+import git_workflow_guard as guard  # noqa: E402
+
+
+def test_rejects_arguments_instead_of_hanging_on_stdin(capsys):
+    # Arrange — the retired sign-off invocation. Falling through to stdin here
+    # would block on a terminal read instead of returning.
+    argv = ["--approve", "104"]
+
+    # Act
+    code = guard.main(argv)
+
+    # Assert
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "takes no arguments" in err
+    assert "no sign-off" in err
+
+
+def test_no_merge_sign_off_api_remains():
+    # Arrange / Act / Assert — the approval gate was removed, not disabled.
+    for name in ("record_approval", "is_approved", "load_approvals", "APPROVALS"):
+        assert not hasattr(guard, name), f"{name} should have been removed"
+
+
+def test_a_merge_payload_still_reaches_the_policy_and_allows(monkeypatch):
+    """The dispatch path a removal could sever.
+
+    This change deleted `_changed_paths` and `_head_sha` from the module. Both
+    sat among the `gh`-shelling helpers the merge policy uses, so cutting one
+    too many, or cutting the argv branch such that a payload no longer reaches
+    `classify`, breaks exactly here. Driving it through `main` rather than
+    calling `check_merge` directly is what makes that reachable.
+    """
+    # Arrange
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "gh pr merge 104 --squash"},
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "104")
+
+    # Act
+    code = guard.main([])
+
+    # Assert — a merge is never blocked, for any path, and the reminder is the
+    # merge one rather than a stray fall-through.
+    assert code == 0
+
+
+def test_a_push_payload_still_reaches_the_policy(monkeypatch):
+    """Same reason as above, on the one branch that can legitimately block."""
+    # Arrange
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "git push origin some-branch"},
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "104")
+    monkeypatch.setattr(guard, "_reviews", lambda pr: ["CHANGES_REQUESTED"])
+
+    # Act
+    code = guard.main([])
+
+    # Assert — one round of findings is under the limit, so it reminds.
+    assert code == 0
+
+
+def test_a_push_is_blocked_at_the_round_limit(monkeypatch):
+    # Arrange
+    payload = {
+        "tool_name": "Bash",
+        "tool_input": {"command": "git push origin some-branch"},
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(payload)))
+    monkeypatch.setattr(guard, "_open_pr_for_head", lambda: "104")
+    monkeypatch.setattr(
+        guard, "_reviews", lambda pr: ["CHANGES_REQUESTED"] * guard.MAX_REVIEW_ROUNDS
+    )
+
+    # Act
+    code = guard.main([])
+
+    # Assert — the guard's one real block still fires after the removal.
+    assert code == 2

@@ -20,11 +20,13 @@ Their `docs/v2-ctf-ops-faq.md` lists six ways merge stops working after the V2 u
 two is contract routing: **negRisk markets must merge through `NegRiskAdapter.mergePositions`;
 standard markets call the CTF directly.** The wrong adapter reverts.
 
-Our merge path targets the CTF contract unconditionally:
+Our merge path targets the CTF contract unconditionally. The contract is chosen where the
+batch call is built, never by the calldata encoder:
 
 - [core_brain/merge_pairs.py:24](../../core_brain/merge_pairs.py) — `CTF_CONTRACT` is a module
-  constant, and [merge_pairs.py:169](../../core_brain/merge_pairs.py) hardcodes it as the batch
-  call `target`.
+  constant, and `build_redeem_typed_data` at
+  [merge_pairs.py:169](../../core_brain/merge_pairs.py) hardcodes it as the batch call `target`.
+  `encode_merge_positions` builds calldata only and picks no contract.
 - [core_brain/order_manager.py:729](../../core_brain/order_manager.py),
   [:765](../../core_brain/order_manager.py), [:792](../../core_brain/order_manager.py) — every
   merge/redeem call site passes the same constant.
@@ -168,12 +170,15 @@ Below the line: the rate-limit reference table and the two operational templates
 
 ### A. Route negRisk merges through the NegRisk adapter
 
-> **Summary.** `encode_merge_positions` and every merge/redeem call site target
-> `CTF_CONTRACT` unconditionally. Polymarket routes negRisk markets through a NegRisk adapter;
-> calling the CTF directly reverts. A negRisk pair assembled here therefore has no merge exit.
+> **Summary.** The merge and redeem submission path targets `CTF_CONTRACT` unconditionally —
+> `build_redeem_typed_data` and the three call sites in `order_manager.py` that build the batch
+> call. (`encode_merge_positions` only encodes calldata; it selects no contract.) Polymarket
+> routes negRisk markets through a NegRisk adapter; calling the CTF directly reverts, so a
+> negRisk pair assembled here has no merge exit.
 >
-> **Scope.** Read `neg_risk` (already on `LiveMarket`) at merge time and route to the adapter
-> for negRisk markets, CTF otherwise. Add the adapter address as a named constant beside
+> **Scope.** Read `neg_risk` (already on `LiveMarket`) where the batch call's `target` is
+> chosen, and route to the adapter for negRisk markets, CTF otherwise. The calldata encoder
+> stays as it is. Add the adapter address as a named constant beside
 > `CTF_CONTRACT`, verify the approvals each path needs, and refuse — loudly — to attempt a merge
 > whose routing cannot be determined, rather than sending a call that will revert.
 > Out of scope: split, redemption of resolved markets, any change to when we merge.

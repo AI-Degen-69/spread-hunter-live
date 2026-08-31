@@ -606,11 +606,14 @@ function Start-ShadowDashboard {
 function Stop-ShadowDashboard {
     <# Stop shadow dashboard we own; leaves foreign processes on :8799 alone. #>
     $inst = Get-ShadowDashInstance
+    $stopped = $false
     if ($null -ne $inst) {
         Lsh-Step "Stopping shadow dashboard PID $($inst.pid)..."
         Stop-Process -Id $inst.pid -Force -ErrorAction SilentlyContinue
         $deadline = (Get-Date).AddSeconds(10)
         while ((Get-Date) -lt $deadline -and (Test-Port)) { Start-Sleep -Milliseconds 300 }
+        Lsh-Ok "Shadow dashboard stopped."
+        $stopped = $true
     }
     Remove-Item $ShadowPidFile -ErrorAction SilentlyContinue
     if (Test-Port) {
@@ -618,12 +621,12 @@ function Stop-ShadowDashboard {
         $liveInst = Get-DashInstance
         if ($null -ne $liveInst) {
             Lsh-Warn "Port $ShadowPort still LISTENING (PID $(Get-PortPid)) — live dashboard still owns it."
-            return $true
+            return $stopped
         }
         Lsh-Warn "Port $ShadowPort still LISTENING (PID $(Get-PortPid)) — not owned by shadow menu, left running."
         return $false
     }
-    return $true
+    return $stopped
 }
 
 function Stop-ShadowRun {
@@ -635,16 +638,19 @@ function Stop-ShadowRun {
         $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop |
             Where-Object {
                 $_.Name -match '^python' -and $_.CommandLine -and `
-                ($_.CommandLine -like "*$ProjectPath*") -and `
                 (($_.CommandLine -like "*core_brain.shadow_run*") -or `
-                 ($_.CommandLine -like "*scripts.global_stop_loss*" -and ($_.CommandLine -like "*shadow_*.db*" -or $_.CommandLine -like "*shadow.db*")))
+                 ($_.CommandLine -like "*$ProjectPath*" -and $_.CommandLine -like "*scripts.global_stop_loss*" -and ($_.CommandLine -like "*shadow_*.db*" -or $_.CommandLine -like "*shadow.db*")))
             })
-    } catch { return }
-    if ($procs.Count -eq 0) { return }
+    } catch { return $false }
+    if ($procs.Count -eq 0) { return $false }
+    $killed = $false
     foreach ($p in $procs) {
         Lsh-Step "Stopping shadow process PID $($p.ProcessId)..."
         taskkill /F /T /PID $p.ProcessId 2>$null | Out-Null
+        Lsh-Ok "Shadow process stopped."
+        $killed = $true
     }
+    return $killed
 }
 
 function Start-TsBridge {
@@ -679,6 +685,7 @@ function Stop-TsBridge {
        this repo). The node process command line is just `node server.ts` (no
        full path), so we match on the `server.ts` token, which is unique to
        this project's bridge — the dev MCP processes never run server.ts. #>
+    $killed = $false
     try {
         $procs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
             Where-Object {
@@ -686,9 +693,13 @@ function Stop-TsBridge {
                 $_.CommandLine -and $_.CommandLine -match 'server\.ts'
             })
         foreach ($p in $procs) {
+            Lsh-Step "Stopping TS bridge PID $($p.ProcessId)..."
             taskkill /F /T /PID $p.ProcessId 2>$null | Out-Null
+            Lsh-Ok "TS bridge stopped."
+            $killed = $true
         }
     } catch {}
+    return $killed
 }
 
 function Open-Dashboard {
@@ -1463,19 +1474,23 @@ function Stop-ShadowSession {
     <# Stop a menu-driven shadow session before its timebox ends: the market
     screener, the rehearsal loop (shadow_run), the stop-loss watcher, and the
     shadow viewer. Recorded PIDs are killed only when their start times match. #>
+    $killedAny = $false
     if (Test-Path $ShadowSessionFile) {
         $s = $null
         try { $s = Get-Content $ShadowSessionFile -Raw | ConvertFrom-Json } catch {}
         if ($s) {
-            if ($s.screener.pid)   { $null = Kill-RecordedPid -Name "shadow screener" -TargetPid $s.screener.pid   -StartedTicks $s.screener.started_ticks }
-            if ($s.loop.pid)       { $null = Kill-RecordedPid -Name "shadow loop"      -TargetPid $s.loop.pid       -StartedTicks $s.loop.started_ticks }
-            if ($s.watcher.pid)    { $null = Kill-RecordedPid -Name "shadow watcher"   -TargetPid $s.watcher.pid    -StartedTicks $s.watcher.started_ticks }
-            if ($s.observer.pid)   { $null = Kill-RecordedPid -Name "statistics observer" -TargetPid $s.observer.pid -StartedTicks $s.observer.started_ticks }
+            if ($s.screener.pid)   { $res = Kill-RecordedPid -Name "shadow screener" -TargetPid $s.screener.pid   -StartedTicks $s.screener.started_ticks; if ($res) { $killedAny = $true } }
+            if ($s.loop.pid)       { $res = Kill-RecordedPid -Name "shadow loop"      -TargetPid $s.loop.pid       -StartedTicks $s.loop.started_ticks; if ($res) { $killedAny = $true } }
+            if ($s.watcher.pid)    { $res = Kill-RecordedPid -Name "shadow watcher"   -TargetPid $s.watcher.pid    -StartedTicks $s.watcher.started_ticks; if ($res) { $killedAny = $true } }
+            if ($s.observer.pid)   { $res = Kill-RecordedPid -Name "statistics observer" -TargetPid $s.observer.pid -StartedTicks $s.observer.started_ticks; if ($res) { $killedAny = $true } }
         }
         Remove-Item $ShadowSessionFile -ErrorAction SilentlyContinue
     }
-    $null = Stop-TsBridge
-    $null = Stop-ShadowDashboard
+    $tsRes = Stop-TsBridge
+    if ($tsRes) { $killedAny = $true }
+    $dashRes = Stop-ShadowDashboard
+    if ($dashRes) { $killedAny = $true }
+    return $killedAny
 }
 
 function Reset-Environment {
@@ -1518,8 +1533,8 @@ function Reset-Environment {
     Lsh-Phase -Text "PHASE 2 · STOP"
     if (Test-StackAlive) {
         Stop-BotStack
-        Stop-ShadowSession   # recorded rehearsal loop + watcher + viewer
-        Stop-ShadowRun       # any unrecorded rehearsal loop still running
+        $null = Stop-ShadowSession   # recorded rehearsal loop + watcher + viewer
+        $null = Stop-ShadowRun       # any unrecorded rehearsal loop still running
         Stop-Guardrail
         $null = Stop-Dashboard
         $null = Stop-ShadowDashboard
@@ -1856,8 +1871,13 @@ function Invoke-LiveAction {
             $null = Reset-Environment -Mode "statistical"
         }
         "5" {
-            Stop-ShadowSession
-            Lsh-Ok "Shadow session stopped."
+            $sessStopped = Stop-ShadowSession
+            $runStopped = Stop-ShadowRun
+            if ($sessStopped -or $runStopped) {
+                Lsh-Ok "Shadow session stopped."
+            } else {
+                Lsh-Warn "No shadow session or process is running."
+            }
         }
         "6" {
             $null = Open-Dashboard -Mode "shadow"

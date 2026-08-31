@@ -1451,8 +1451,12 @@ def merge(condition_id: str,
             deadline=preview_deadline,
             signature=preview_sig,
             call_data=call_data,
-            # The preview shows the contract --live would actually call.
-            target=call_target or CTF_CONTRACT,
+            # The preview shows the contract --live would actually call. When
+            # the routing was deferred (dry runs make no venue call), say so
+            # rather than printing the CTF, which is a target this run never
+            # resolved and may not be the one --live picks.
+            target=(call_target
+                    or ("(read on --live)" if routing_deferred else CTF_CONTRACT)),
         )
         print("\nsubmit_payload_preview (dry run - placeholder nonce/signature):")
         print(json.dumps(preview_payload, indent=2))

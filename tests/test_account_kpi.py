@@ -32,8 +32,15 @@ _STATIC_DIR = Path(__file__).resolve().parent.parent / "dashboard" / "static"
 
 
 def _read_static(filename: str) -> str:
+    """The bundle's text, or a loud failure.
+
+    Returning "" for a missing file makes every `assert x in source` pass
+    vacuously the moment a bundle is renamed or moved -- the exact silent drift
+    this suite exists to catch.
+    """
     p = _STATIC_DIR / filename
-    return p.read_text(encoding="utf-8") if p.exists() else ""
+    assert p.exists(), f"static bundle missing: {p}"
+    return p.read_text(encoding="utf-8")
 
 
 def _page_bundle() -> str:

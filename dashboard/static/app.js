@@ -1181,7 +1181,12 @@ function renderBrokerPortfolioOverview(kpi, status) {
   if (elCommitted) elCommitted.textContent = fmtUSD(committedVal);
   if (elCommittedPct) elCommittedPct.textContent = `${committedPct}% Committed Risk`;
   if (elPairs) elPairs.textContent = `${activePairs} Pairs`;
-  if (elSpread) elSpread.textContent = `${realizedPnL >= 0 ? '+' : ''}${fmtUSD(realizedPnL)}`;
+  if (elSpread) {
+    // Same rule as the hero pill: an unread realized figure is not $0.00.
+    elSpread.textContent = realizedMeasured
+      ? `${realizedPnL >= 0 ? '+' : ''}${fmtUSD(realizedPnL)}`
+      : '--';
+  }
   if (elExpectancy) elExpectancy.textContent = `Avg ${expectancy} / close`;
   if (elWinrate) elWinrate.textContent = `${winRate}%`;
   if (elWins) {

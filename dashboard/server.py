@@ -2020,6 +2020,25 @@ def _load_page_html() -> str:
 PAGE_HTML = _load_page_html()
 
 
+@app.get("/prototype", response_class=HTMLResponse)
+def prototype_page():
+    """The sidebar-pages frame prototype (#95).
+
+    Served on its own path rather than replacing `/`: this repo's dashboard is
+    the control surface for a loop that places real orders, and an empty
+    scaffold standing where the live page used to be would take that surface
+    away while the frame is still being judged. Swapping it in is a one-line
+    change to `index()` once the layout is approved.
+    """
+    page = _STATIC_DIR / "prototype.html"
+    if not page.exists():
+        raise HTTPException(status_code=404, detail="prototype page not built")
+    return HTMLResponse(
+        page.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
 @app.get("/", response_class=HTMLResponse)
 def index():
     """Serve the live operations dashboard.

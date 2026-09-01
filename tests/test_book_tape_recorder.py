@@ -91,7 +91,7 @@ def test_bucket_trades_drops_zero_volume_levels():
     assert btr.bucket_trades({"tok": {0.50: 0.0}}, {"tok": 0.505}, 0.01) == []
 
 
-def test_reachable_fraction_measures_volume_within_the_offset():
+def test_reachable_fraction_measures_volume_at_or_past_the_bid():
     # Arrange -- 100 shares at the touch, 400 above mid where a bid never reaches
     rows = [
         {"ticks_from_mid": 1, "volume": 100.0},
@@ -99,11 +99,40 @@ def test_reachable_fraction_measures_volume_within_the_offset():
     ]
 
     # Act / Assert
-    assert btr.reachable_fraction(rows, max_ticks=3) == pytest.approx(0.2)
+    assert btr.reachable_fraction(rows, ticks=1) == pytest.approx(0.2)
+
+
+def test_reachable_volume_excludes_prints_nearer_mid_than_the_bid():
+    # A market sell walks the book from the top down, so a print at tick 0
+    # filled a better-priced bid and never reached ours at tick 1. Summing
+    # from mid down to our level instead would count that 300 as reachable
+    # and make the deeper order look better than the shallower one.
+    rows = [
+        {"ticks_from_mid": 0, "volume": 300.0},
+        {"ticks_from_mid": 1, "volume": 100.0},
+    ]
+
+    assert btr.reachable_volume(rows, ticks=1) == pytest.approx(100.0)
+    assert btr.reachable_fraction(rows, ticks=1) == pytest.approx(0.25)
+
+
+def test_reachable_volume_is_monotone_decreasing_with_depth():
+    # The curve can only fall as the bid moves away from mid: every level a
+    # deeper order can be reached by, a shallower one can be reached by too.
+    rows = [
+        {"ticks_from_mid": 0, "volume": 300.0},
+        {"ticks_from_mid": 1, "volume": 100.0},
+        {"ticks_from_mid": 2, "volume": 10.0},
+    ]
+
+    got = [btr.reachable_volume(rows, ticks=k) for k in (0, 1, 2, 3)]
+
+    assert got == [410.0, 110.0, 10.0, 0.0]
+    assert got == sorted(got, reverse=True)
 
 
 def test_reachable_fraction_is_zero_on_an_empty_tape():
-    assert btr.reachable_fraction([], max_ticks=3) == 0.0
+    assert btr.reachable_fraction([], ticks=3) == 0.0
 
 
 # --- the refusal --------------------------------------------------------------
@@ -163,6 +192,21 @@ def _books(_host, token_id):
             "bids": {0.57: 700.0}, "asks": {0.58: 600.0}}
 
 
+def _taping(tapes):
+    """A `recent_trades` stand-in that marks the market seen, as the real one does.
+
+    `recent_trades` records every trade it returns in `seen`, and the recorder
+    reads that set to decide whether a pass is the bootstrap one. A fake that
+    leaves `seen` empty would report every pass as bootstrap and hide the very
+    behaviour these tests pin.
+    """
+    def fetch(cid, seen):
+        got = next(tapes)
+        seen.add(f"trade-{len(seen)}")
+        return got
+    return fetch
+
+
 def test_run_records_a_sample_and_its_tape(tmp_path):
     # Arrange
     markets = tmp_path / "markets.json"
@@ -211,7 +255,7 @@ def test_run_flags_the_first_pass_as_bootstrap(tmp_path):
     btr.run(minutes=0.1, interval=0.0, db_path=db, run_id="r",
             markets_path=markets, clob_host="https://clob.example",
             fetch_market=lambda cid: _Market(), fetch_book=_books,
-            fetch_tape=lambda cid, seen: next(tapes),
+            fetch_tape=_taping(tapes),
             now=lambda: next(clock), sleep=lambda s: None)
 
     conn = sqlite3.connect(db)
@@ -265,3 +309,38 @@ def test_sample_market_returns_none_without_two_tokens():
                             lambda cid, seen: {}, set(), "https://clob.example")
 
     assert got is None
+
+
+def test_first_successful_tape_read_is_bootstrap_after_a_failed_pass(tmp_path):
+    # A failed book fetch aborts the pass after `seen_by_cid` has the key but
+    # before any tape is read. Keying "is this the first pass" off the dict
+    # would mark the next pass live -- and that pass returns the venue's whole
+    # recent window, which would enter the reachability curve as current tape.
+    markets = tmp_path / "markets.json"
+    markets.write_text(json.dumps(
+        [{"cid": "0xabc", "slug": "mlb-a-b", "tick": 0.01}]), encoding="utf-8")
+    db = tmp_path / "booktape.db"
+    clock = iter([0.0, 0.0, 1.0, 10.0])       # start, failed pass, live pass, done
+    books = iter([ConnectionError("venue down"), None])
+
+    def flaky(host, token):
+        if token == "tok_up":
+            nxt = next(books)
+            if isinstance(nxt, Exception):
+                raise nxt
+        return _books(host, token)
+
+    btr.run(minutes=0.1, interval=0.0, db_path=db, run_id="r",
+            markets_path=markets, clob_host="https://clob.example",
+            fetch_market=lambda cid: _Market(), fetch_book=flaky,
+            fetch_tape=_taping(iter([{"tok_up": {0.42: 900.0}}])),
+            now=lambda: next(clock), sleep=lambda s: None)
+
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT volume, is_bootstrap FROM tape_buckets").fetchall()
+    finally:
+        conn.close()
+
+    assert rows == [(900.0, 1)]

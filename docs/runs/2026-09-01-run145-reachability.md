@@ -64,14 +64,18 @@ A resting BUY can only ever be reached by volume printing at or below mid.
 Pooled across the 8 high-volume markets that stayed readable, 66,853 shares
 over 63 prints:
 
-| Distance from mid | Volume | Share |
-| --- | --- | --- |
-| above mid | 43,957.3 | 65.75% |
-| at mid | 17,900.7 | 26.78% |
-| 1 tick below | 4,995.5 | 7.47% |
-| **2 ticks below** | **0.0** | **0.00%** |
-| **3 ticks below** | **0.0** | **0.00%** |
-| **4 or more ticks below** | **0.0** | **0.00%** |
+| Distance from mid | Volume | Share of tape | Reaches a bid resting here |
+| --- | --- | --- | --- |
+| above mid | 43,957.3 | 65.75% | — |
+| at mid | 17,900.7 | 26.78% | 34.25% |
+| 1 tick below | 4,995.5 | 7.47% | 7.47% |
+| **2 ticks below** | **0.0** | **0.00%** | **0.00%** |
+| **3 ticks below** | **0.0** | **0.00%** | **0.00%** |
+| **4 or more ticks below** | **0.0** | **0.00%** | **0.00%** |
+
+The last column is a tail sum — everything at that distance or deeper — because
+a resting bid is reached only by prints at or past its own price. A print
+nearer mid filled a better-priced bid.
 
 Split by tick size, because a tick means two different things here:
 
@@ -83,7 +87,8 @@ Split by tick size, because a tick means two different things here:
 | At mid | 0.13% | 88.74% |
 | 1 tick below | 10.39% | 0.69% |
 | **2+ ticks below** | **0.00%** | **0.00%** |
-| **Reachable by a resting bid** | **10.52%** | **89.43%** |
+| **Reachable by a bid at mid** | **10.52%** | **89.43%** |
+| **Reachable by a bid at the touch** | **10.39%** | **0.69%** |
 
 The bid/ask asymmetry between the two columns is the rounding limitation
 above, not a finding — on a one-tick book the `0` bucket holds whichever side
@@ -105,11 +110,28 @@ position, it is not the gates, and it is not the hour. Nothing trades there.
 produces the `est_income` and `return_pct_day` columns the market filter ranks
 on — the figures that put `mlb-bal-col` at 11.65%/day.
 
-The upper bound measured here is 34.25% of volume, and that is the share
-reachable at **mid itself**, where the pair costs $1.0000 and there is no edge
-to capture. On the 1c markets, which is where the pair arithmetic leaves any
-room at all, the upper bound is 10.52% — and that is at the touch, one tick
-under mid, where the pair costs $0.99.
+Reachability is a **tail**: a bid resting `k` ticks under mid is reached only
+by prints at `k` or deeper, because a print nearer mid filled a better-priced
+bid and never came to us. Measured that way, pooled:
+
+| Bid resting at | Reachable share of all tape |
+| --- | --- |
+| mid | 34.25% |
+| 1 tick under mid | 7.47% |
+| **2 ticks under mid** | **0.00%** |
+| 3 or more ticks under | 0.00% |
+
+And per tick regime:
+
+| Bid resting at | 1c-tick markets | 0.001-tick markets |
+| --- | --- | --- |
+| mid | 10.52% | 89.43% |
+| 1 tick under (the touch) | 10.39% | 0.69% |
+| **2 ticks under** | **0.00%** | **0.00%** |
+
+The best case anywhere is resting at mid, where the pair costs $1.0000 and
+there is no edge to capture at all. At the touch on a 1c market — the deepest
+place any edge exists — it is 10.39%, against the asserted 25%.
 
 At the offsets the quoter actually uses, the measured reachable fraction is
 **0.00%**. The assumption is not merely optimistic; at the shipped
@@ -191,9 +213,9 @@ mid, and booked 0 fills before its market went away. Its cancel reasons were
    tick under mid is zero across 66,853 shares. There is no offset that both
    clears the cap and reaches the tape.
 2. **`spread_capture_frac = 0.25` should be treated as unfounded.** The
-   measured upper bound is 34.25% at mid, 10.52% at the touch on 1c markets,
-   and 0.00% at the shipped offset. Every `est_income` and `return_pct_day`
-   in the filter inherits the error.
+   measured upper bound is 34.25% for a bid resting at mid, 10.39% at the
+   touch on 1c markets, and 0.00% at the shipped offset. Every `est_income`
+   and `return_pct_day` in the filter inherits the error.
 3. **`mid(UP) + mid(DOWN)` = 1.0000 is a venue property, not a slate
    observation.** 1,247 of 1,247 samples across eight market families.
 4. **A finer tick is worse, not better.** The 0.001-tick markets price the

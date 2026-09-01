@@ -134,21 +134,39 @@ def bucket_trades(traded: dict, mids: dict, tick: float) -> list[dict]:
     return rows
 
 
-def reachable_fraction(rows: list[dict], max_ticks: int) -> float:
-    """Share of tape volume that printed at or inside `max_ticks` below mid.
+def reachable_volume(rows: list[dict], ticks: int) -> float:
+    """Tape volume that could reach a resting bid `ticks` under mid.
 
-    This is the quantity `spread_capture_frac` asserts is 0.25. A resting bid
-    `max_ticks` under mid can only ever be reached by volume in this fraction,
-    and only then if it also clears the queue ahead of it -- so the figure is
-    an upper bound on capture, never an estimate of it.
+    A TAIL sum, not a forward one, and the direction matters. Our bid sits at
+    a price; a market sell walks the book from the top down and prints against
+    our level only after exhausting every better-priced bid. A print NEARER
+    mid than our order therefore filled somebody else, and a print FURTHER
+    from mid means the book traded through our level and we were filled on the
+    way down. What can reach a bid at `ticks` is everything at
+    `ticks_from_mid >= ticks`.
+
+    Summing from mid down to our level instead -- volume at `0 <= k <= ticks`
+    -- counts exactly the prints that went to better-priced bids, and reverses
+    the curve: it makes a deeper order look MORE reachable when it is less.
+    """
+    return sum(r["volume"] for r in rows
+               if r["ticks_from_mid"] is not None
+               and r["ticks_from_mid"] >= ticks)
+
+
+def reachable_fraction(rows: list[dict], ticks: int) -> float:
+    """`reachable_volume` as a share of ALL tape, above-mid prints included.
+
+    The denominator is every print, because that is the denominator
+    `spread_capture_frac` uses when it asserts we capture 0.25 of a market's
+    volume. A resting bid at `ticks` under mid can only ever be reached by
+    this fraction, and only then if it also clears the queue ahead of it -- so
+    the figure is an upper bound on capture, never an estimate of it.
     """
     total = sum(r["volume"] for r in rows)
     if total <= 0:
         return 0.0
-    inside = sum(r["volume"] for r in rows
-                 if r["ticks_from_mid"] is not None
-                 and 0 <= r["ticks_from_mid"] <= max_ticks)
-    return inside / total
+    return reachable_volume(rows, ticks) / total
 
 
 def split_bootstrap(rows: list[dict], seen_before: bool) -> bool:
@@ -299,8 +317,14 @@ def run(minutes: float, interval: float, db_path: Path, run_id: str,
         while now() < deadline:
             for market in load_universe(markets_path):
                 cid = str(market["cid"])
-                first_pass = cid not in seen_by_cid
                 seen = seen_by_cid.setdefault(cid, set())
+                # Read from `seen`, not from the presence of the key. A failed
+                # book fetch aborts the pass AFTER `setdefault` has created
+                # the empty set but BEFORE `fetch_tape` fills it, so keying on
+                # the dict would mark the next pass as live -- and that pass
+                # returns the venue's whole recent window, which would land in
+                # the reachability curve as if it were current tape.
+                first_pass = not seen
                 try:
                     got = sample_market(market, fetch_market, fetch_book,
                                         fetch_tape, seen, clob_host)

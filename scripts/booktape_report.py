@@ -103,25 +103,33 @@ def report(db_path: Path) -> str:
     out.append("")
 
     out.append("REACHABILITY -- tape volume by ticks below mid")
-    out.append("  a resting BUY is reachable only by volume at ticks >= 0")
+    out.append("  a resting BUY at k ticks is reached by prints at ticks >= k")
     total = sum(r[1] for r in rows) or 0.0
     below = sum(r[1] for r in rows if r[0] >= 0) or 0.0
-    out.append(f"  {'ticks':>7}{'volume':>14}{'prints':>8}{'share':>9}{'cum<=':>9}")
-    cum = 0.0
+    # The tail is built from the deepest tick upward, so `tail[k]` is the
+    # volume at `ticks_from_mid >= k` -- everything that would have traded
+    # through a bid resting at k. Accumulating the other way, from mid down,
+    # would report the prints that went to better-priced bids instead.
+    tail: dict[int, float] = {}
+    running = 0.0
+    for ticks, vol, _ in sorted(rows, key=lambda r: -r[0]):
+        if ticks < 0:
+            continue
+        running += vol
+        tail[ticks] = running
+    out.append(f"  {'ticks':>7}{'volume':>14}{'prints':>8}{'share':>9}{'cum>=':>9}")
     for ticks, vol, n in rows:
-        if ticks >= 0:
-            cum += vol
-        out.append(f"  {ticks:>7}{vol:>14.1f}{n:>8}{_pct(vol, total):>9}"
-                   f"{(_pct(cum, total) if ticks >= 0 else '       --'):>9}")
+        cum = (_pct(tail[ticks], total) if ticks >= 0 else "       --")
+        out.append(f"  {ticks:>7}{vol:>14.1f}{n:>8}{_pct(vol, total):>9}{cum:>9}")
     out.append("")
     out.append(f"  all tape:                 {total:14.1f}")
     out.append(f"  at or below mid (ticks>=0):{below:13.1f}  {_pct(below, total)}")
-    for k in (1, 2, 3, 4, 5):
-        reach = sum(r[1] for r in rows if 0 <= r[0] <= k)
-        out.append(f"  reachable at <= {k} tick(s) under mid: {_pct(reach, total)}"
-                   f"   ({reach:.1f})")
-    out.append("  `spread_capture_frac` asserts 0.25 of volume is captured; the"
-               " figures above are an UPPER BOUND on that, before queue.")
+    for k in (0, 1, 2, 3, 4, 5):
+        reach = sum(r[1] for r in rows if r[0] >= k)
+        out.append(f"  reachable by a bid {k} tick(s) under mid: "
+                   f"{_pct(reach, total)}   ({reach:.1f})")
+    out.append("  `spread_capture_frac` asserts 0.25 of volume is captured; the")
+    out.append("  figures above are an UPPER BOUND on that, before queue.")
     out.append("")
 
     out.append("THE TOUCH PAIR -- best_bid(UP) + best_bid(DOWN)")
@@ -131,8 +139,8 @@ def report(db_path: Path) -> str:
                    else "tradeable")
         out.append(f"  ${cost:.4f}  n={n:<6} {_pct(n, ptotal)}  {verdict}")
     refused = sum(n for c, n in pairs if c >= MAX_PAIR_COST)
-    out.append(f"  refused by the $%.2f cap: %s of samples"
-               % (MAX_PAIR_COST, _pct(refused, ptotal)))
+    out.append(f"  refused by the ${MAX_PAIR_COST:.2f} cap: "
+               f"{_pct(refused, ptotal)} of samples")
     out.append("")
 
     out.append("MID SUM -- mid(UP) + mid(DOWN)")

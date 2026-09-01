@@ -85,7 +85,31 @@ def test_reachable_share_counts_only_volume_at_or_below_mid(tmp_path):
 
     text = rpt.report(db)
 
-    assert "reachable at <= 1 tick(s) under mid:  25.00%" in text
+    assert "reachable by a bid 1 tick(s) under mid:  25.00%" in text
+
+
+def test_reachable_share_excludes_prints_nearer_mid_than_the_bid(tmp_path):
+    # 300 shares printed AT mid filled better-priced bids and never reached a
+    # bid resting one tick under; only the 100 at that tick did. Accumulating
+    # from mid down instead would report 100% here.
+    db = _store(tmp_path, [{}], [(0, 300.0, 0), (1, 100.0, 0)])
+
+    text = rpt.report(db)
+
+    assert "reachable by a bid 0 tick(s) under mid: 100.00%" in text
+    assert "reachable by a bid 1 tick(s) under mid:  25.00%" in text
+
+
+def test_reachability_cumulative_column_is_a_tail(tmp_path):
+    # The `cum>=` column at tick k is the volume a bid at k could be reached
+    # by, so it must fall as k grows, never rise.
+    db = _store(tmp_path, [{}], [(0, 300.0, 0), (1, 100.0, 0), (2, 10.0, 0)])
+
+    lines = rpt.report(db).splitlines()
+    head = next(i for i, ln in enumerate(lines) if "cum>=" in ln)
+    shares = [ln.split()[-1] for ln in lines[head + 1:head + 4]]
+
+    assert shares == ["100.00%", "26.83%", "2.44%"]
 
 
 def test_report_survives_a_store_with_no_tape(tmp_path):

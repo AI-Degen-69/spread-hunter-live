@@ -16,6 +16,8 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+
+from core_brain import rehearsal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -985,43 +987,44 @@ def _bounded_float(name: str, raw: str, lo: float, hi: float) -> float:
     return value
 
 
-SIGNING_KEY_VARS = ("POLY_PRIVATE_KEY", "POLY_KEY")
+def resolve_wide_book_trial(raw: str) -> float | None:
+    """Parse `HUNTER_WIDE_BOOK_TRIAL`, refusing outside a declared rehearsal.
 
+    The gate is `rehearsal.is_rehearsal()`, and the choice of question matters.
+    The obvious alternative -- "is a signing key reachable?" -- is wrong twice
+    over. Too weak, because `.env` is the documented home for the key and
+    `venue.signed_client` copies it into `os.environ` only when it builds a
+    signer, which on the live path can happen after `load()` has run. Too
+    strong, because `core_brain.shadow_run` cannot sign whatever sits in
+    `.env`: it builds a credential-free client behind a deny-by-default proxy,
+    so a key on disk says nothing about what that process can do. Gating on
+    the key would refuse the one place this trial is safe while passing on a
+    live trader whose key had not been read yet.
 
-def _signing_credential_present(env=None) -> bool:
-    """Is a key loaded with which an order could be signed?
+    So the question is whether this process can place an order, which is a
+    property of the entrypoint. Once that is answered no, the key is
+    irrelevant and is not consulted -- a second check there would be dead code
+    wearing the costume of a safety layer.
 
-    The same two variables `core_brain.venue.signed_client` reads to build a
-    signer. Anything else in `.env` -- funder, API key, passphrase -- cannot
-    sign on its own, so requiring their absence would refuse the trial on
-    machines that are configured but not armed.
-    """
-    src = os.environ if env is None else env
-    return any((src.get(name) or "").strip() for name in SIGNING_KEY_VARS)
-
-
-def resolve_wide_book_trial(raw: str, env=None) -> float | None:
-    """Parse `HUNTER_WIDE_BOOK_TRIAL`, refusing outright if a signer is loaded.
-
-    Refusing beats ignoring, and it beats clamping. An operator who sets this
-    on a machine holding a key has asked for a widened SAFETY gate on the money
-    path; silently dropping the override would leave them believing a trial is
-    running when it is not, and silently honouring it would quote into books
-    where a fill may not be closeable. Raising stops the process at config
-    load, before a client is built and long before a share is bought.
+    Refusing beats ignoring and beats clamping. An operator who sets this
+    outside a rehearsal has asked for a widened SAFETY gate on the money path;
+    dropping the override silently would leave them believing a trial is
+    running when it is not. Raising stops the process at config load, before a
+    client is built.
 
     The bound is 0.30. A binary market whose two sides are thirty cents apart
     is not a wide book, it is an absent one, and a value past that is a typo.
     """
     if not raw.strip():
         return None
-    if _signing_credential_present(env):
+    if not rehearsal.is_rehearsal():
         raise ValueError(
-            "HUNTER_WIDE_BOOK_TRIAL widens max_book_spread, which is the gate "
-            "that refuses a book where a fill may not be closeable. It is "
-            f"refused while a signing key is loaded ({' or '.join(SIGNING_KEY_VARS)} "
-            "is set). Run it from a shell with no key -- "
-            "core_brain.shadow_run builds a client that cannot sign.")
+            "HUNTER_WIDE_BOOK_TRIAL widens max_book_spread, the gate that "
+            "refuses a book where a fill may leave a leg that cannot be "
+            "closed. It applies only in a process that has declared itself "
+            "unable to place an order: core_brain.shadow_run, whose client "
+            "cannot sign, or the ranker's --trial-spread, which only reads "
+            "books and writes a market list.")
     return _bounded_float("HUNTER_WIDE_BOOK_TRIAL", raw, 0.0, 0.30)
 
 

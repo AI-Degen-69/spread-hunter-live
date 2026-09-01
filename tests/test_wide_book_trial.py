@@ -14,6 +14,7 @@ import importlib
 import pytest
 
 from core_brain import config as core_config
+from core_brain import rehearsal
 from scoring import config as scoring_config
 
 BOTH = pytest.mark.parametrize(
@@ -24,34 +25,44 @@ BOTH = pytest.mark.parametrize(
 
 
 @BOTH
-def test_trial_is_refused_while_a_private_key_is_loaded(mod):
+def test_trial_is_refused_outside_a_declared_rehearsal(mod):
+    # The gate is what the PROCESS can do, not what is on the filesystem.
     with pytest.raises(ValueError) as e:
-        mod.resolve_wide_book_trial("0.15", env={"POLY_PRIVATE_KEY": "0xdead"})
+        mod.resolve_wide_book_trial("0.15")
 
-    assert "refused while a signing key is loaded" in str(e.value)
-
-
-@BOTH
-def test_trial_is_refused_for_the_alternate_key_variable(mod):
-    # `venue.signed_client` accepts either name, so either must refuse.
-    with pytest.raises(ValueError):
-        mod.resolve_wide_book_trial("0.15", env={"POLY_KEY": "0xdead"})
+    assert "declared itself unable to place an order" in str(e.value)
 
 
 @BOTH
-def test_a_blank_key_variable_does_not_refuse(mod):
-    # An exported-but-empty variable is a configured machine that is not armed.
-    assert mod.resolve_wide_book_trial(
-        "0.15", env={"POLY_PRIVATE_KEY": "  "}) == 0.15
+def test_trial_applies_inside_a_declared_rehearsal(mod):
+    rehearsal.declare_rehearsal()
+
+    assert mod.resolve_wide_book_trial("0.15") == 0.15
 
 
 @BOTH
-def test_credentials_that_cannot_sign_do_not_refuse(mod):
-    # A funder address or an API key cannot sign an order on its own; refusing
-    # on them would block the trial on every configured machine.
-    env = {"POLY_FUNDER": "0xabc", "POLY_API_KEY": "k", "POLY_SECRET": "s"}
+def test_a_key_on_disk_does_not_block_a_rehearsal(mod, monkeypatch):
+    # `core_brain.shadow_run` cannot sign whatever sits in `.env`: it builds a
+    # credential-free client behind a deny-by-default proxy. Refusing on the
+    # key would block the trial exactly where it is safe -- and this machine's
+    # own `.env` holds one, which is how the first version of this guard was
+    # caught.
+    rehearsal.declare_rehearsal()
+    monkeypatch.setenv("POLY_PRIVATE_KEY", "0xdeadbeef")
 
-    assert mod.resolve_wide_book_trial("0.15", env=env) == 0.15
+    assert mod.resolve_wide_book_trial("0.15") == 0.15
+
+
+def test_shadow_run_declares_itself_a_rehearsal():
+    # Without this the knob is unreachable from the one quoting entrypoint it
+    # exists for, and the trial silently never applies.
+    import inspect
+
+    from core_brain import shadow_run
+
+    src = inspect.getsource(shadow_run.main)
+
+    assert "rehearsal.declare_rehearsal()" in src
 
 
 # --- parsing ------------------------------------------------------------------
@@ -59,15 +70,26 @@ def test_credentials_that_cannot_sign_do_not_refuse(mod):
 
 @BOTH
 def test_unset_trial_is_none(mod):
-    assert mod.resolve_wide_book_trial("", env={}) is None
-    assert mod.resolve_wide_book_trial("   ", env={}) is None
+    assert mod.resolve_wide_book_trial("") is None
+    assert mod.resolve_wide_book_trial("   ") is None
+
+
+@BOTH
+def test_unset_trial_does_not_raise_outside_a_rehearsal(mod):
+    # `load()` calls this on every start, so a refusal on the empty string
+    # would take down a live trader that asked for nothing.
+    assert not rehearsal.is_rehearsal()
+
+    assert mod.resolve_wide_book_trial("") is None
 
 
 @BOTH
 def test_trial_refuses_a_value_past_the_bound(mod):
     # Thirty cents apart is not a wide book, it is an absent one.
+    rehearsal.declare_rehearsal()
+
     with pytest.raises(ValueError) as e:
-        mod.resolve_wide_book_trial("0.45", env={})
+        mod.resolve_wide_book_trial("0.45")
 
     assert "outside" in str(e.value)
 
@@ -76,22 +98,25 @@ def test_trial_refuses_a_value_past_the_bound(mod):
 def test_trial_refuses_a_non_finite_value(mod):
     # NaN poisons every comparison it touches: a ceiling set to NaN reads as
     # enforced while permitting anything.
+    rehearsal.declare_rehearsal()
+
     with pytest.raises(ValueError):
-        mod.resolve_wide_book_trial("nan", env={})
+        mod.resolve_wide_book_trial("nan")
 
 
 @BOTH
 def test_trial_refuses_a_non_number(mod):
+    rehearsal.declare_rehearsal()
+
     with pytest.raises(ValueError):
-        mod.resolve_wide_book_trial("wide", env={})
+        mod.resolve_wide_book_trial("wide")
 
 
 # --- what load() does with it -------------------------------------------------
 
 
 def _load_with(mod, monkeypatch, **env):
-    for name in ("POLY_PRIVATE_KEY", "POLY_KEY", "HUNTER_MARKET",
-                 "HUNTER_MAX_SPREAD", "HUNTER_WIDE_BOOK_TRIAL"):
+    for name in ("HUNTER_MARKET", "HUNTER_MAX_SPREAD", "HUNTER_WIDE_BOOK_TRIAL"):
         monkeypatch.delenv(name, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -103,6 +128,8 @@ def test_load_moves_all_three_ceilings_together(mod, monkeypatch):
     # Any one of the three left at its shipped value makes the trial measure
     # nothing: the ranker never offers the market, `book_health` refuses to
     # quote it, or the reward window refuses the price the bid cap produces.
+    rehearsal.declare_rehearsal()
+
     cfg = _load_with(mod, monkeypatch, HUNTER_WIDE_BOOK_TRIAL="0.15")
 
     assert cfg.wide_book_trial == 0.15
@@ -126,6 +153,8 @@ def test_a_narrow_trial_never_tightens_the_reward_window(mod, monkeypatch):
     # The window is widened only if the trial is wider than it already is. A
     # trial NARROWER than 4.5c is a narrower BOOK ceiling, and must not
     # quietly shrink where we are allowed to quote.
+    rehearsal.declare_rehearsal()
+
     cfg = _load_with(mod, monkeypatch, HUNTER_WIDE_BOOK_TRIAL="0.02")
 
     assert cfg.max_book_spread == 0.02
@@ -133,12 +162,11 @@ def test_a_narrow_trial_never_tightens_the_reward_window(mod, monkeypatch):
 
 
 @BOTH
-def test_load_refuses_outright_with_a_key_present(mod, monkeypatch):
+def test_load_refuses_outright_outside_a_rehearsal(mod, monkeypatch):
     # Refusing at config load stops the process before a client is built and
     # long before a share is bought.
     with pytest.raises(ValueError):
-        _load_with(mod, monkeypatch,
-                   HUNTER_WIDE_BOOK_TRIAL="0.15", POLY_PRIVATE_KEY="0xdead")
+        _load_with(mod, monkeypatch, HUNTER_WIDE_BOOK_TRIAL="0.15")
 
 
 @BOTH
@@ -147,6 +175,8 @@ def test_trial_widens_a_venue_supplied_window_rather_than_replacing_it(
     # `HUNTER_MAX_SPREAD` carries the venue's own reward window in cents. The
     # trial takes the wider of the two, so a venue window of 20c survives a
     # 15c trial.
+    rehearsal.declare_rehearsal()
+
     cfg = _load_with(mod, monkeypatch, HUNTER_MARKET="0xabc",
                      HUNTER_MAX_SPREAD="20", HUNTER_WIDE_BOOK_TRIAL="0.15")
 
@@ -174,8 +204,8 @@ def test_book_health_admits_the_same_book_under_the_trial(monkeypatch):
     # trial in force the same book passes, which is the whole point.
     from core_brain import risk
 
-    for name in ("POLY_PRIVATE_KEY", "POLY_KEY", "HUNTER_MARKET"):
-        monkeypatch.delenv(name, raising=False)
+    rehearsal.declare_rehearsal()
+    monkeypatch.delenv("HUNTER_MARKET", raising=False)
     monkeypatch.setenv("HUNTER_WIDE_BOOK_TRIAL", "0.15")
     cfg = importlib.reload(core_config).load()
     book = {"best_bid": 0.435, "best_ask": 0.565, "bids": {0.435: 5000.0}}
@@ -183,6 +213,120 @@ def test_book_health_admits_the_same_book_under_the_trial(monkeypatch):
     health = risk.book_health(book, cfg)
 
     assert health.ok, health.reason
+
+
+# --- the ranker frames --------------------------------------------------------
+
+
+def test_ranker_spread_bar_defaults_to_the_permanent_ceiling():
+    # A non-positive trial is a mistake, not a signal: gate on the permanent
+    # bar rather than on nothing.
+    from scripts import filter_markets as fm
+
+    assert fm._effective_spread_bar(None) == fm.MAX_BOOK_SPREAD
+    assert fm._effective_spread_bar(0.0) == fm.MAX_BOOK_SPREAD
+    assert fm._effective_spread_bar(-1.0) == fm.MAX_BOOK_SPREAD
+
+
+def test_ranker_spread_bar_declares_a_rehearsal_and_widens():
+    # The ranker places no orders, so the flag itself is the declaration.
+    from scripts import filter_markets as fm
+
+    assert not rehearsal.is_rehearsal()
+
+    assert fm._effective_spread_bar(0.15) == 0.15
+    assert rehearsal.is_rehearsal()
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+
+    def json(self):
+        return self._payload
+
+
+class _FakeSession:
+    """Serves the two books `evaluate` fetches, 13c wide on both legs."""
+
+    def get(self, url, params=None, timeout=None):
+        up = params["token_id"] == "tok_up"
+        bid, ask = (0.435, 0.565) if up else (0.435, 0.565)
+        return _FakeResponse({
+            "bids": [{"price": str(bid), "size": "5000"}],
+            "asks": [{"price": str(ask), "size": "5000"}],
+        })
+
+
+def _wide_market():
+    return {
+        "condition_id": "0xabc",
+        "question": "Team A vs Team B",
+        "market_slug": "mlb-a-b",
+        "tokens": [{"token_id": "tok_up"}, {"token_id": "tok_dn"}],
+        "rewards": {"max_spread": 4.5, "min_size": 5},
+    }
+
+
+def _spread_bar_reaching_the_predicate(monkeypatch, **kwargs):
+    """Run `evaluate` against a 13c book and report the bar the gate saw."""
+    from scripts import filter_markets as fm
+
+    seen = {}
+
+    def spy(books, depth_bar, spread_bar):
+        seen["spread"] = spread_bar
+        return False, "stopped at the spy"
+
+    monkeypatch.setattr(fm, "pair_books_allowed", spy)
+    fm.evaluate(_FakeSession(), 1.0, _wide_market(),
+                volume_24h=500_000.0, source="spread", **kwargs)
+    return seen.get("spread")
+
+
+def test_evaluate_gates_on_the_injected_spread_bar(monkeypatch):
+    # The bar has to arrive at the PREDICATE, not just at the entrypoint --
+    # every frame from the CLI down, or the flag is decoration.
+    assert _spread_bar_reaching_the_predicate(monkeypatch, max_spread=0.15) == 0.15
+
+
+def test_evaluate_falls_back_to_the_permanent_ceiling(monkeypatch):
+    from scripts import filter_markets as fm
+
+    got = _spread_bar_reaching_the_predicate(monkeypatch)
+
+    assert got == fm.MAX_BOOK_SPREAD
+
+
+def test_score_pool_forwards_the_spread_bar_to_evaluate(monkeypatch):
+    # Frame 3 of the same path. `main` resolves the bar and hands it here.
+    from scripts import filter_markets as fm
+
+    seen = {}
+
+    def spy(session, rate, m, volume_24h=None, source="rewards", **kw):
+        seen.update(kw)
+        return None
+
+    monkeypatch.setattr(fm, "evaluate", spy)
+    fm.score_pool([(1.0, _wide_market(), 500_000.0, "spread")],
+                  session_factory=lambda: _FakeSession(),
+                  max_workers=1, max_spread=0.15)
+
+    assert seen.get("max_spread") == 0.15
+
+
+@pytest.fixture(autouse=True)
+def _clean_rehearsal_flag():
+    """Every test starts and ends with the flag clear.
+
+    The flag is process-global and nothing in the running system clears it, so
+    a test that declared a rehearsal would otherwise license the trial for
+    every test after it -- including the ones asserting that it is refused.
+    """
+    rehearsal.reset_for_test()
+    yield
+    rehearsal.reset_for_test()
 
 
 @pytest.fixture(autouse=True)

@@ -1223,7 +1223,7 @@ td { font-size: 13px; }
 /* The market name is the only cell that wraps. Without a floor a three-word
    title folds onto three lines and squeezes every number column beside it. */
 #orders-trades-table th.ot-market-head,
-#orders-trades-table td:first-child {
+#orders-trades-table td.ot-market {
   min-width: 200px;
 }
 
@@ -1241,7 +1241,7 @@ td { font-size: 13px; }
 .ot-pair-alt > td {
   background: rgba(148, 163, 184, 0.075);
 }
-#orders-trades-table td.ot-market {
+#orders-trades-table .ot-pair-row > td.ot-market {
   vertical-align: middle;
   border-right: 1px solid var(--border-subtle);
 }

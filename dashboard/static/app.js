@@ -3112,7 +3112,7 @@ function activeMarketsRows(kpi, state) {
     const dtr = m.days_to_resolve;
     const restingHere = (ordersByMarket[cid] || []).some(o => isRestingOrder(o));
     return `<tr data-cid="${esc(cid)}">
-      <td>${marketCell(m, cid)}</td>
+      <td class="ot-market">${marketCell(m, cid)}</td>
       <td class="mono">${esc(m.category || '--')}</td>
       <td class="mono">${fmtPrice(upQuote)}</td>
       <td class="mono">${fmtPrice(dnQuote)}</td>
@@ -3198,7 +3198,7 @@ function openOrdersRows(kpi, state) {
     // The pair cell says whether this pair can merge at a profit at all, and
     // names the half-built pair when only one leg is on the book.
     const pairNote = complete
-      ? `<div class="ot-pair-cost mono ${pairCost < 1 ? 'positive' : 'negative'}">pair ${fmtPrice(pairCost)}</div>`
+      ? `<div class="ot-pair-cost mono ${pairCost > 1 ? 'negative' : 'positive'}">pair ${fmtPrice(pairCost)}</div>`
       : `<div class="ot-pair-cost mono ot-pair-incomplete">one leg resting</div>`;
 
     return group.orders.map((o, legIndex) => {
@@ -3251,7 +3251,7 @@ function positionsRows(kpi) {
     const hedgeLabel = hedged ? 'Hedged' : (oneSided ? 'Single Leg' : 'Partial');
     const hedgeClass = hedged ? 'active' : (oneSided ? 'stopped' : 'reconnecting');
     return `<tr data-cid="${esc(cid)}">
-      <td>${marketCell(m, cid)}</td>
+      <td class="ot-market">${marketCell(m, cid)}</td>
       <td class="mono">${fmtShares(up)}</td>
       <td class="mono">${fmtShares(dn)}</td>
       <td class="mono">${fmtPrice(m.pair_cost)}</td>

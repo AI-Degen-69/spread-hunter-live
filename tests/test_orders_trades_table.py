@@ -362,6 +362,22 @@ def test_open_orders_prices_the_pair_the_two_legs_would_make():
 
 
 @requires_node
+def test_open_orders_does_not_call_a_break_even_pair_a_loss():
+    # Arrange — a pair costing exactly $1.00 merges back into $1.00. That is
+    # zero profit, not a loss, and colouring it red reads as money lost.
+    state = _state()
+    for order in state["orders"]:
+        order["price"] = 0.50
+
+    # Act
+    rendered = _render("open-orders", _kpi(), state)
+
+    # Assert
+    assert "pair $1.000" in rendered["html"]
+    assert "negative" not in rendered["html"]
+
+
+@requires_node
 def test_open_orders_flags_a_pair_with_only_one_leg_resting():
     # Arrange — a lone resting leg is half a pair. If it fills the account is
     # holding a directional bet nobody decided to take.
@@ -407,10 +423,31 @@ def test_the_market_column_has_a_width_floor():
     css = (_STATIC / "styles.css").read_text(encoding="utf-8")
 
     # Act
-    block = css.split("#orders-trades-table td:first-child")[1].split("}")[0]
+    block = css.split("#orders-trades-table td.ot-market")[1].split("}")[0]
 
     # Assert
     assert "min-width" in block
+
+
+def test_the_width_floor_does_not_target_the_first_cell_by_position():
+    # Arrange — in a paired row the market cell uses `rowspan`, so the second
+    # row's first cell is the Leg. Keyed off position, the 200px floor would
+    # land on the Leg column instead of the market name.
+    css = (_STATIC / "styles.css").read_text(encoding="utf-8")
+
+    # Act / Assert
+    assert "#orders-trades-table td:first-child" not in css
+
+
+@requires_node
+@pytest.mark.parametrize("view", ["active-markets", "open-orders", "positions"])
+def test_every_view_tags_its_market_cell(view):
+    # Arrange — the width floor is keyed off the class now, so a view that
+    # forgets it loses the floor and folds the title onto three lines.
+    rendered = _render(view, _kpi(), _state())
+
+    # Act / Assert
+    assert 'class="ot-market"' in rendered["html"]
 
 
 @requires_node

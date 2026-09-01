@@ -985,12 +985,33 @@ def _submit_and_log(
 
             cost_basis = float(amt) * avg_pair_cost
             proceeds = float(amt) * 1.00
+            # GAS IS RECORDED AS UNKNOWN HERE, AND PRICED LATER.
+            #
+            # This used to pass a hardcoded 0.0, which is an assertion that the
+            # merge was free rather than a measurement. It is not a rounding
+            # error: run 145 established that a maker-only pair earns exactly
+            # the spread, and the liquid books this strategy trades carry a
+            # one-tick spread -- one cent per $0.99 pair against a merge
+            # measured at $0.0114.
+            #
+            # But it must not be priced INLINE either, for two reasons. The
+            # receipt is usually not mined yet -- we are microseconds from
+            # submission -- so an inline read returns None almost every time
+            # and records "unknown" for a merge that was perfectly readable a
+            # few seconds later. And the read is up to four RPC round trips,
+            # which would sit in the money path between the merge executing
+            # and the close being written; a close this system failed to
+            # record is far worse than a gas figure it has not filled in yet.
+            #
+            # So NULL, plus the tx_hash, and `core_brain.gas --backfill`
+            # prices it afterwards. Same shape as the markout worker, which
+            # opens a row now and matures it later.
             realized_pnl = proceeds - cost_basis
             registry.log_close(CloseRecord(
                 ts=time.time(),
                 condition_id=condition_id,
                 method="merge",
-                gas=0.0,
+                gas=None,
                 shares=float(amt),
                 cost_basis=cost_basis,
                 proceeds=proceeds,

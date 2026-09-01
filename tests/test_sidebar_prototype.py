@@ -23,6 +23,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 _ROOT = Path(__file__).resolve().parent.parent
 _STATIC = _ROOT / "dashboard" / "static"
@@ -285,10 +286,8 @@ def test_the_layout_stylesheet_is_inert_on_the_live_page():
     assert not unscoped, f"these rules would restyle the live page: {unscoped}"
 
 
-def _client():
+def _client() -> TestClient:
     """A test client over the real app. Both pages are served from disk."""
-    from fastapi.testclient import TestClient
-
     from dashboard.server import app
 
     return TestClient(app)

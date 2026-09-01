@@ -3057,7 +3057,12 @@ function otEmptyRow(view, message) {
 }
 
 function otHeadHtml(view) {
-  const cells = OT_COLUMNS[view].map(label => `<th>${esc(label)}</th>`).join('');
+  // The market name is the widest thing in the table and the only cell that
+  // wraps; without a floor it folds a three-word title onto three lines and
+  // squeezes every number column.
+  const cells = OT_COLUMNS[view]
+    .map((label, i) => `<th${i === 0 ? ' class="ot-market-head"' : ''}>${esc(label)}</th>`)
+    .join('');
   return `<tr>${cells}</tr>`;
 }
 
@@ -3120,6 +3125,61 @@ function activeMarketsRows(kpi, state) {
   }).join('');
 }
 
+/* Group the resting book by the pair each order belongs to.
+ *
+ * The strategy only makes money when both legs fill: a pair that cost under
+ * $1.00 merges back into exactly $1.00, and a leg that fills alone is a
+ * directional bet nobody decided to take. Listing orders one flat row after
+ * another hides which two belong together, so the book is read pair by pair,
+ * UP above DOWN, with the market named once for both.
+ *
+ * An order with no pair id is its own group -- it is still a leg with no
+ * partner, which is exactly the thing worth seeing. */
+function groupOrdersByPair(orders, kpi) {
+  const byMarket = (kpi && kpi.by_market) || {};
+  const legs = tokenLegMap(kpi);
+  const groups = new Map();
+
+  for (const o of orders) {
+    const key = o.pair_id || ('order:' + o.order_id);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(o);
+  }
+
+  const legRank = (order) => {
+    const leg = legForOrder(order, legs, byMarket);
+    if (leg === 'UP') return 0;
+    if (leg === 'DN') return 1;
+    return 2;
+  };
+
+  const out = [];
+  for (const [key, list] of groups) {
+    list.sort((a, b) => legRank(a) - legRank(b)
+      || (Number(a.posted_ts) || 0) - (Number(b.posted_ts) || 0));
+    const newest = list.reduce((max, o) => Math.max(max, Number(o.posted_ts) || 0), 0);
+    out.push({ key, orders: list, newest });
+  }
+  out.sort((a, b) => b.newest - a.newest);
+  return out;
+}
+
+/* What the pair would cost if every resting leg filled. This is the number the
+ * strategy is built around: under $1.00 the merge books a profit, over it
+ * books a loss. It is only meaningful once both legs are on the book. */
+function restingPairCost(orders, kpi) {
+  const byMarket = (kpi && kpi.by_market) || {};
+  const legs = tokenLegMap(kpi);
+  const priced = {};
+  for (const o of orders) {
+    const leg = legForOrder(o, legs, byMarket);
+    if (leg === null || priced[leg] !== undefined) continue;
+    priced[leg] = Number(o.price) || 0;
+  }
+  if (priced.UP === undefined || priced.DN === undefined) return null;
+  return priced.UP + priced.DN;
+}
+
 function openOrdersRows(kpi, state) {
   const orders = ((state && state.orders) || []).filter(isRestingOrder);
   if (!orders.length) return otEmptyRow('open-orders', 'No orders resting in the book');
@@ -3127,18 +3187,36 @@ function openOrdersRows(kpi, state) {
   const byMarket = (kpi && kpi.by_market) || {};
   const legs = tokenLegMap(kpi);
   const queues = queueAheadByOrder(kpi);
+  const groups = groupOrdersByPair(orders, kpi);
 
-  orders.sort((a, b) => (Number(b.posted_ts) || 0) - (Number(a.posted_ts) || 0));
+  return groups.map((group, groupIndex) => {
+    const first = group.orders[0];
+    const market = byMarket[first.condition_id] || { condition_id: first.condition_id };
+    const pairCost = restingPairCost(group.orders, kpi);
+    const complete = group.orders.length > 1 && pairCost !== null;
 
-  return orders.map(o => {
-    const m = byMarket[o.condition_id] || { condition_id: o.condition_id };
-    const leg = legForOrder(o, legs, byMarket) || '--';
-    const size = Number(o.original_size) || 0;
-    const price = Number(o.price) || 0;
-    const queue = queues[o.order_id];
-    const status = String(o.status || '').toUpperCase();
-    return `<tr data-order-id="${esc(o.order_id)}">
-      <td>${marketCell(m, o.condition_id)}</td>
+    // The pair cell says whether this pair can merge at a profit at all, and
+    // names the half-built pair when only one leg is on the book.
+    const pairNote = complete
+      ? `<div class="ot-pair-cost mono ${pairCost < 1 ? 'positive' : 'negative'}">pair ${fmtPrice(pairCost)}</div>`
+      : `<div class="ot-pair-cost mono ot-pair-incomplete">one leg resting</div>`;
+
+    return group.orders.map((o, legIndex) => {
+      const leg = legForOrder(o, legs, byMarket) || '--';
+      const size = Number(o.original_size) || 0;
+      const price = Number(o.price) || 0;
+      const queue = queues[o.order_id];
+      const status = String(o.status || '').toUpperCase();
+      const rowClass = ['ot-pair-row'];
+      if (legIndex === 0) rowClass.push('ot-pair-start');
+      if (groupIndex % 2 === 1) rowClass.push('ot-pair-alt');
+      // One market name for both legs: the merged cell is what makes the two
+      // rows read as one pair rather than two unrelated orders.
+      const marketTd = legIndex === 0
+        ? `<td class="ot-market" rowspan="${group.orders.length}">${marketCell(market, o.condition_id)}${pairNote}</td>`
+        : '';
+      return `<tr class="${rowClass.join(' ')}" data-order-id="${esc(o.order_id)}" data-pair="${esc(group.key)}">
+      ${marketTd}
       <td><span class="pill ${leg === 'UP' ? 'active' : (leg === 'DN' ? 'reconnecting' : 'stopped')}">${esc(leg === 'DN' ? 'DOWN' : leg)}</span></td>
       <td class="mono">${fmtPrice(price)}</td>
       <td class="mono">${fmtShares(size)}</td>
@@ -3149,6 +3227,7 @@ function openOrdersRows(kpi, state) {
       <td class="mono">${o.age_sec === null || o.age_sec === undefined ? '--' : fmtStopwatch(Number(o.age_sec))}</td>
       <td><span class="pill ${status === 'OPEN' ? 'open' : 'reconnecting'}">${esc(status || '--')}</span></td>
     </tr>`;
+    }).join('');
   }).join('');
 }
 
@@ -4084,5 +4163,5 @@ if (typeof module !== 'undefined' && module.exports) {
     OT_VIEWS, OT_COLUMNS, ordersTradesRows, ordersTradesCounts, otHeadHtml,
     activeMarketsRows, openOrdersRows, positionsRows, latestLegMids, latestLegQuotes,
     positionMarkValue, isQuotedMarket, isRestingOrder, tokenLegMap, legForOrder,
-    normalizeLeg };
+    normalizeLeg, groupOrdersByPair, restingPairCost };
 }

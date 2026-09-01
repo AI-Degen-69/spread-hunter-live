@@ -86,12 +86,16 @@ def _kpi() -> dict:
 def _state() -> dict:
     return {
         "orders": [
-            {"order_id": "ord-up", "condition_id": CID_QUOTED, "token_id": "tok-up",
-             "side": "BUY", "price": 0.47, "original_size": 5.0, "size_matched": 0.0,
-             "size_remaining": 5.0, "status": "open", "posted_ts": 1000, "age_sec": 90.0},
+            # Posted DOWN-leg-first on purpose: the table has to put UP above
+            # DOWN whatever order the registry hands them over in.
             {"order_id": "ord-dn", "condition_id": CID_QUOTED, "token_id": "tok-dn",
-             "side": "BUY", "price": 0.51, "original_size": 5.0, "size_matched": 2.0,
-             "size_remaining": 3.0, "status": "partial", "posted_ts": 900, "age_sec": 120.0},
+             "pair_id": "pair-a", "side": "BUY", "price": 0.51, "original_size": 5.0,
+             "size_matched": 2.0, "size_remaining": 3.0, "status": "partial",
+             "posted_ts": 900, "age_sec": 120.0},
+            {"order_id": "ord-up", "condition_id": CID_QUOTED, "token_id": "tok-up",
+             "pair_id": "pair-a", "side": "BUY", "price": 0.47, "original_size": 5.0,
+             "size_matched": 0.0, "size_remaining": 5.0, "status": "open",
+             "posted_ts": 1000, "age_sec": 90.0},
             {"order_id": "ord-filled", "condition_id": CID_HELD, "token_id": "tok-h-up",
              "side": "BUY", "price": 0.60, "original_size": 10.0, "size_matched": 10.0,
              "size_remaining": 0.0, "status": "filled", "posted_ts": 800, "age_sec": 300.0},
@@ -306,13 +310,107 @@ def test_open_orders_falls_back_to_the_condition_id_for_an_unreported_market():
     # that market leaves the graduated universe. A truncated condition id is
     # still something the operator can search the registry for; `--` is not.
     state = _state()
-    state["orders"][0]["condition_id"] = "0xabc123def456"
+    for order in state["orders"]:
+        if order.get("pair_id") == "pair-a":
+            order["condition_id"] = "0xabc123def456"
 
     # Act
     rendered = _render("open-orders", _kpi(), state)
 
     # Assert
     assert "0xabc123d" in rendered["html"]
+
+
+@requires_node
+def test_open_orders_lists_a_pair_as_two_rows_up_first():
+    # Arrange — both legs have to fill for the pair to merge back into $1.00,
+    # so the two orders that belong together are read together, and the leg
+    # that decides the direction is read first.
+    rendered = _render("open-orders", _kpi(), _state())
+
+    # Act
+    html = rendered["html"]
+
+    # Assert — UP above DOWN, whatever order the registry handed them over in.
+    assert html.index(">UP<") < html.index(">DOWN<")
+    assert html.count('data-pair="pair-a"') == 2
+
+
+@requires_node
+def test_open_orders_names_the_market_once_across_both_legs():
+    # Arrange — one market, one name: a name repeated on both rows reads as
+    # two unrelated orders that happen to share a title.
+    rendered = _render("open-orders", _kpi(), _state())
+
+    # Act
+    html = rendered["html"]
+
+    # Assert — the merged cell spans the pair, and the second row has no
+    # market cell of its own.
+    assert 'rowspan="2"' in html
+    assert html.count("Quoted Market") == 1
+
+
+@requires_node
+def test_open_orders_prices_the_pair_the_two_legs_would_make():
+    # Arrange — under $1.00 the merge books a profit; over it books a loss.
+    # That is the number the pair exists to hit, so it belongs on the pair.
+    rendered = _render("open-orders", _kpi(), _state())
+
+    # Act / Assert — 0.47 + 0.51 = $0.980.
+    assert "pair $0.980" in rendered["html"]
+
+
+@requires_node
+def test_open_orders_flags_a_pair_with_only_one_leg_resting():
+    # Arrange — a lone resting leg is half a pair. If it fills the account is
+    # holding a directional bet nobody decided to take.
+    state = _state()
+    state["orders"] = [o for o in state["orders"] if o["order_id"] != "ord-dn"]
+
+    # Act
+    rendered = _render("open-orders", _kpi(), state)
+
+    # Assert
+    assert "one leg resting" in rendered["html"]
+    assert "pair $" not in rendered["html"]
+
+
+@requires_node
+def test_open_orders_bands_alternate_pairs():
+    # Arrange — two pairs back to back are four rows; without the banding the
+    # boundary between them is invisible.
+    state = _state()
+    state["orders"] = state["orders"] + [
+        {"order_id": "ord-b-up", "condition_id": CID_HELD, "token_id": "tok-h-up",
+         "pair_id": "pair-b", "side": "BUY", "price": 0.55, "original_size": 5.0,
+         "size_matched": 0.0, "size_remaining": 5.0, "status": "open",
+         "posted_ts": 500, "age_sec": 60.0},
+        {"order_id": "ord-b-dn", "condition_id": CID_HELD, "token_id": "tok-h-dn",
+         "pair_id": "pair-b", "side": "BUY", "price": 0.40, "original_size": 5.0,
+         "size_matched": 0.0, "size_remaining": 5.0, "status": "open",
+         "posted_ts": 499, "age_sec": 61.0},
+    ]
+
+    # Act
+    rendered = _render("open-orders", _kpi(), state)
+
+    # Assert — every pair opens with a rule, and every second pair is shaded.
+    assert rendered["html"].count("ot-pair-start") == 2
+    assert rendered["html"].count("ot-pair-alt") == 2
+    assert rendered["rows"] == 4
+
+
+def test_the_market_column_has_a_width_floor():
+    # Arrange — the market name is the only cell that wraps, and a three-word
+    # title folded onto three lines squeezes every number column beside it.
+    css = (_STATIC / "styles.css").read_text(encoding="utf-8")
+
+    # Act
+    block = css.split("#orders-trades-table td:first-child")[1].split("}")[0]
+
+    # Assert
+    assert "min-width" in block
 
 
 @requires_node

@@ -1220,6 +1220,39 @@ td { font-size: 13px; }
 #orders-trades-table th {
   white-space: nowrap;
 }
+/* The market name is the only cell that wraps. Without a floor a three-word
+   title folds onto three lines and squeezes every number column beside it. */
+#orders-trades-table th.ot-market-head,
+#orders-trades-table td:first-child {
+  min-width: 200px;
+}
+
+/* ── Open Orders: one pair, two rows ──
+   Both legs have to fill for the pair to merge back into $1.00, so the book
+   reads pair by pair — UP above DOWN, the market named once across both rows.
+   The banding and the rule above each pair are what keep two rows from
+   reading as two unrelated orders. */
+.ot-pair-row > td {
+  border-bottom: none;
+}
+.ot-pair-row.ot-pair-start > td {
+  border-top: 1px solid var(--border-strong);
+}
+.ot-pair-alt > td {
+  background: rgba(148, 163, 184, 0.075);
+}
+#orders-trades-table td.ot-market {
+  vertical-align: middle;
+  border-right: 1px solid var(--border-subtle);
+}
+.ot-pair-cost {
+  margin-top: 4px;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+}
+.ot-pair-incomplete {
+  color: var(--text-muted);
+}
 
 /* ── Quant Risk Metrics Grid ── */
 .quant-grid {

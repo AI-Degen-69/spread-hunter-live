@@ -89,10 +89,16 @@ def parse_receipt(receipt: dict, funder: str) -> Optional[GasCost]:
     price = _hex_int(receipt.get("effectiveGasPrice"))
     if gas_used is None or price is None:
         return None
-    payer = str(receipt.get("from") or "")
-    we_paid = bool(funder) and payer.lower() == str(funder).lower()
+    payer = str(receipt.get("from") or "").strip()
+    # An absent payer or an absent funder means the attribution is UNKNOWN, and
+    # unknown is not free. Falling through to `we_paid=False` here would make
+    # `usd()` return 0.0 and `backfill` write that zero permanently -- the
+    # hardcoded assertion this module exists to remove, reappearing one layer
+    # down and harder to see.
+    if not payer or not str(funder or "").strip():
+        return None
     return GasCost(gas_used=gas_used, effective_price_wei=price,
-                   payer=payer, we_paid=we_paid)
+                   payer=payer, we_paid=payer.lower() == str(funder).lower())
 
 
 def fetch_receipt(tx_hash: str, endpoints: Optional[list[str]] = None,
@@ -250,11 +256,82 @@ def backfill(conn, funder: str, pol_usd: Optional[float],
         if usd is None:
             out["unreadable"] += 1
             continue
-        conn.execute(
+        # `AND gas IS NULL` makes the write idempotent. Two backfills can
+        # select the same row before either commits; without the guard the
+        # second one subtracts the gas from `realized_pnl` a second time and
+        # the loss is silent -- the row looks priced either way. Counting off
+        # `rowcount` rather than off the loop keeps the statistics honest about
+        # which process actually did the work.
+        cur = conn.execute(
             "UPDATE closes SET gas = ?,"
-            " realized_pnl = COALESCE(realized_pnl, 0) - ? WHERE id = ?",
+            " realized_pnl = COALESCE(realized_pnl, 0) - ?"
+            " WHERE id = ? AND gas IS NULL",
             (usd, usd, row["id"]))
-        out["priced"] += 1
-        out["usd"] += usd
+        if cur.rowcount:
+            out["priced"] += 1
+            out["usd"] += usd
     conn.commit()
     return out
+
+
+# --- entrypoint ---------------------------------------------------------------
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    """Price every close still carrying a NULL gas figure.
+
+    Without a runnable caller `backfill` is a function nothing invokes, and
+    merge closes keep NULL gas and a gross `realized_pnl` forever -- which is
+    the same reporting failure as the hardcoded zero, just quieter. Run it
+    after a merge has had time to mine, or on a schedule beside the fleet.
+
+    Read-mostly and safe to repeat: the update is guarded on `gas IS NULL`, so
+    a second run over the same rows changes nothing.
+    """
+    import argparse
+    import os
+    import sqlite3
+
+    from core_brain.order_registry import DEFAULT_DB_PATH
+
+    ap = argparse.ArgumentParser(
+        prog="python -m core_brain.gas",
+        description="Fill in closes.gas from on-chain receipts.")
+    ap.add_argument("--db", default=str(DEFAULT_DB_PATH),
+                    help="registry to backfill (default: the production one)")
+    ap.add_argument("--funder", default=None,
+                    help="funder address; defaults to POLY_FUNDER")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="report what would be priced, write nothing")
+    args = ap.parse_args(argv)
+
+    funder = args.funder or os.environ.get("POLY_FUNDER", "")
+    if not funder:
+        print("no funder: pass --funder or set POLY_FUNDER. Without it every "
+              "receipt is unattributable and would be recorded as unknown.")
+        return 2
+
+    price = pol_usd_price()
+    if price is None:
+        print("no POL price from any endpoint; nothing priced.")
+        return 1
+
+    conn = sqlite3.connect(args.db)
+    conn.row_factory = sqlite3.Row
+    try:
+        if args.dry_run:
+            pending = unpriced_closes(conn)
+            print(f"POL/USD {price:.6f}; {len(pending)} close(s) awaiting a "
+                  f"gas figure in {args.db}")
+            return 0
+        stats = backfill(conn, funder, price)
+    finally:
+        conn.close()
+
+    print(f"POL/USD {price:.6f}  seen {stats['seen']}  priced {stats['priced']}"
+          f"  unreadable {stats['unreadable']}  total ${stats['usd']:.5f}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

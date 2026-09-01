@@ -82,10 +82,18 @@ def test_the_payer_check_is_case_insensitive():
     assert cost.we_paid is True
 
 
-def test_an_empty_funder_never_claims_we_paid():
-    cost = gas.parse_receipt(_receipt(), funder="")
+def test_an_absent_funder_is_unknown_not_free():
+    # `we_paid=False` would make `usd()` return 0.0 and the backfill would
+    # write that zero permanently -- the hardcoded assertion reappearing one
+    # layer down. Unattributable must stay unattributable.
+    assert gas.parse_receipt(_receipt(), funder="") is None
+    assert gas.parse_receipt(_receipt(), funder="   ") is None
 
-    assert cost.we_paid is False
+
+def test_an_absent_payer_is_unknown_not_free():
+    assert gas.parse_receipt(_receipt(sender=""), FUNDER) is None
+    assert gas.parse_receipt({"gasUsed": "0x1", "effectiveGasPrice": "0x1"},
+                             FUNDER) is None
 
 
 # --- not measured is not free -------------------------------------------------
@@ -291,3 +299,47 @@ def test_merge_close_records_gas_as_unknown_not_zero():
 
     assert "gas=None" in merge_close
     assert "gas=0.0" not in merge_close
+
+
+def test_backfill_does_not_deduct_twice_for_a_row_already_priced(tmp_path):
+    # Two backfills can select the same NULL-gas row before either commits.
+    # Without `AND gas IS NULL` the second subtracts the gas from realized_pnl
+    # again, and the row looks correctly priced either way -- a silent loss.
+    conn = _closes_db(tmp_path, [(None, 1.0, "0xaaa")])
+    fetch = lambda h: _receipt(gas_used=hex(339_209),          # noqa: E731
+                               price=hex(24_200_000_000))
+
+    first = gas.backfill(conn, FUNDER, 0.09, fetch=fetch)
+    # A second process re-reads the same row from its own snapshot.
+    second_rows = [{"id": 1, "tx_hash": "0xaaa"}]
+    for row in second_rows:
+        usd = gas.close_gas_usd(row["tx_hash"], FUNDER, 0.09, fetch=fetch)
+        cur = conn.execute(
+            "UPDATE closes SET gas = ?,"
+            " realized_pnl = COALESCE(realized_pnl, 0) - ?"
+            " WHERE id = ? AND gas IS NULL", (usd, usd, row["id"]))
+        assert cur.rowcount == 0
+
+    expected = round(339_209 * 24.2e9 / 1e18 * 0.09, 8)
+    row = conn.execute("SELECT gas, realized_pnl FROM closes").fetchone()
+    assert first["priced"] == 1
+    assert row["realized_pnl"] == pytest.approx(1.0 - expected)
+
+
+def test_backfill_counts_only_rows_it_actually_changed(tmp_path):
+    conn = _closes_db(tmp_path, [(None, 1.0, "0xaaa")])
+    conn.execute("UPDATE closes SET gas = 0.005 WHERE id = 1")   # someone won
+    conn.commit()
+
+    # `unpriced_closes` no longer returns it, so nothing is double-counted.
+    stats = gas.backfill(conn, FUNDER, 0.09, fetch=lambda h: _receipt())
+
+    assert stats["priced"] == 0
+    assert conn.execute("SELECT gas FROM closes").fetchone()["gas"] == 0.005
+
+
+def test_backfill_has_a_runnable_entrypoint():
+    # A backfill nothing invokes leaves gas NULL forever, which is the same
+    # reporting failure as the hardcoded zero, just quieter.
+    assert callable(gas.main)
+    assert gas.main(["--funder", "", "--db", ":memory:"]) == 2

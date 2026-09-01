@@ -196,6 +196,40 @@ def test_run_records_a_sample_and_its_tape(tmp_path):
     assert tape == [("UP", 1, 250.0)]
 
 
+def test_run_flags_the_first_pass_as_bootstrap(tmp_path):
+    # `recent_trades` starts with an empty `seen` set, so a market's first pass
+    # returns the venue's whole recent window stamped against a mid that was
+    # not live when those trades printed. The second pass carries only genuinely
+    # new tape and is the only one whose distance from mid means anything.
+    markets = tmp_path / "markets.json"
+    markets.write_text(json.dumps(
+        [{"cid": "0xabc", "slug": "mlb-a-b", "tick": 0.01}]), encoding="utf-8")
+    db = tmp_path / "booktape.db"
+    clock = iter([0.0, 0.0, 1.0, 10.0])       # start, pass one, pass two, done
+    tapes = iter([{"tok_up": {0.30: 900.0}}, {"tok_up": {0.42: 250.0}}])
+
+    btr.run(minutes=0.1, interval=0.0, db_path=db, run_id="r",
+            markets_path=markets, clob_host="https://clob.example",
+            fetch_market=lambda cid: _Market(), fetch_book=_books,
+            fetch_tape=lambda cid, seen: next(tapes),
+            now=lambda: next(clock), sleep=lambda s: None)
+
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT price, volume, is_bootstrap FROM tape_buckets ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert rows == [(0.30, 900.0, 1), (0.42, 250.0, 0)]
+
+
+def test_split_bootstrap_marks_only_the_first_pass():
+    assert btr.split_bootstrap([], seen_before=False) is True
+    assert btr.split_bootstrap([], seen_before=True) is False
+
+
 def test_run_skips_a_market_whose_book_will_not_fetch(tmp_path):
     # One unreachable market must not end the recording -- the hour is the
     # expensive part, and a raise here would spend it for nothing.

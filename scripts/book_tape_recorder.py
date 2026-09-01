@@ -66,7 +66,8 @@ CREATE TABLE IF NOT EXISTS tape_buckets (
     side TEXT,
     price REAL NOT NULL,
     ticks_from_mid INTEGER,
-    volume REAL NOT NULL
+    volume REAL NOT NULL,
+    is_bootstrap INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS ix_tape_ticks ON tape_buckets(ticks_from_mid);
 CREATE INDEX IF NOT EXISTS ix_book_cid ON book_samples(condition_id);
@@ -150,6 +151,16 @@ def reachable_fraction(rows: list[dict], max_ticks: int) -> float:
     return inside / total
 
 
+def split_bootstrap(rows: list[dict], seen_before: bool) -> bool:
+    """Whether this pass's rows carry a meaningful distance from mid.
+
+    False on a market's first pass: `recent_trades` starts with an empty
+    `seen` set and returns the venue's whole recent window at once, so those
+    prices are stamped against a mid that was not live when they traded.
+    """
+    return not seen_before
+
+
 # --- store --------------------------------------------------------------------
 
 
@@ -185,13 +196,31 @@ def write_sample(conn: sqlite3.Connection, row: dict) -> None:
 
 
 def write_tape(conn: sqlite3.Connection, ts: float, run_id: str, cid: str,
-               slug: str, sides: dict, rows: list[dict]) -> None:
+               slug: str, sides: dict, rows: list[dict],
+               is_bootstrap: bool = False) -> None:
+    """Persist one pass's tape rows, flagging the first pass for what it is.
+
+    `recent_trades` de-duplicates against a `seen` set that starts empty, so a
+    market's FIRST pass returns the venue's whole recent window -- hundreds of
+    trades printed over hours -- and every one of them gets stamped against the
+    mid we happen to read now. Those rows are real trades at real prices, but
+    their distance from mid is meaningless: the first live pass of this
+    recorder produced buckets spanning 27 ticks either side of mid on a market
+    whose spread was one tick.
+
+    Flagged rather than dropped. The bootstrap window is a usable picture of
+    where a market has traded over its life, which is a different and also
+    interesting question; what it must never do is contaminate the
+    reachability curve, which needs the mid that was live when the print
+    happened.
+    """
     conn.executemany(
         "INSERT INTO tape_buckets (ts, run_id, condition_id, market_slug,"
-        " token_id, side, price, ticks_from_mid, volume)"
-        " VALUES (?,?,?,?,?,?,?,?,?)",
+        " token_id, side, price, ticks_from_mid, volume, is_bootstrap)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?)",
         [(ts, run_id, cid, slug, r["token_id"], sides.get(r["token_id"]),
-          r["price"], r["ticks_from_mid"], r["volume"]) for r in rows])
+          r["price"], r["ticks_from_mid"], r["volume"], int(is_bootstrap))
+         for r in rows])
 
 
 # --- loop ---------------------------------------------------------------------
@@ -270,6 +299,7 @@ def run(minutes: float, interval: float, db_path: Path, run_id: str,
         while now() < deadline:
             for market in load_universe(markets_path):
                 cid = str(market["cid"])
+                first_pass = cid not in seen_by_cid
                 seen = seen_by_cid.setdefault(cid, set())
                 try:
                     got = sample_market(market, fetch_market, fetch_book,
@@ -283,10 +313,12 @@ def run(minutes: float, interval: float, db_path: Path, run_id: str,
                 sample["run_id"] = run_id
                 write_sample(conn, sample)
                 write_tape(conn, sample["ts"], run_id, cid,
-                           sample["market_slug"], sides, rows)
+                           sample["market_slug"], sides, rows,
+                           is_bootstrap=first_pass)
                 conn.commit()
                 samples += 1
-                tape_rows += len(rows)
+                if not first_pass:
+                    tape_rows += len(rows)
             passes += 1
             log.info("pass %d: %d samples, %d tape rows", passes, samples, tape_rows)
             sleep(interval)

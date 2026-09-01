@@ -11,9 +11,11 @@ first completed double-maker pairs. It also produced a loss, and the loss pointe
 at the exit path — which turned out never to have been measured at all.
 
 **Result in one line: the "2–3c per stranded leg" that made this strategy look
-unprofitable is mostly a harness artifact. Repriced at the bid the exit costs
-0.28c/share, and the break-even double-maker rate falls from 74.7% to 26.8%
-against 33% observed.**
+unprofitable is mostly a harness artifact. At the three-hour read, repricing the
+exit at the bid costs 0.53c/share instead of 2.53c and drops the break-even
+double-maker rate from 76.6% to 40.9% — against 33% observed. That is a near
+miss rather than the rout the booked figures described, and the sample is far too
+small to call either way; see *Why this run cannot answer the question*.**
 
 ---
 

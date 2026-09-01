@@ -1029,6 +1029,30 @@ def resolve_wide_book_trial(raw: str) -> float | None:
     return _bounded_float("HUNTER_WIDE_BOOK_TRIAL", raw, 0.0, 0.30)
 
 
+def resolve_pair_cost_trial(raw: str) -> float:
+    """Parse `HUNTER_PAIR_COST_CAP`, refusing outside a declared rehearsal.
+
+    Same gate and same reasoning as `resolve_wide_book_trial`: whether this
+    process can place an order is a property of the entrypoint, so a knob that
+    loosens a loss-prevention cap is refused unless the entrypoint has declared
+    it cannot.
+
+    Bounded at $1.00 and no higher, and that ceiling is not arbitrary. The
+    instrument pays exactly $1.00, so a cap ABOVE it is not a looser risk
+    setting -- it admits pairs that are a booked loss the moment they assemble.
+    `HUNTER_COMPLETABLE_CAP` refuses the same value for the same reason. The
+    comparison in `risk.hard_block` is `>=`, so a cap of exactly 1.00 still
+    refuses a $1.0000 pair and permits everything under it.
+    """
+    if not rehearsal.is_rehearsal():
+        raise ValueError(
+            "HUNTER_PAIR_COST_CAP loosens max_pair_cost, the rule that stops a "
+            "pair assembling above the $1.00 the instrument pays. It applies "
+            "only in a process that has declared itself unable to place an "
+            "order -- core_brain.shadow_run, whose client cannot sign.")
+    return _bounded_float("HUNTER_PAIR_COST_CAP", raw, 0.0, 1.0)
+
+
 def load() -> MakerConfig:
     """Config, with the per-bot fields overridable from the environment.
 
@@ -1078,6 +1102,26 @@ def load() -> MakerConfig:
     pr = os.environ.get("HUNTER_PAIRS_RULE") or ""
     if pr.strip():
         kw["enable_pairs_rule"] = pr.strip().lower() not in ("0", "false", "off")
+    pcap = os.environ.get("HUNTER_PAIR_COST_CAP") or ""
+    if pcap.strip():
+        # PAIR-COST TRIAL (#145). `max_pair_cost = 0.99` is compared with `>=`
+        # in `risk.hard_block`, and run 145 measured the touch pair at exactly
+        # $0.99 on every 1c-tick book -- so the cap refuses the ONLY profitable
+        # configuration those books offer. On a one-tick spread a maker-only
+        # pair earns exactly one cent per share, taker completion breaks even
+        # at $1.0000, and crossing both legs loses; $0.99 is the whole trade.
+        #
+        # Whether that cent survives costs is now measured rather than
+        # assumed: a merge costs $0.01138 (median of 12 on-chain
+        # `mergePositions` transactions), which is a per-TRANSACTION cost
+        # amortised over the shares merged. At the shipped `quote_shares = 120`
+        # it is 0.9% of gross edge. So the cap is refusing a trade that clears
+        # its costs by two orders of magnitude at full size, and this knob
+        # exists to rehearse whether both legs ever fill.
+        #
+        # Rehearsal-only, on the same gate as the wide-book trial: this is a
+        # loss-prevention cap on the money path, not a preference.
+        kw["max_pair_cost"] = resolve_pair_cost_trial(pcap)
     ccap = os.environ.get("HUNTER_COMPLETABLE_CAP") or ""
     if ccap.strip():
         # 0 disables the cap, the escape hatch every other limit here has.

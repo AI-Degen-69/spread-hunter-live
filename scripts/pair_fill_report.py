@@ -72,8 +72,21 @@ def exits(conn: sqlite3.Connection) -> list[tuple]:
         return []
 
 
+def open_read_only(db_path: Path) -> sqlite3.Connection:
+    """Open the store read-only, so a report can never alter what it reports.
+
+    This reads live shadow stores while a rehearsal is still writing them, and
+    `data/orders.db` is a legal target too. A reporting tool holding a
+    read-write handle on the production registry is one typo away from being
+    the thing that corrupts it, and SQLite will happily create an empty
+    database if the path is wrong -- which would make a mistyped `--db` look
+    like a run that recorded nothing.
+    """
+    return sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+
+
 def report(db_path: Path) -> str:
-    conn = sqlite3.connect(str(db_path))
+    conn = open_read_only(db_path)
     try:
         markets = quoted_markets(conn)
         sizes = fill_sizes(conn)

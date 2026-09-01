@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sqlite3
 from pathlib import Path
 
@@ -78,8 +79,19 @@ def test_the_touch_pair_is_refused_at_the_shipped_cap_and_allowed_at_the_trial()
         def avg(self, side):
             return 0.66 if side == "UP" else 0.0
 
-    shipped = core_config.MakerConfig(max_pair_cost=0.99)
-    trial = core_config.MakerConfig(max_pair_cost=0.995)
+    # Built through `load()` rather than by constructing MakerConfig directly:
+    # a hand-built config would keep this test passing even if the
+    # HUNTER_PAIR_COST_CAP wiring were deleted, which is the one thing it is
+    # here to protect.
+    shipped = core_config.MakerConfig()
+    rehearsal.declare_rehearsal()
+    os.environ["HUNTER_PAIR_COST_CAP"] = "0.995"
+    try:
+        trial = importlib.reload(core_config).load()
+    finally:
+        os.environ.pop("HUNTER_PAIR_COST_CAP", None)
+    assert trial.max_pair_cost == 0.995
+    assert shipped.max_pair_cost == 0.99
     book = {"best_bid": 0.32, "best_ask": 0.34, "bids": {0.32: 5000.0}}
 
     # A DOWN bid at 0.33 against an UP average of 0.66 assembles a $0.99 pair.
@@ -172,3 +184,22 @@ def _clean_state():
     yield
     rehearsal.reset_for_test()
     importlib.reload(core_config)
+
+
+def test_report_opens_the_store_read_only(tmp_path):
+    # A reporting tool holding a read-write handle on the production registry
+    # is one typo away from being the thing that corrupts it.
+    db = _store(tmp_path, [("m", "UP", 0.0), ("m", "DOWN", 0.0)])
+    conn = rpt.open_read_only(db)
+    try:
+        with pytest.raises(sqlite3.OperationalError):
+            conn.execute("INSERT INTO quotes VALUES ('x','UP',1.0)")
+    finally:
+        conn.close()
+
+
+def test_report_refuses_a_path_that_does_not_exist(tmp_path):
+    # Read-write SQLite would silently CREATE an empty database here, and a
+    # mistyped --db would read as a run that recorded nothing.
+    with pytest.raises(sqlite3.OperationalError):
+        rpt.report(tmp_path / "typo.db")

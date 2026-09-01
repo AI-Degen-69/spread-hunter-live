@@ -399,6 +399,22 @@ def _filled_size(db_path: Path | str, local_id: str) -> float:
     return float(row["s"]) if row else 0.0
 
 
+def _market_slug(market) -> Optional[str]:
+    """The market's slug, under whichever name this object carries it.
+
+    The market specs the loop rotates expose `market_slug` -- the name the
+    quotes, orders and queue-mark writers all read. `slug` is what the pinned
+    market objects and the filter's own rows use. Reading only one of the two
+    is why the first sweep's markout rows came back with a NULL slug while
+    every quote row beside them was labelled.
+    """
+    for attr in ("market_slug", "slug"):
+        value = getattr(market, attr, None)
+        if value:
+            return str(value)
+    return None
+
+
 def _log_shadow_markout(
     registry: OrderRegistry,
     order,
@@ -433,7 +449,7 @@ def _log_shadow_markout(
             condition_id=str(condition_id),
             side=str(getattr(order, "side", "BUY") or "BUY"),
             token_id=getattr(order, "token_id", None),
-            market_slug=getattr(market, "slug", None),
+            market_slug=_market_slug(market),
             fill_price=price,
             size=size,
             ref_mid=price,

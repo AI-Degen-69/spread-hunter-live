@@ -86,6 +86,33 @@ def test_a_credited_shadow_fill_writes_a_markout_row(registry):
     assert row["mid_h0"] is None
 
 
+def test_the_markout_row_carries_the_market_slug(registry):
+    """The first sweep's rows came back with a NULL slug.
+
+    The market specs the loop rotates carry the slug as `market_slug` -- the
+    name every other writer in this module reads -- while the pinned market
+    objects call it `slug`. Reading only `slug` left the markout rows
+    unlabelled next to fully labelled quote rows on the same fill.
+    """
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_submit, settle_market,
+    )
+
+    class SpecMarket(FakeMarket):
+        market_slug = "atp-borges-tien-2026-08-30"
+        slug = None
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, SpecMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=lambda h, t: {"bids": {}})
+
+    settle_market(reg, SpecMarket(), db_path=db, seen=set(),
+                  traded_fn=lambda cid, seen: {"tok-up": {0.47: 20.0}})
+
+    assert _markout_rows(db)[0]["market_slug"] == "atp-borges-tien-2026-08-30"
+
+
 def test_the_markout_row_carries_the_run_that_filled(registry):
     """A store is reused across rehearsals; an unattributed row is unusable."""
     from core_brain.shadow_exec import (

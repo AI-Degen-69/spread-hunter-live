@@ -48,6 +48,9 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
   <link rel="stylesheet" href="/static/styles.css">
+  <!-- Sidebar-pages layout. Every rule is scoped to a class `prototype.js`
+       only adds on /prototype, so this is inert on the live page. -->
+  <link rel="stylesheet" href="/static/prototype.css">
 </head>
 <body>
 <div class="container">
@@ -79,8 +82,8 @@
 
   <!-- ── Tab Switcher (DT4: text-only, no emoji) ── -->
   <div style="display:flex;justify-content:flex-end;padding:0 16px">
-    <a href="/prototype" class="mono" style="font-size:11px;color:var(--text-muted);text-decoration:none"
-       title="Sidebar-pages layout prototype — frame only, no data wired">Layout prototype →</a>
+    <a id="proto-link" href="/prototype" class="mono" style="font-size:11px;color:var(--text-muted);text-decoration:none"
+       title="Sidebar-pages layout prototype — the same live panels, re-organized into pages">Layout prototype →</a>
   </div>
   <nav class="tab-switcher" role="tablist" aria-label="Dashboard tabs">
     <button class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-1" id="tab-btn-1" type="button">LIVE OPERATIONS</button>
@@ -152,7 +155,7 @@
     </div>
 
     <!-- Core Strategy Services Deck (Execution Pipeline Grid) -->
-    <div style="margin-bottom:16px">
+    <div id="services-deck" style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
         <div class="font-display" style="font-size:15px;letter-spacing:0.04em;color:var(--text-primary)">
           STRATEGY EXECUTION SERVICES &amp; BACKGROUND WORKERS
@@ -206,7 +209,7 @@
     </div>
 
     <!-- Event Ticker (Live Log Stream) -->
-    <div class="card">
+    <div class="card" id="event-ticker-card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
         <div>
           <div class="font-display" style="font-size:15px;letter-spacing:0.04em;color:var(--text-primary)">
@@ -621,5 +624,8 @@
   const CONTROL_TOKEN = "__LIVE_DASH_CONTROL_TOKEN__";
 </script>
 <script src="/static/app.js"></script>
+<!-- Runs after app.js has bound every panel, and only on /prototype: it moves
+     those same nodes into the sidebar pages rather than re-rendering them. -->
+<script src="/static/prototype.js"></script>
 </body>
 </html>

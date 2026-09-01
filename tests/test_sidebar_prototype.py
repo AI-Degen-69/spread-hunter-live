@@ -1,27 +1,33 @@
-"""The sidebar-pages frame prototype (#95).
+"""The sidebar-pages layout (#95 frame, #140 content move).
 
 The dashboard's three horizontal tabs stopped scaling: live ops, analytics,
 screener and the strategy explainer are four concerns crammed into three
-panels plus a separate URL. This is the frame for a sidebar-driven layout —
-the rail, five named pages, and empty containers waiting for their content to
-move in. No data is wired, and no render logic moved out of `app.js`.
+panels plus a separate URL. #120 shipped the frame -- the rail, five named
+pages, empty containers. This is the content moving in.
 
-It is served at `/prototype` rather than replacing `/`: this dashboard is the
-control surface for a loop that places real orders, and an empty scaffold
-standing where the live page used to be would take that surface away while the
-layout is still being judged. Swapping it in is a one-line change to `index()`.
+It moves nodes rather than copying markup. `app.js` finds every panel it
+renders into by id, and an id survives a change of parent, so `/prototype`
+shows the same live data the tabbed page does with no second copy of the
+markup to drift.
+
+It is still served at `/prototype` rather than replacing `/`: this dashboard
+is the control surface for a loop that places real orders, and the operator
+keeps the surface they know until the layout is signed off.
 """
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-_STATIC = Path(__file__).resolve().parent.parent / "dashboard" / "static"
+_ROOT = Path(__file__).resolve().parent.parent
+_STATIC = _ROOT / "dashboard" / "static"
 HARNESS = Path(__file__).resolve().parent / "js" / "prototype_nav_harness.cjs"
+LAYOUT_HARNESS = Path(__file__).resolve().parent / "js" / "prototype_layout_harness.cjs"
 
 PAGES = ("home", "data-markets", "strategy", "trades", "reports")
 
@@ -37,26 +43,131 @@ def _nav(clicks: list[str] | None = None, stored: str | None = None,
     return json.loads(out.stdout)
 
 
-def test_the_frame_has_one_container_per_page():
-    # Arrange / Act
-    html = (_STATIC / "prototype.html").read_text(encoding="utf-8")
-
-    # Assert
-    for page in PAGES:
-        assert f'id="page-{page}"' in html
-        assert f'data-page="{page}"' in html
+def _layout() -> dict:
+    out = subprocess.run([shutil.which("node"), str(LAYOUT_HARNESS)],
+                         capture_output=True, text=True, check=True, encoding="utf-8")
+    return json.loads(out.stdout)
 
 
-def test_the_pages_start_empty():
-    # Arrange — the deliverable is the frame; wiring data is a later change.
-    html = (_STATIC / "prototype.html").read_text(encoding="utf-8")
+def _matches(html: str, selector: str) -> int:
+    """How many elements in the served page a layout selector would find."""
+    if selector.startswith("#"):
+        return len(re.findall(rf'\bid="{re.escape(selector[1:])}"', html))
+    if selector.startswith("."):
+        name = re.escape(selector[1:])
+        return len(re.findall(rf'\bclass="[^"]*\b{name}\b[^"]*"', html))
+    raise AssertionError(f"unsupported selector in the layout map: {selector}")
 
-    # Act / Assert — placeholders, and no fetch of any kind.
-    assert html.count('class="proto-placeholder"') >= len(PAGES)
+
+# ── The layout map ──────────────────────────────────────────────────────────
+
+@requires_node
+def test_every_page_in_the_rail_has_panels_assigned():
+    # Arrange — the frame shipped empty; the deliverable here is that no page
+    # is still a placeholder.
+    layout = _layout()
+
+    # Act / Assert
+    assert [entry["page"] for entry in layout["layout"]] == list(PAGES)
+    for entry in layout["layout"]:
+        assert entry["selectors"], f'{entry["page"]} has no panels assigned'
+
+
+@requires_node
+def test_every_assigned_panel_exists_on_the_served_page():
+    # Arrange — a selector that matches nothing is a silently empty page, and
+    # one that matches twice would move the wrong node.
+    html = (_STATIC / "index.html").read_text(encoding="utf-8")
+
+    # Act / Assert
+    for entry in _layout()["layout"]:
+        for selector in entry["selectors"]:
+            assert _matches(html, selector) == 1, (
+                f'{selector} ({entry["page"]}) matches '
+                f"{_matches(html, selector)} elements in index.html")
+
+
+@requires_node
+def test_no_panel_is_claimed_by_two_pages():
+    # Arrange — a node has one parent. Two pages claiming it means whichever
+    # page is built last silently steals it from the other.
+    seen: dict[str, str] = {}
+
+    # Act / Assert
+    for entry in _layout()["layout"]:
+        for selector in entry["selectors"]:
+            assert selector not in seen, (
+                f'{selector} is on both {seen[selector]} and {entry["page"]}')
+            seen[selector] = entry["page"]
+
+
+@requires_node
+def test_the_layout_only_takes_over_the_prototype_path():
+    # Arrange — the live control surface must not change shape under the
+    # operator because a script shipped with the page.
+    layout = _layout()
+
+    # Act / Assert
+    assert layout["mounts_on_prototype"] is True
+    assert layout["mounts_on_prototype_slash"] is True
+    assert layout["mounts_on_root"] is False
+
+
+# ── Moving, not copying ─────────────────────────────────────────────────────
+
+def test_the_layout_moves_live_nodes_instead_of_rendering_its_own():
+    # Arrange — a second render path would have to be kept in sync with
+    # app.js for ever. The layout re-parents; it does not fetch or render.
     js = (_STATIC / "prototype.js").read_text(encoding="utf-8")
+
+    # Act / Assert
     assert "fetch(" not in js
     assert "/api/" not in js
+    assert "appendChild(panel)" in js
 
+
+def test_the_pages_are_no_longer_placeholders():
+    # Arrange / Act
+    js = (_STATIC / "prototype.js").read_text(encoding="utf-8")
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+
+    # Assert — the empty-frame scaffold is gone, page and file.
+    assert "proto-placeholder" not in js
+    assert "proto-placeholder" not in css
+    assert not (_STATIC / "prototype.html").exists()
+
+
+def test_the_emptied_tab_shells_stay_in_the_document():
+    # Arrange — app.js reads `#tab-3.hidden` before it will scroll the kanban
+    # and toggles `#tab-1..3` by id. Removing the shells would break both.
+    js = (_STATIC / "prototype.js").read_text(encoding="utf-8")
+
+    # Act / Assert
+    assert "'tab-1', 'tab-2', 'tab-3'" in js
+    assert "section.hidden = false" in js
+
+
+def test_the_strategy_explainer_is_framed_rather_than_forked():
+    # Arrange — the explainer is a whole document; copying its markup into the
+    # dashboard would leave two copies to edit.
+    js = (_STATIC / "prototype.js").read_text(encoding="utf-8")
+
+    # Act / Assert
+    assert "/static/strategy_explainer.html" in js
+    assert (_STATIC / "strategy_explainer.html").exists()
+
+
+def test_the_analytics_subnav_is_stood_down():
+    # Arrange — those buttons filtered one tab panel by section, and two of
+    # the panels they hide (`#analytics-gates`, `#market-inspection-card`)
+    # now live on other pages. Left live, a click there blanks another page.
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+
+    # Act / Assert
+    assert ".proto-body .stats-subnav" in css
+
+
+# ── Navigation ──────────────────────────────────────────────────────────────
 
 @requires_node
 def test_exactly_one_page_is_visible_at_a_time():
@@ -123,29 +234,78 @@ def test_the_drawer_has_a_narrow_screen_rule():
     assert ".proto-body.proto-nav-open .proto-sidebar" in css
 
 
-def test_the_frame_inherits_the_dashboard_theme():
-    # Arrange — a scaffold with its own colours drifts from the live page the
+# ── Wiring ──────────────────────────────────────────────────────────────────
+
+def test_the_open_drawer_is_opaque():
+    # Arrange — `--bg-card` is 65% translucent. That is right for a card on the
+    # page and wrong for a drawer sitting over the header: the wordmark and the
+    # EMERGENCY CANCEL ALL button read straight through the page names.
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+
+    # Act
+    drawer = css.split("@media (max-width: 900px)")[1]
+    rail = drawer.split(".proto-sidebar {")[1].split("}")[0]
+
+    # Assert
+    assert "background: var(--bg-surface)" in rail
+
+
+def test_the_layout_inherits_the_dashboard_theme():
+    # Arrange — a layout with its own colours drifts from the live page the
     # moment either changes.
     css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
-    html = (_STATIC / "prototype.html").read_text(encoding="utf-8")
 
     # Act / Assert
-    assert "/static/styles.css" in html
     assert "var(--bg-card)" in css
     assert "var(--border-subtle)" in css
 
 
+def test_the_served_page_loads_the_layout_assets():
+    # Arrange / Act
+    index = (_STATIC / "index.html").read_text(encoding="utf-8")
+
+    # Assert — after app.js, so the panels exist before they are moved.
+    assert '/static/prototype.css' in index
+    assert index.index('/static/app.js') < index.index('/static/prototype.js')
+
+
+def test_the_layout_stylesheet_is_inert_on_the_live_page():
+    # Arrange — index.html loads it on every request, including `/`.
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+
+    # Act — every rule outside a comment must be scoped to a proto- class.
+    body = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    selectors = [part.strip()
+                 for block in re.findall(r"([^{}]+)\{", body)
+                 for part in block.split(",")
+                 if part.strip() and not part.strip().startswith("@")]
+
+    # Assert
+    unscoped = [s for s in selectors if "proto-" not in s]
+    assert not unscoped, f"these rules would restyle the live page: {unscoped}"
+
+
 def test_the_live_dashboard_is_still_served_at_the_root():
-    # Arrange — the prototype must not displace the control surface.
-    server = (Path(__file__).resolve().parent.parent / "dashboard" / "server.py"
-              ).read_text(encoding="utf-8")
+    # Arrange — the layout under review must not displace the control surface.
+    server = (_ROOT / "dashboard" / "server.py").read_text(encoding="utf-8")
 
     # Act / Assert
     assert '@app.get("/", response_class=HTMLResponse)' in server
     assert '@app.get("/prototype", response_class=HTMLResponse)' in server
 
 
-def test_the_prototype_is_reachable_from_the_live_page():
+def test_the_prototype_path_serves_the_live_document_with_its_token():
+    # Arrange — the panels only show data if app.js can authenticate its
+    # control calls, so the placeholder has to be filled here too.
+    server = (_ROOT / "dashboard" / "server.py").read_text(encoding="utf-8")
+    prototype = server.split("def prototype_page")[1].split("def index")[0]
+
+    # Act / Assert
+    assert "_load_page_html()" in prototype
+    assert "CONTROL_TOKEN_PLACEHOLDER, CONTROL_TOKEN" in prototype
+
+
+def test_the_layout_is_reachable_from_the_live_page():
     # Arrange / Act
     index = (_STATIC / "index.html").read_text(encoding="utf-8")
 

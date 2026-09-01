@@ -1,55 +1,25 @@
-/* Sidebar-pages prototype (#95).
+/* Sidebar-pages layout (#95 frame, #140 content move).
  *
- * Frame only: the sidebar, the page containers, and the responsive drawer.
+ * Loaded by `index.html` on every request, but every rule below is scoped to a
+ * class `prototype.js` only adds on `/prototype`. On `/` this stylesheet is
+ * inert, so the live control surface cannot be restyled by accident.
+ *
  * Every colour, radius and font comes from the tokens `styles.css` already
- * defines, so the scaffold cannot drift from the live dashboard's theme while
- * it waits for its content to move in. */
+ * defines, so the layout cannot drift from the dashboard's theme. */
 
 .proto-body {
   min-height: 100vh;
 }
 
-.proto-skip {
-  position: absolute;
-  left: -9999px;
-}
-.proto-skip:focus {
-  left: 12px;
-  top: 12px;
-  z-index: 40;
-  background: var(--bg-card);
-  color: var(--text-primary);
-  border: 1px solid var(--border-subtle);
-  border-radius: 8px;
-  padding: 8px 12px;
+/* The rail eats ~250px, so the content column needs the width back. */
+.proto-body .container {
+  max-width: 1720px;
 }
 
-.proto-topbar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-card);
-  position: sticky;
-  top: 0;
-  z-index: 20;
-}
-.proto-wordmark {
-  font-size: 18px;
-  letter-spacing: 0.06em;
-}
-.proto-badge {
-  font-size: 10px;
-}
-.proto-back {
-  margin-left: auto;
-  color: var(--text-secondary);
-  text-decoration: none;
-  font-size: 12px;
-}
-.proto-back:hover {
-  color: var(--text-primary);
+/* The tab row is replaced, not hidden behind a toggle: the rail is the
+ * navigation now. */
+.proto-body .tab-switcher[hidden] {
+  display: none;
 }
 
 .proto-hamburger {
@@ -74,18 +44,20 @@
 
 .proto-shell {
   display: grid;
-  grid-template-columns: 232px minmax(0, 1fr);
+  grid-template-columns: 236px minmax(0, 1fr);
   align-items: start;
-  gap: 0;
+  gap: 18px;
 }
 
 .proto-sidebar {
   position: sticky;
-  top: 59px;
+  top: 12px;
   align-self: start;
-  height: calc(100vh - 59px);
-  padding: 14px 10px;
-  border-right: 1px solid var(--border-subtle);
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  padding: 12px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
   background: var(--bg-card);
   display: flex;
   flex-direction: column;
@@ -130,16 +102,10 @@
 .proto-nav-btn[aria-current="page"] .proto-nav-icon {
   color: #38bdf8;
 }
-.proto-nav-foot {
-  margin-top: auto;
-  font-size: 10px;
-  line-height: 1.5;
-  color: var(--text-muted);
-}
 
 .proto-pages {
-  padding: 20px 22px 48px;
   min-width: 0;
+  padding-bottom: 32px;
 }
 .proto-page-title {
   margin: 0 0 4px;
@@ -150,19 +116,39 @@
   margin: 0 0 16px;
   color: var(--text-secondary);
   font-size: 13px;
-  max-width: 70ch;
+  max-width: 78ch;
 }
-.proto-placeholder {
-  border: 1px dashed var(--border-subtle);
+
+/* The panels arrive with the margins they had inside a tab panel; the page is
+ * a plain column, so the last one must not push a gap past the fold. */
+.proto-page > :last-child {
+  margin-bottom: 0;
+}
+
+/* The explainer is framed rather than copied, so it keeps one source. */
+.proto-explainer-card {
+  margin-top: 16px;
+}
+.proto-explainer-title {
+  font-size: 15px;
+  letter-spacing: 0.04em;
+  color: var(--text-primary);
+  margin-bottom: 10px;
+}
+.proto-explainer-frame {
+  width: 100%;
+  height: 70vh;
+  min-height: 420px;
+  border: 1px solid var(--border-subtle);
   border-radius: 10px;
-  background: var(--bg-card);
-  color: var(--text-muted);
-  font: 600 11px 'JetBrains Mono', monospace;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  padding: 28px 16px;
-  margin-bottom: 12px;
-  text-align: center;
+  background: var(--bg-surface);
+}
+
+/* The analytics sub-tabs filtered one tab panel by section. The rail does that
+ * job now, and leaving the buttons live would hide panels that have moved to
+ * other pages. The live sample count beside them still earns its place. */
+.proto-body .stats-subnav {
+  display: none;
 }
 
 /* Drawer. Below 900px the rail slides over the page instead of squeezing it,
@@ -176,11 +162,16 @@
   }
   .proto-sidebar {
     position: fixed;
-    top: 59px;
+    top: 12px;
     left: 0;
     width: 240px;
     max-width: 82vw;
+    max-height: calc(100vh - 24px);
     z-index: 30;
+    /* `--bg-card` is 65% translucent, which is right for a card sitting on the
+     * page and wrong for a drawer sitting over the header: the wordmark and
+     * the buttons underneath read straight through the page names. */
+    background: var(--bg-surface);
     transform: translateX(-105%);
     transition: transform 160ms ease;
   }

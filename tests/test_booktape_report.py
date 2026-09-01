@@ -94,3 +94,26 @@ def test_report_survives_a_store_with_no_tape(tmp_path):
     text = rpt.report(db)
 
     assert "all tape:" in text
+
+
+def test_spreads_skip_a_one_sided_book(tmp_path):
+    # A book with no ask has no spread to average. Including it would have the
+    # report format None, and averaging the readable rows under a count that
+    # includes the dark ones reports a spread for a market that was half dark.
+    db = _store(tmp_path, [{}, {"best_ask_up": None}], [])
+
+    conn = sqlite3.connect(db)
+    try:
+        rows = rpt.spreads(conn)
+    finally:
+        conn.close()
+
+    assert rows == [("mlb-a-b", 1, 0.01, 0.01, 800.0, 700.0)]
+
+
+def test_report_renders_when_every_book_is_one_sided(tmp_path):
+    db = _store(tmp_path, [{"best_ask_up": None, "best_ask_down": None}], [])
+
+    text = rpt.report(db)
+
+    assert "MARKETS SEEN" in text

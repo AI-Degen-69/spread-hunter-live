@@ -57,13 +57,21 @@ def mid_sums(conn: sqlite3.Connection) -> list[tuple]:
 
 
 def spreads(conn: sqlite3.Connection) -> list[tuple]:
-    """(market, n, median tick spread on each leg) -- the regime the run saw."""
+    """(market, n, mean spread per leg, mean touch size per leg).
+
+    Restricted to samples where BOTH sides of BOTH books are readable. A
+    one-sided book has no spread to average, and averaging over the rows that
+    do have one, under a count that includes the rows that do not, reports a
+    spread for a market that was half dark.
+    """
     return conn.execute(
         "SELECT market_slug, COUNT(*),"
         " ROUND(AVG(best_ask_up - best_bid_up), 4),"
         " ROUND(AVG(best_ask_down - best_bid_down), 4),"
         " ROUND(AVG(touch_size_up), 0), ROUND(AVG(touch_size_down), 0)"
-        " FROM book_samples WHERE best_bid_up IS NOT NULL"
+        " FROM book_samples"
+        " WHERE best_bid_up IS NOT NULL AND best_ask_up IS NOT NULL"
+        "   AND best_bid_down IS NOT NULL AND best_ask_down IS NOT NULL"
         " GROUP BY market_slug ORDER BY COUNT(*) DESC"
     ).fetchall()
 
@@ -90,7 +98,7 @@ def report(db_path: Path) -> str:
     out.append(f"  {'market':<34}{'n':>6}{'sprd UP':>9}{'sprd DN':>9}"
                f"{'touch UP':>11}{'touch DN':>11}")
     for slug, n, su, sd, tu, td in books:
-        out.append(f"  {slug[:34]:<34}{n:>6}{su:>9.4f}{sd:>9.4f}"
+        out.append(f"  {slug[:34]:<34}{n:>6}{su or 0.0:>9.4f}{sd or 0.0:>9.4f}"
                    f"{tu or 0:>11.0f}{td or 0:>11.0f}")
     out.append("")
 

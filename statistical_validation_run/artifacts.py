@@ -34,7 +34,6 @@ from typing import Any, Optional
 
 from core_brain.config import MakerConfig
 from core_brain.kpi import (
-    PESSIMISTIC_CONVERSION_GAS,
     build_sensitivity,
     evaluate_stat_gate,
     gate_definition,
@@ -64,7 +63,7 @@ GATE_ORDER = [
     "Primary — total PnL (inclusive)",
     "Total PnL $ (dollar twin)",
     "Win rate (secondary)",
-    "Economic (expectancy vs gas)",
+    "Economic (expectancy)",
     "Adverse selection",
     "Rescue completion",
     "Sample size",
@@ -182,14 +181,12 @@ def build_gate_rows(
             "rationale": "wins are not a coin flip (Wilson interval) — secondary only",
         },
         {
-            "gate": "Economic (expectancy vs gas)",
+            "gate": "Economic (expectancy)",
             "metric": "expectancy_usd",
             "value": expectancy,
-            "threshold": f"> ${cfg.merge_gas_usd:.2f}",
-            "passed": (
-                None if expectancy is None else expectancy > cfg.merge_gas_usd
-            ),
-            "rationale": "edge survives real merge gas; folded into total PnL anyway",
+            "threshold": "> $0.00",
+            "passed": None if expectancy is None else expectancy > 0.0,
+            "rationale": "edge per close is positive; folded into total PnL anyway",
         },
         {
             "gate": "Adverse selection",
@@ -235,7 +232,17 @@ def build_gate_rows(
         },
     ]
 
+    # GATE_ORDER is a name-keyed filter, so a gate renamed here and not there
+    # disappears from the memo without a word -- the report simply comes back
+    # one gate shorter and still reads as complete. Renaming the economic gate
+    # off `merge_gas_usd` did exactly that. Fail loudly instead.
     ordered = {r["gate"]: r for r in rows}
+    unlisted = [name for name in ordered if name not in GATE_ORDER]
+    if unlisted:
+        raise ValueError(
+            "gate(s) built but missing from GATE_ORDER, so they would be "
+            f"dropped from the memo: {unlisted}"
+        )
     return [ordered[name] for name in GATE_ORDER if name in ordered]
 
 
@@ -479,11 +486,13 @@ def render_report_md(
         "trade-tape volume at the order's own price.",
         "- Completion fills are priced at the ask — the optimistic end of taker "
         "(upper bound, noted in the design doc). The pessimistic sensitivity "
-        f"column re-prices that completion one tick worse plus `gas={PESSIMISTIC_CONVERSION_GAS:.2f}`; "
+        "column re-prices that completion one tick worse; "
         "GO requires the base AND the pessimistic `ci90_lower_pct` to pass.",
         "- Rebate income is `None` on graduated spread markets (`rebate_est`); "
         "the report never invents rebate income.",
-        "- Gas is 0 in shadow; `merge_gas_usd` is reported as the economic gate.",
+        "- Gas is 0, in shadow and live alike: merges are submitted through "
+        "Polymarket's relayer, which pays for them. The economic gate is "
+        "positive expectancy per close.",
         "- Immature markouts read as `insufficient_sample` (INCONCLUSIVE), never "
         "as zero drift.",
         "- Rehearsal PnL must never be presented as live PnL.",

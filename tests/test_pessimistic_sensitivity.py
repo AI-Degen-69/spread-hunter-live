@@ -103,8 +103,11 @@ def test_verdict_is_inconclusive_when_ci_cannot_be_computed():
     assert s["pessimistic"]["ci90_lower_pct"] is None
 
 
-def test_constant_matches_the_seeded_merge_gas_usd():
-    from core_brain.config import load as load_cfg
+def test_conversion_gas_is_zero_because_the_relayer_pays_it():
+    """The pessimistic variant's only penalty is the tick.
 
-    cfg = load_cfg()
-    assert PESSIMISTIC_CONVERSION_GAS == pytest.approx(cfg.merge_gas_usd)
+    Merges go through Polymarket's relayer, which sends the transaction from
+    its own address. There is no conversion gas to charge, so the constant is
+    0.0 and the parameter survives only for a caller that wants to model some
+    other per-close cost."""
+    assert PESSIMISTIC_CONVERSION_GAS == pytest.approx(0.0)

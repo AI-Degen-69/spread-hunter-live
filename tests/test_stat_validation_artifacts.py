@@ -407,7 +407,9 @@ class TestPessimisticSensitivity:
         sens = data["sensitivity"]
         assert set(sens) >= {"base", "pessimistic", "verdict",
                              "gas", "tick_per_share", "threshold_pct"}
-        assert sens["gas"] == pytest.approx(0.05)
+        # The relayer pays for a merge, so the pessimistic column charges
+        # the tick and nothing else.
+        assert sens["gas"] == pytest.approx(0.0)
         assert sens["base"]["ci90_lower_pct"] >= 1.0
         assert sens["pessimistic"]["ci90_lower_pct"] >= 1.0
         assert sens["verdict"] == "GO"
@@ -422,11 +424,11 @@ class TestPessimisticSensitivity:
         """A primary GO must not be headlined when the sensitivity gate says
         NO-GO -- the report would otherwise claim GO survived pessimism while
         presenting one that did not."""
-        # Base passes (0.40/19.6 = 2.04%) but the pessimistic column adds
-        # shares*tick (0.20) + gas (0.05) and falls below 1.0%.
+        # Base passes (0.40/19.6 = 2.04%) but the pessimistic column charges
+        # shares*tick (22 * $0.01 = $0.22), leaving 0.18/19.6 = 0.92%.
         closes = [
             {"method": "shadow_merge", "realized_pnl": 0.40,
-             "cost_basis": 19.6, "shares": 20}
+             "cost_basis": 19.6, "shares": 22}
         ] * 5
         out, _kpi = _write_bundle(tmp_path, closes)
 

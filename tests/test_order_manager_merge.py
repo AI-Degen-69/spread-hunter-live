@@ -178,8 +178,8 @@ def test_merge_guard_insufficient_balance_down_leg(tmp_path):
 
 
 def test_merge_dry_run_touches_no_network(tmp_path, capsys):
-    """5. Dry-run prints execution plan, token IDs, expected USDC, estimated gas,
-    and calldata without sending any network request."""
+    """5. Dry-run prints execution plan, token IDs, expected USDC, net
+    collateral and calldata without sending any network request."""
     cond_id = "0x26b64228a9fb13e5c2221cd5879fa0f235cee8ab254c0f094977cc86beeb6a2f"
 
     mock_client = MagicMock()
@@ -200,8 +200,9 @@ def test_merge_dry_run_touches_no_network(tmp_path, capsys):
     captured = capsys.readouterr()
     assert "MERGE (gasless via Polymarket Relayer)" in captured.out
     assert "expected_usdc   $1.00" in captured.out
-    assert "estimated_gas   $0.05" in captured.out
-    assert "net_collateral  $0.95" in captured.out
+    # The relayer pays the gas, so the wallet receives the whole dollar.
+    # `test_merge_floor_is_gasless.py` owns that claim in full.
+    assert "net_collateral  $1.00" in captured.out
     assert "0x9e7212ad" in captured.out
     assert "DRY RUN -- nothing sent" in captured.out
 

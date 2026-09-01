@@ -624,12 +624,13 @@ def _pipeline_sourced_dbs() -> set[Path]:
     return {DEFAULT_DB_PATH.resolve()}
 
 
-# The pessimistic report variant (Issue #55) charges a conversion gas the base
-# scenario does not. Mirrors the seeded `MakerConfig.merge_gas_usd` (0.05): a
-# rehearsal's merge records gas = 0, so the sensitivity column charges the
-# constant the return WOULD have paid to cross and merge a completion. Kept
-# next to the scenario code so it is easy to find and change.
-PESSIMISTIC_CONVERSION_GAS = 0.05
+# The pessimistic report variant (Issue #55) re-prices a completion one tick
+# worse than the ask it was recorded at. It charges no conversion gas: a merge
+# goes through Polymarket's relayer, which pays for it, so a rehearsal's
+# `gas = 0` is the true figure rather than an artefact of the rehearsal. The
+# `gas` parameter stays on the signature so a caller can model some other
+# per-close cost, but nothing in this repo passes one.
+PESSIMISTIC_CONVERSION_GAS = 0.0
 
 # Close methods that resolved through a taker action -- a completion buy crossed
 # at the ask, or a naked / single-buy leg sold through the book. These are the

@@ -1272,7 +1272,6 @@ def merge(condition_id: str,
     the CTF. Left as None it is read from the venue, and a read that fails
     refuses the merge rather than guessing a target that would revert.
     """
-    from core_brain.config import MakerConfig
     if index_sets is None:
         index_sets = [1, 2]
     amount_base_units = int(round(amount * 1e6))
@@ -1331,9 +1330,13 @@ def merge(condition_id: str,
     else:
         resolved_str = "yes" if denom > 0 else "no"
 
-    merge_gas = MakerConfig().merge_gas_usd
+    # No gas line. The relayer sends the merge from its own address and pays
+    # for it (`/trading/wallets-auth`, "Execute Gasless Transactions"), so the
+    # wallet receives the full 1.00 pUSD per pair. `net_collateral` is kept as
+    # a separate name because the operator reads both lines and a preview that
+    # printed one figure twice would look like a rendering bug.
     expected_collateral = amount * 1.00
-    net_collateral = expected_collateral - merge_gas
+    net_collateral = expected_collateral
 
 
     up_bal = 0.0
@@ -1457,7 +1460,6 @@ def merge(condition_id: str,
     print(f"token_up        {up_tok_id} (held: {held_up})")
     print(f"token_down      {dn_tok_id} (held: {held_dn})")
     print(f"expected_usdc   ${expected_collateral:,.2f}")
-    print(f"estimated_gas   ${merge_gas:,.2f} (config.merge_gas_usd)")
     print(f"net_collateral  ${net_collateral:,.2f}")
     print(f"encoded_call    {call_data[:42]}... ({len(call_data)} chars)")
 

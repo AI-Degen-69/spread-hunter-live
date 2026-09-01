@@ -2902,7 +2902,7 @@ const OT_NOTES = {
 };
 
 const OT_COLUMNS = {
-  'active-markets': ['Market', 'Category', 'UP Mid', 'DOWN Mid', 'Pair Cost',
+  'active-markets': ['Market', 'Category', 'UP Quote', 'DOWN Quote', 'Pair Cost',
                      'Edge', '24h Volume', 'Resolves', 'Status'],
   'open-orders': ['Market', 'Leg', 'Price', 'Shares', 'Filled', 'Remaining',
                   'Total Cost', 'Queue Ahead', 'Age', 'Status'],
@@ -2910,18 +2910,49 @@ const OT_COLUMNS = {
                 'Hedge', 'Mark Value', 'Unrealized', 'Realized'],
 };
 
-/* The last mid this market's own quote log observed, per leg. Quotes carry the
- * mid they were priced against, which is the only current price the dashboard
- * has without opening its own book feed. */
-function latestLegMids(market) {
+/* The quote log writes the down leg as `DOWN`; orders and the pair summary
+ * call it `DN`. One spelling in, one spelling out, or half the table reads as
+ * unquoted when both legs were quoted all along. */
+function normalizeLeg(side) {
+  const v = String(side || '').toUpperCase();
+  if (v === 'UP') return 'UP';
+  if (v === 'DN' || v === 'DOWN') return 'DN';
+  return null;
+}
+
+/* The newest quote this market logged on each leg: the price the bot is
+ * bidding and the mid it was priced against. */
+function latestLegQuotes(market) {
   const best = {};
   for (const q of (market && market.quotes) || []) {
-    const leg = String(q.side || '').toUpperCase();
-    if ((leg !== 'UP' && leg !== 'DN') || q.mid === null || q.mid === undefined) continue;
+    const leg = normalizeLeg(q.side);
+    if (leg === null) continue;
     const ts = Number(q.ts) || 0;
-    if (!best[leg] || ts >= best[leg].ts) best[leg] = { ts, mid: Number(q.mid) };
+    if (!best[leg] || ts >= best[leg].ts) {
+      best[leg] = {
+        ts,
+        price: (q.price === null || q.price === undefined) ? null : Number(q.price),
+        mid: (q.mid === null || q.mid === undefined) ? null : Number(q.mid),
+      };
+    }
   }
-  return { up: best.UP ? best.UP.mid : null, dn: best.DN ? best.DN.mid : null };
+  return { up: best.UP || null, dn: best.DN || null };
+}
+
+/* The last mid observed on each leg. Used to mark an unhedged position: the
+ * mid is what the leg is worth, not what the bot bid for it.
+ *
+ * It is deliberately NOT the source of the pair cost on Active Markets. The
+ * two legs of a binary market are anti-correlated -- UP mid and DOWN mid sum
+ * to $1.00 by construction -- so an "edge" computed from mids reads 0.0¢ on
+ * every row. The edge lives in the gap between the mids and what the bot is
+ * willing to pay, which is the quoted price. */
+function latestLegMids(market) {
+  const q = latestLegQuotes(market);
+  return {
+    up: q.up ? q.up.mid : null,
+    dn: q.dn ? q.dn.mid : null,
+  };
 }
 
 /* Orders name their token, quotes name the leg. Joining the two is the only
@@ -2930,8 +2961,8 @@ function tokenLegMap(kpi) {
   const map = {};
   for (const m of Object.values((kpi && kpi.by_market) || {})) {
     for (const q of m.quotes || []) {
-      const leg = String(q.side || '').toUpperCase();
-      if (q.token_id && (leg === 'UP' || leg === 'DN')) map[q.token_id] = leg;
+      const leg = normalizeLeg(q.side);
+      if (q.token_id && leg !== null) map[q.token_id] = leg;
     }
   }
   return map;
@@ -2949,8 +2980,8 @@ function legForOrder(order, legs, byMarket) {
   if (!market) return null;
   const named = new Set();
   for (const q of market.quotes || []) {
-    const leg = String(q.side || '').toUpperCase();
-    if (leg !== 'UP' && leg !== 'DN') continue;
+    const leg = normalizeLeg(q.side);
+    if (leg === null) continue;
     if (q.token_id === order.token_id) return leg;
     named.add(leg);
   }
@@ -3009,6 +3040,18 @@ function positionMarkValue(m, mids) {
   return value;
 }
 
+/* An order can outlive its market's entry in the KPI report -- the market
+ * leaves the graduated universe, the report stops carrying its title -- and
+ * `marketLink` has nothing to render but `--`. A truncated condition id is
+ * still something the operator can search the registry for. */
+function marketCell(market, conditionId) {
+  const named = market && (market.title || market.name || market.slug);
+  if (named) return marketLink(market);
+  const cid = String(conditionId || '');
+  if (!cid) return '--';
+  return `<span class="mono" title="${esc(cid)}">${esc(cid.slice(0, 10))}…</span>`;
+}
+
 function otEmptyRow(view, message) {
   return `<tr><td colspan="${OT_COLUMNS[view].length}" style="text-align:center;color:var(--text-muted);padding:20px">${esc(message)}</td></tr>`;
 }
@@ -3056,16 +3099,18 @@ function activeMarketsRows(kpi, state) {
     || String(a[1].title || '').localeCompare(String(b[1].title || '')));
 
   return entries.map(([cid, m]) => {
-    const mids = latestLegMids(m);
-    const pairCost = (mids.up !== null && mids.dn !== null) ? (mids.up + mids.dn) : null;
+    const legs = latestLegQuotes(m);
+    const upQuote = legs.up ? legs.up.price : null;
+    const dnQuote = legs.dn ? legs.dn.price : null;
+    const pairCost = (upQuote !== null && dnQuote !== null) ? (upQuote + dnQuote) : null;
     const edge = pairCost === null ? null : 1 - pairCost;
     const dtr = m.days_to_resolve;
     const restingHere = (ordersByMarket[cid] || []).some(o => isRestingOrder(o));
     return `<tr data-cid="${esc(cid)}">
-      <td>${marketLink(m)}</td>
+      <td>${marketCell(m, cid)}</td>
       <td class="mono">${esc(m.category || '--')}</td>
-      <td class="mono">${fmtPrice(mids.up)}</td>
-      <td class="mono">${fmtPrice(mids.dn)}</td>
+      <td class="mono">${fmtPrice(upQuote)}</td>
+      <td class="mono">${fmtPrice(dnQuote)}</td>
       <td class="mono">${fmtPrice(pairCost)}</td>
       <td class="mono">${edge === null ? '--' : `<span class="${edge > 0 ? 'positive' : 'negative'}">${(edge * 100).toFixed(1)}¢</span>`}</td>
       <td class="mono">${fmtCompactUSD(m.volume_24h)}</td>
@@ -3093,7 +3138,7 @@ function openOrdersRows(kpi, state) {
     const queue = queues[o.order_id];
     const status = String(o.status || '').toUpperCase();
     return `<tr data-order-id="${esc(o.order_id)}">
-      <td>${marketLink(m)}</td>
+      <td>${marketCell(m, o.condition_id)}</td>
       <td><span class="pill ${leg === 'UP' ? 'active' : (leg === 'DN' ? 'reconnecting' : 'stopped')}">${esc(leg === 'DN' ? 'DOWN' : leg)}</span></td>
       <td class="mono">${fmtPrice(price)}</td>
       <td class="mono">${fmtShares(size)}</td>
@@ -3127,7 +3172,7 @@ function positionsRows(kpi) {
     const hedgeLabel = hedged ? 'Hedged' : (oneSided ? 'Single Leg' : 'Partial');
     const hedgeClass = hedged ? 'active' : (oneSided ? 'stopped' : 'reconnecting');
     return `<tr data-cid="${esc(cid)}">
-      <td>${marketLink(m)}</td>
+      <td>${marketCell(m, cid)}</td>
       <td class="mono">${fmtShares(up)}</td>
       <td class="mono">${fmtShares(dn)}</td>
       <td class="mono">${fmtPrice(m.pair_cost)}</td>
@@ -4037,6 +4082,7 @@ if (typeof module === 'undefined' || !module.exports) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { renderPositionDistributionChart, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity,
     OT_VIEWS, OT_COLUMNS, ordersTradesRows, ordersTradesCounts, otHeadHtml,
-    activeMarketsRows, openOrdersRows, positionsRows, latestLegMids,
-    positionMarkValue, isQuotedMarket, isRestingOrder, tokenLegMap, legForOrder };
+    activeMarketsRows, openOrdersRows, positionsRows, latestLegMids, latestLegQuotes,
+    positionMarkValue, isQuotedMarket, isRestingOrder, tokenLegMap, legForOrder,
+    normalizeLeg };
 }

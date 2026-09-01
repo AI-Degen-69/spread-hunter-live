@@ -39,8 +39,10 @@ def _render(view: str, kpi: dict | None = None, state: dict | None = None) -> di
 
 
 def _quote(token: str, side: str, mid: float, ts: float, order_id: str | None = None,
-           queue: float | None = None) -> dict:
+           queue: float | None = None, price: float | None = None) -> dict:
+    # The bot quotes under the mid; that gap is the edge the pair is chasing.
     return {"token_id": token, "side": side, "mid": mid, "ts": ts,
+            "price": mid - 0.025 if price is None else price,
             "order_id": order_id, "queue_ahead": queue}
 
 
@@ -52,9 +54,12 @@ def _kpi() -> dict:
                 "days_to_resolve": 6.9, "volume_24h": 165792.64, "resolved": False,
                 "quotes_count": 2, "up_sh": 0, "dn_sh": 0, "total_sh": 0,
                 "total_cost": 0, "pair_cost": None, "realized_pnl": 0,
+                # Mids sum to $1.00 -- they always do, the legs are two sides
+                # of one binary. The quotes sum to $0.93, and that gap is the
+                # only edge there is.
                 "quotes": [
-                    _quote("tok-up", "UP", 0.47, 100.0, "ord-up", 5186.53),
-                    _quote("tok-dn", "DN", 0.51, 101.0, "ord-dn", 1200.0),
+                    _quote("tok-up", "UP", 0.49, 100.0, "ord-up", 5186.53, price=0.45),
+                    _quote("tok-dn", "DN", 0.51, 101.0, "ord-dn", 1200.0, price=0.48),
                 ],
             },
             CID_HELD: {
@@ -118,7 +123,7 @@ def test_active_markets_carries_no_share_count():
     joined = " ".join(rendered["columns"]).lower()
     assert "shares" not in joined
     assert "size" not in joined
-    assert rendered["columns"] == ["Market", "Category", "UP Mid", "DOWN Mid",
+    assert rendered["columns"] == ["Market", "Category", "UP Quote", "DOWN Quote",
                                    "Pair Cost", "Edge", "24h Volume", "Resolves",
                                    "Status"]
 
@@ -164,16 +169,54 @@ def test_active_markets_lists_the_markets_being_quoted():
 
 
 @requires_node
-def test_active_markets_prices_both_legs_and_the_edge():
+def test_active_markets_prices_the_pair_off_the_bot_s_own_quotes():
     # Arrange — the pair is only worth quoting while UP + DOWN is under $1.00,
-    # so the row has to show both mids and what they leave on the table.
+    # so the row shows what the bot is bidding on each leg and what the pair
+    # would cost if both filled.
     rendered = _render("active-markets", _kpi(), _state())
 
-    # Act / Assert — 0.47 + 0.51 = 0.98, so 2.0 cents of edge.
-    assert "$0.470" in rendered["html"]
-    assert "$0.510" in rendered["html"]
-    assert "$0.980" in rendered["html"]
-    assert "2.0¢" in rendered["html"]
+    # Act / Assert — 0.45 + 0.48 = 0.93, so 7.0 cents of edge.
+    assert "$0.450" in rendered["html"]
+    assert "$0.480" in rendered["html"]
+    assert "$0.930" in rendered["html"]
+    assert "7.0¢" in rendered["html"]
+
+
+@requires_node
+def test_active_markets_edge_is_not_computed_from_mids():
+    # Arrange — UP mid and DOWN mid sum to $1.00 by construction: they are two
+    # sides of one binary. An edge computed from them reads 0.0¢ on every row
+    # of every real database, which is what it did before this.
+    kpi = _kpi()
+    mids = kpi["by_market"][CID_QUOTED]["quotes"]
+    assert round(mids[0]["mid"] + mids[1]["mid"], 6) == 1.0
+
+    # Act
+    rendered = _render("active-markets", kpi, _state())
+
+    # Assert
+    assert "0.0¢" not in rendered["html"]
+    assert "$1.000" not in rendered["html"]
+
+
+@requires_node
+def test_active_markets_reads_the_down_leg_however_it_is_spelled():
+    # Arrange — the quote log writes the down leg as `DOWN`; orders and the
+    # pair summary call it `DN`. Accepting only one spelling left every real
+    # database showing a blank DOWN mid, pair cost and edge.
+    kpi = _kpi()
+    kpi["by_market"][CID_QUOTED]["quotes"] = [
+        _quote("tok-up", "UP", 0.49, 100.0, price=0.45),
+        _quote("tok-dn", "DOWN", 0.51, 101.0, price=0.48),
+    ]
+
+    # Act
+    rendered = _render("active-markets", kpi, _state())
+
+    # Assert
+    assert "$0.480" in rendered["html"]
+    assert "$0.930" in rendered["html"]
+    assert "7.0¢" in rendered["html"]
 
 
 @requires_node
@@ -255,6 +298,21 @@ def test_open_orders_leaves_the_leg_blank_when_neither_side_was_quoted():
     assert ">UP<" not in rendered["html"]
     assert ">DOWN<" not in rendered["html"]
     assert ">--<" in rendered["html"]
+
+
+@requires_node
+def test_open_orders_falls_back_to_the_condition_id_for_an_unreported_market():
+    # Arrange — an order outlives its market's entry in the KPI report once
+    # that market leaves the graduated universe. A truncated condition id is
+    # still something the operator can search the registry for; `--` is not.
+    state = _state()
+    state["orders"][0]["condition_id"] = "0xabc123def456"
+
+    # Act
+    rendered = _render("open-orders", _kpi(), state)
+
+    # Assert
+    assert "0xabc123d" in rendered["html"]
 
 
 @requires_node

@@ -169,6 +169,34 @@
       </div>
     </div>
 
+    <!-- Orders & Trades: one table, three views of the same run -->
+    <div class="card" style="margin-bottom:16px" id="orders-trades-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div>
+          <div class="font-display" style="font-size:15px;letter-spacing:0.04em;color:var(--text-primary)">
+            ORDERS &amp; TRADES
+          </div>
+          <div id="orders-trades-note" style="font-size:11px;color:var(--text-muted);margin-top:2px">
+            Markets the screener graduated and the bot is quoting
+          </div>
+        </div>
+        <div class="ot-tabs" role="tablist" aria-label="Orders and trades view">
+          <button class="ot-tab-btn active" type="button" role="tab" aria-selected="true"
+                  data-ot-view="active-markets">ACTIVE MARKETS <span class="ot-count mono" data-ot-count="active-markets">0</span></button>
+          <button class="ot-tab-btn" type="button" role="tab" aria-selected="false"
+                  data-ot-view="open-orders">OPEN ORDERS <span class="ot-count mono" data-ot-count="open-orders">0</span></button>
+          <button class="ot-tab-btn" type="button" role="tab" aria-selected="false"
+                  data-ot-view="positions">POSITIONS <span class="ot-count mono" data-ot-count="positions">0</span></button>
+        </div>
+      </div>
+      <div style="overflow-x:auto">
+        <table id="orders-trades-table">
+          <thead id="orders-trades-head"></thead>
+          <tbody id="orders-trades-body"></tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Strategy Parameters & Risk Safeguards -->
     <div class="card" style="margin-bottom:16px" id="params-panel">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">

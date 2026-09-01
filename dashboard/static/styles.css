@@ -1166,6 +1166,61 @@ td { font-size: 13px; }
   font-weight: 700;
 }
 
+/* ── Orders & Trades view tabs ──
+   Three stages of the same object: quoted market → resting order → held
+   position. Styled off the analytics sub-nav so the two read as one control. */
+.ot-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.ot-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-family: 'Inter', sans-serif;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 6px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.ot-tab-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+.ot-tab-btn.active {
+  background: rgba(56, 189, 248, 0.15);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.4);
+  font-weight: 700;
+}
+.ot-count {
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.16);
+  color: var(--text-muted);
+}
+.ot-tab-btn.active .ot-count {
+  background: rgba(56, 189, 248, 0.22);
+  color: #38bdf8;
+}
+#orders-trades-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+#orders-trades-table th {
+  white-space: nowrap;
+}
+
 /* ── Quant Risk Metrics Grid ── */
 .quant-grid {
   display: grid;

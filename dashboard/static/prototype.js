@@ -30,11 +30,14 @@ const EXPLAINER_SRC = '/static/strategy_explainer.html';
 const PAGE_LAYOUT = [
   {
     page: 'home',
-    label: 'Home',
+    label: 'Dashboard',
     icon: '◆',
-    note: 'Read-only overview: the stack’s state, the venue it is pointed at, ' +
-          'the guardrails, and where the bankroll currently sits.',
-    selectors: ['#live-ops-master-card', '#broker-kpi-strip'],
+    note: 'Where the account stands and what the run is doing right now: ' +
+          'account value, the bankroll split, and the three stages of every ' +
+          'trade — quoted market, resting order, held position.',
+    // The bankroll strip is part of the portfolio card and travels with it.
+    selectors: ['#live-ops-master-card', '#broker-portfolio-overview',
+                '#orders-trades-card'],
   },
   {
     page: 'data-markets',
@@ -64,9 +67,9 @@ const PAGE_LAYOUT = [
     page: 'reports',
     label: 'Reports & Analytics',
     icon: '▩',
-    note: 'Equity, run profitability, the statistical decks and the performance ' +
-          'charts.',
-    selectors: ['#broker-portfolio-overview', '.stats-subnav-container', '#analytics-surface'],
+    note: 'The statistical decks and the performance charts behind the ' +
+          'numbers on the Dashboard.',
+    selectors: ['.stats-subnav-container', '#analytics-surface'],
   },
 ];
 
@@ -190,7 +193,21 @@ function buildSidebar(doc) {
   return nav;
 }
 
-function buildPage(doc, entry) {
+/* Every selector is resolved before anything moves. Appending a panel detaches
+ * it from the document, and `querySelector` does not see inside a detached
+ * subtree -- so a later selector pointing at a node under an earlier one would
+ * silently find nothing and its page would come up short. */
+function resolvePanels(doc) {
+  const found = {};
+  for (const entry of PAGE_LAYOUT) {
+    found[entry.page] = entry.selectors
+      .map(selector => doc.querySelector(selector))
+      .filter(Boolean);
+  }
+  return found;
+}
+
+function buildPage(doc, entry, panels) {
   const section = doc.createElement('section');
   section.id = pageId(entry.page);
   section.className = 'proto-page';
@@ -209,9 +226,8 @@ function buildPage(doc, entry) {
   section.appendChild(title);
   section.appendChild(note);
 
-  for (const selector of entry.selectors) {
-    const panel = doc.querySelector(selector);
-    if (panel) section.appendChild(panel);
+  for (const panel of panels || []) {
+    section.appendChild(panel);
   }
 
   if (entry.page === 'strategy') section.appendChild(buildExplainer(doc));
@@ -252,9 +268,10 @@ function mountSidebarLayout(doc) {
   pages.id = 'proto-page-body';
   pages.className = 'proto-pages';
 
+  const panels = resolvePanels(scope);
   shell.appendChild(buildSidebar(scope));
   for (const entry of PAGE_LAYOUT) {
-    pages.appendChild(buildPage(scope, entry));
+    pages.appendChild(buildPage(scope, entry, panels[entry.page]));
   }
   shell.appendChild(pages);
   container.appendChild(shell);
@@ -320,7 +337,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     PAGES, DEFAULT_PAGE, PAGE_LAYOUT, LAYOUT_PATHS,
     normalizePage, showPage, setNavOpen, initPrototype,
-    mountSidebarLayout, shouldMount,
+    mountSidebarLayout, shouldMount, resolvePanels,
   };
 }
 })();

@@ -144,13 +144,6 @@
   background: var(--bg-surface);
 }
 
-/* The analytics sub-tabs filtered one tab panel by section. The rail does that
- * job now, and leaving the buttons live would hide panels that have moved to
- * other pages. The live sample count beside them still earns its place. */
-.proto-body .stats-subnav {
-  display: none;
-}
-
 /* Drawer. Below 900px the rail slides over the page instead of squeezing it,
  * which is what breaks first on a phone-width window. */
 @media (max-width: 900px) {

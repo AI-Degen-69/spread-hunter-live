@@ -1393,15 +1393,52 @@ function initStatisticalSubnav() {
 
   initSensitivitySimulator();
   initMarketTableFilters();
+  pruneStatsSubnav();
+}
+
+/* The container the analytics sub-nav filters: its own page in the sidebar
+ * layout, its own tab panel on the tabbed one. */
+function statsFilterScope() {
+  const subnav = document.querySelector('.stats-subnav-container');
+  if (!subnav) return document;
+  return subnav.closest('.proto-page')
+    || subnav.closest('[role="tabpanel"]')
+    || document;
+}
+
+/* Which panel each view exists to show. A view whose panel is not on this page
+ * has nothing to filter, and its button could only hide something the operator
+ * is not looking at. */
+const STATS_VIEW_TARGETS = {
+  distributions: '.stats-chart-card[data-section="distributions"]',
+  'monte-carlo': '.stats-chart-card[data-section="monte-carlo"]',
+  markout: '.stats-chart-card[data-section="markout"]',
+  simulator: '#card-sensitivity-simulator',
+  markets: '#market-inspection-card',
+};
+
+function pruneStatsSubnav() {
+  const scope = statsFilterScope();
+  document.querySelectorAll('.stats-subnav-btn').forEach(btn => {
+    const selector = STATS_VIEW_TARGETS[btn.dataset.view];
+    // 'All Analytics' has no single target and always stays.
+    if (!selector) return;
+    btn.hidden = !scope.querySelector(selector);
+  });
 }
 
 function applyStatsViewFilter(view) {
-  const quantDeck = document.getElementById('quant-risk-deck');
-  const chartsMatrix = document.getElementById('analytics-charts-matrix');
-  const simulatorCard = document.getElementById('card-sensitivity-simulator');
-  const gatesCard = document.getElementById('analytics-gates');
-  const marketCard = document.getElementById('market-inspection-card');
-  const chartCards = document.querySelectorAll('.stats-chart-card');
+  // The sub-nav filters the page it sits on. The decision gates and the market
+  // inspection table now live on other pages, and hiding a panel the operator
+  // is not looking at is how one click here blanks a page over there.
+  const scope = statsFilterScope();
+  const inScope = (el) => (el && scope.contains(el)) ? el : null;
+  const quantDeck = inScope(document.getElementById('quant-risk-deck'));
+  const chartsMatrix = inScope(document.getElementById('analytics-charts-matrix'));
+  const simulatorCard = inScope(document.getElementById('card-sensitivity-simulator'));
+  const gatesCard = inScope(document.getElementById('analytics-gates'));
+  const marketCard = inScope(document.getElementById('market-inspection-card'));
+  const chartCards = scope.querySelectorAll('.stats-chart-card');
 
   if (view === 'all') {
     if (quantDeck) quantDeck.style.display = '';
@@ -4257,6 +4294,7 @@ if (typeof module === 'undefined' || !module.exports) {
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { renderPositionDistributionChart, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity,
+    statsFilterScope, pruneStatsSubnav, STATS_VIEW_TARGETS,
     OT_VIEWS, OT_COLUMNS, ordersTradesRows, ordersTradesCounts, otHeadHtml,
     activeMarketsRows, openOrdersRows, positionsRows, latestLegMids, latestLegQuotes,
     positionMarkValue, isQuotedMarket, isRestingOrder, tokenLegMap, legForOrder,

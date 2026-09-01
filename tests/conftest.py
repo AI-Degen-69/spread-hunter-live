@@ -61,6 +61,24 @@ def scrub_credential_env(monkeypatch):
     scrub_credentials(monkeypatch)
 
 
+@pytest.fixture(autouse=True)
+def scrub_tuning_env(monkeypatch):
+    """Scrub every `HUNTER_*` knob, so the suite cannot read the operator's .env.
+
+    `core_brain.order_manager` calls `load_dotenv` at module import, so the
+    first test to import it injects the real `.env` into `os.environ` for the
+    rest of the process -- and `load_dotenv` writes the environment directly,
+    which `monkeypatch` in a later test cannot undo. That made the suite's
+    result depend on both the file order and on what the operator happened to
+    have tuned: with `HUNTER_SINGLE_BUY_GRACE_SEC=45` on disk, the shadow
+    rotation tests saw a 45-second grace and recorded no close.
+
+    A test that wants a knob sets it itself, after this has run.
+    """
+    for var in [v for v in os.environ if v.startswith("HUNTER_")]:
+        monkeypatch.delenv(var, raising=False)
+
+
 
 def _is_loopback(address):
     if isinstance(address, tuple) and len(address) >= 1:

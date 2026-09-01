@@ -768,6 +768,51 @@ class ShadowExecutionClient:
 
         return str(cid), pid
 
+    def _sell_into_bids(self, token_id: str, shares: float,
+                        *, floor: float) -> tuple[float, float]:
+        """Rest a market SELL against the bid ladder, best bid first.
+
+        Returns `(shares_filled, weighted_average_price)`.
+
+        This used to return the caller's `floor` as though it were the fill.
+        The floor is `best_bid - MAX_SELL_SLIPPAGE`, a flat 2c -- the worst
+        price `single_buy_saver` will accept, not the price a taker gets. So
+        every rehearsed exit was charged a 2c concession the venue never took,
+        and that charge is most of the "2-3c per stranded leg" the pair-fill
+        report attributes to the market. A real market SELL takes the touch
+        first and only walks down when the touch is thin.
+
+        The floor stays a real limit: depth beneath it is not ours to take, so
+        a book that is thin above it fills short rather than selling through.
+        With no book at all there is no better information than the floor, and
+        the old conservative answer stands.
+        """
+        try:
+            book = self.get_order_book(token_id)
+        except Exception:  # noqa: BLE001 - a bookless rehearsal keeps the floor
+            book = {}
+        levels = [
+            (float(lvl["price"]), float(lvl["size"]))
+            for lvl in (book or {}).get("bids") or []
+            if float(lvl.get("size") or 0.0) > 0
+        ]
+        levels.sort(key=lambda pl: pl[0], reverse=True)
+
+        remaining = float(shares)
+        notional = 0.0
+        taken = 0.0
+        for lvl_price, lvl_size in levels:
+            if remaining <= 0 or lvl_price < float(floor):
+                break
+            fill = min(remaining, lvl_size)
+            notional += fill * lvl_price
+            taken += fill
+            remaining -= fill
+
+        if taken <= 0:
+            return float(shares), float(floor)
+        return taken, notional / taken
+
     def create_and_post_market_order(self, order_args) -> dict:
         """Cross the book in the rehearsal: called with one positional
         `MarketOrderArgsV2(token_id=..., amount=..., side=..., price=...)`.
@@ -799,10 +844,11 @@ class ShadowExecutionClient:
                 f"missing token, amount or price")
 
         if side == "SELL":
+            filled, avg = self._sell_into_bids(token_id, amount, floor=price)
             return {
                 "success": True,
                 "orderID": f"{SHADOW_ORDER_PREFIX}{uuid.uuid4().hex[:12]}",
-                "status": "matched", "price": price, "size": amount,
+                "status": "matched", "price": avg, "size": filled,
             }
 
         if side != "BUY":

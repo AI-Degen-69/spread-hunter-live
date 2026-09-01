@@ -467,6 +467,50 @@ def _token_side(registry: OrderRegistry, condition_id: str,
     return best
 
 
+def _exit_fill_price(resp, floor_price: float) -> float:
+    """What the exit actually sold at, or the floor when nobody will say.
+
+    The live SDK's market-order response carries no fills, so `floor_price`
+    (`best_bid - MAX_SELL_SLIPPAGE`) stays the conservative record there. The
+    rehearsal's client DOES know -- it walks the bid ladder -- and booking the
+    floor over its answer charged every rehearsed exit a flat 2c concession
+    the venue never took. A reported price is the truth in both directions:
+    worse than the floor is recorded too.
+    """
+    if not isinstance(resp, dict):
+        return float(floor_price)
+    raw = resp.get("price")
+    if raw is None:
+        return float(floor_price)
+    try:
+        price = float(raw)
+    except (TypeError, ValueError):
+        return float(floor_price)
+    return price if price > 0 else float(floor_price)
+
+
+def _exit_fill_size(resp, requested_size: float) -> float:
+    """Shares the venue says it sold, bounded by what we asked it to sell.
+
+    A short fill has to reach the ledger as a short fill: recording the
+    requested size would retire shares we still hold, and the pair would read
+    as closed while a naked leg sat on the venue. Never larger than requested
+    -- an oversell is the one error on this path that cannot be undone.
+    """
+    if not isinstance(resp, dict):
+        return float(requested_size)
+    raw = resp.get("size")
+    if raw is None:
+        return float(requested_size)
+    try:
+        size = float(raw)
+    except (TypeError, ValueError):
+        return float(requested_size)
+    if size <= 0:
+        return float(requested_size)
+    return min(size, float(requested_size))
+
+
 def _record_exit_close(registry: OrderRegistry, pair: dict, heavy_token: str,
                        heavy_side: str, size: float, sell_price: float) -> None:
     """Ledger a completed exit: the sold leg leaves the registry for good.
@@ -478,9 +522,10 @@ def _record_exit_close(registry: OrderRegistry, pair: dict, heavy_token: str,
     no resting row to attach it to. Without this row the pair reads as still
     held next cycle and the auto pass sells it again: the repeat-sell loop.
 
-    `sell_price` is the WORST price we accepted (`min_price`), because the
-    market-order response does not carry fills. Recording the floor keeps
-    proceeds honest-conservative; the actual fill can only be better.
+    `sell_price` is the price the venue reported, and `min_price` -- the worst
+    price we accepted -- only when it reported none. The live SDK's response
+    carries no fills, so live still records the floor; the rehearsal walks the
+    bid ladder and knows better. See `_exit_fill_price`.
     """
     leg = (pair.get("legs") or {}).get(heavy_token, {})
     matched = float(leg.get("matched") or 0.0)
@@ -712,8 +757,10 @@ def exit_single_buy(
     #    repeat-sell loop observed in production). The close is the ledger
     #    entry: `inventory_from_registry` subtracts the sold leg from it, and
     #    the auto pass skips conditions that have a close.
-    _record_exit_close(registry, after, heavy_token, heavy_side, size,
-                       min_price)
+    sold = _exit_fill_size(resp, size)
+    fill_price = _exit_fill_price(resp, min_price)
+    _record_exit_close(registry, after, heavy_token, heavy_side, sold,
+                       fill_price)
 
     return {
         "action": "exited",
@@ -721,8 +768,10 @@ def exit_single_buy(
         "condition_id": after["condition_id"],
         "token_id": heavy_token,
         "side": heavy_side,
-        "size": size,
+        "size": sold,
+        "requested_size": size,
         "bid": bid,
+        "fill_price": fill_price,
         "min_price": min_price,
         "cancelled": cancelled,
         "venue_light_matched": venue_light_matched,

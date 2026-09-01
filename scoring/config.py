@@ -257,21 +257,24 @@ class MakerConfig:
     # move therefore has to clear two fees before it clears anything else.
     profit_take_fee_per_share: float = 0.017
 
-    # MERGE (U2). Total cost of one mergePositions transaction, in dollars --
-    # per TRANSACTION, not per share, because a merge costs the same whether it
-    # redeems ten pairs or ten thousand. That is why the economic floor is on
-    # total gain rather than per-share gain.
+    # MERGE (U2). There is no `merge_gas_usd` here, and that is the point.
     #
-    # A seeded estimate, not a measurement. Polygon gas for a CTF merge is
-    # cents, and this is deliberately set high enough to be conservative in
-    # Phase A, where no transaction has been sent and nothing on-chain has been
-    # verified. U6's verify_merge.py replaces it with the real figure from an
-    # actual transaction, and U5 reads it to compute the minimum economic size.
+    # A merge is submitted through Polymarket's relayer, which sends the
+    # transaction from its own address and pays the gas. The docs say so
+    # outright -- `/trading/wallets-auth`, "Execute Gasless Transactions":
+    # approve token spending, transfer funds and manage positions from the
+    # account wallet without paying gas, where split, merge and redeem are the
+    # position lifecycle methods it names. A merge of N pairs returns exactly
+    # N * 1.00 pUSD with nothing deducted on the way out.
     #
-    # Never set this to 0. Zero-cost gas makes every merge look profitable,
-    # including ones that lose money -- `strategy/merge.py` treats None as
-    # blocking for the same reason.
-    merge_gas_usd: float = 0.05
+    # This field used to hold a seeded $0.05 that no transaction had ever
+    # confirmed. Against a one-tick maker edge -- a cent on a $0.99 pair --
+    # five cents is five pairs of profit, and it sat on the economic gate that
+    # decides GO. It was not conservatism; it was a cost that does not exist.
+    #
+    # `core_brain/gas.py` remains the only place that may claim a gas figure,
+    # because it reads the receipt and attributes the burn to whoever actually
+    # sent the transaction. For a relayer-submitted merge that answer is 0.00.
 
     # OVER-PARITY MERGES (U5, KTD2b). 4.5% of measured pairs cost more than
     # 1.00, so merging them books an immediate loss. Holding is not obviously

@@ -89,7 +89,7 @@ Pooled per arm across both of its blocks:
 | Markout rows opened | 3 | 0 | 0 |
 | Realized PnL (simulated) | +$0.12 | $0.00 | $0.00 |
 
-## Arm B does not exist as a configuration
+## Arm B was configured but never placeable
 
 Arm B placed no order across its two blocks: 464 rotations, 2,320 market
 visits, 2,320 declines. Every one was refused at the completable-pair-cost
@@ -102,14 +102,17 @@ gate, with the same shape of message on every market:
           >= $1.000 cap -- the second leg cannot be bought at a profit
 ```
 
-This is arithmetic, not a sample-size problem, and it does not depend on the
-cap's value. `min_reward_offset = 0.005` (`core_brain/config.py:98`) floors the
+This is arithmetic, not a sample-size problem. `min_reward_offset = 0.005` (`core_brain/config.py:98`) floors the
 resting offset, so 0.005 is the nearest-to-mid point the config can express.
 Resting the floor on both legs means resting at mid on both legs, and the
 shadow-06 measurement — `mid_UP + mid_DOWN` at exactly 1.0000 in the median,
 confirmed again below — makes such a pair cost exactly $1.00. Zero edge. The
 gate refuses it at `max_completable_pair_cost = 1.00`, and would refuse it just
-as firmly at the `max_pair_cost = 0.99` both-maker cap.
+as firmly at the `max_pair_cost = 0.99` both-maker cap. The refusal is a
+`pair_cost >= max_completable_pair_cost` comparison, so it holds for every cap
+the repo ships; a cap set above $1.0000 would not reject at this gate, but no
+such cap exists here and one would admit pairs that cannot be merged at a
+profit.
 
 **The floor and the book meet exactly at zero edge.** There is no configuration
 between "some edge" and "resting at mid"; the floor *is* resting at mid.
@@ -208,15 +211,18 @@ result.
 
 The two legs of the merged pair drift in opposite directions and their mids sum
 to 0.205 + 0.795 = **1.0000** five minutes after the fills — the same identity
-that holds before the fill. For a pair that will be merged, per-leg markout
-carries no information: the pair is worth exactly $1.00 by construction, which
-is the whole point of the strategy. **Markouts matter for single legs, not for
-completed pairs.**
+that holds before the fill. The per-leg numbers are real measurements and they
+do move (+0.065 on one leg, −0.035 on the other); what carries no information
+is the **pair-level** markout, because the two legs move by equal and opposite
+amounts and the pair is worth exactly $1.00 by construction. That is the whole
+point of the strategy. **Pair-level markout cannot detect adverse selection on
+a merged pair; only the single-leg markouts can.**
 
 The single leg is where it does matter, and the one observation is unflattering.
 We bought at 0.72, the safety path exited at 0.71 for −$0.06, and the mid was
-0.785 five minutes later and 0.915 after fifteen. The exit gave up 19.5 cents of
-subsequent move on that leg. One observation proves nothing about the exit
+0.785 five minutes later and 0.915 after fifteen. The exit gave up 20.5 cents of
+subsequent move measured from the 0.71 exit price (19.5 cents measured from the
+0.72 entry). One observation proves nothing about the exit
 policy, but this is the measurement that was impossible before this sweep, and
 it is pointed at the single-buy exit rather than at the entry.
 
@@ -238,8 +244,8 @@ it is pointed at the single-buy exit rather than at the entry.
    market families, two runs, same number.
 5. **Adverse selection is measurable now, and it points at the exit.** The only
    informative markout in the sweep is the single leg the safety path closed at
-   −$0.06 that was worth 19.5 cents more fifteen minutes later. Merged pairs
-   cannot produce an informative markout at all.
+   −$0.06 at 0.71, with the mid 20.5 cents higher fifteen minutes later. Merged
+   pairs cannot produce an informative pair-level markout at all.
 6. **Neither #88's lever nor #138's lever is the answer.** Gates were measured
    and found innocent; distance from mid has now been measured and is worse in
    the direction proposed and unusable in the extreme. The fill rate is not
@@ -289,7 +295,16 @@ Per-store counts and cancel distributions:
 ```powershell
 python -m core_brain.cancel_report --db data/07_shadow_01-09_01-34.db
 python -m core_brain.cancel_report --db data/08_shadow_01-09_01-59.db
+python -m core_brain.cancel_report --db data/09_shadow_01-09_02-24.db
+python -m core_brain.cancel_report --db data/10_shadow_01-09_02-50.db
+python -m core_brain.cancel_report --db data/11_shadow_01-09_03-12.db
+python -m core_brain.cancel_report --db data/12_shadow_01-09_03-37.db
 ```
+
+Blocks 07 and 08 are the only stores that carry cancel-queue rows; 09 and 12
+(arm B) placed no order, and 10 and 11 produced no cancel. The four empty
+reports are listed so the pooled figures can be checked to be pooled over all
+six blocks.
 
 Queue percentiles come from `orders.cancel_queue_ahead` grouped by
 `orders.cancel_reason`. Realised offset per leg is `quotes.mid - quotes.price`.

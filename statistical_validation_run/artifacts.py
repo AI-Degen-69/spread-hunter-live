@@ -490,9 +490,14 @@ def render_report_md(
         "GO requires the base AND the pessimistic `ci90_lower_pct` to pass.",
         "- Rebate income is `None` on graduated spread markets (`rebate_est`); "
         "the report never invents rebate income.",
-        "- Gas is 0, in shadow and live alike: merges are submitted through "
-        "Polymarket's relayer, which pays for them. The economic gate is "
-        "positive expectancy per close.",
+        (
+            "- The pessimistic sensitivity charges no conversion gas: a merge is "
+            "submitted through Polymarket's relayer, which sends it from its own "
+            "address and pays for it. Receipt-measured gas on a close "
+            "(`closes.gas`, via `core_brain.gas.close_gas_usd`) is a separate "
+            "figure and may be non-zero on a live transaction our own funder "
+            "sent. The economic gate is positive expectancy per close."
+        ),
         "- Immature markouts read as `insufficient_sample` (INCONCLUSIVE), never "
         "as zero drift.",
         "- Rehearsal PnL must never be presented as live PnL.",

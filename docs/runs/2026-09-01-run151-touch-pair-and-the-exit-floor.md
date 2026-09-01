@@ -12,10 +12,11 @@ at the exit path — which turned out never to have been measured at all.
 
 **Result in one line: the "2–3c per stranded leg" that made this strategy look
 unprofitable is mostly a harness artifact. At the three-hour read, repricing the
-exit at the bid costs 0.53c/share instead of 2.53c and drops the break-even
-double-maker rate from 76.6% to 40.9% — against 33% observed. That is a near
-miss rather than the rout the booked figures described, and the sample is far too
-small to call either way; see *Why this run cannot answer the question*.**
+exit at the bid costs 0.53c/share instead of 2.53c, and with the merge gasless
+(#152) that drops the break-even double-maker rate from 71.7% to 34.8% — against
+33.3% observed. That is a near miss rather than the rout the booked figures
+described, and the sample is far too small to call either way; see *Why this run
+cannot answer the question*.**
 
 ---
 
@@ -57,12 +58,12 @@ had recorded a completed pair.
 | Both legs filled | 1 (33.3%) |
 | One leg filled | 1 (33.3%) |
 | No leg filled | 1 |
-| Merges | 2, 10 shares, +$0.0772 net of gas |
+| Merges | 2, 10 shares, +$0.1000 |
 | Single-leg exits | 12, 58 shares, −$1.4700 |
-| **Run net as booked** | **−$1.3928** |
+| **Run net as booked** | **−$1.3700** |
 
 A merged pair won 0.77c/share. A stranded leg lost 2.53c/share. Against that
-asymmetry the break-even double-maker rate is 76.6%, and 33% was observed — so as
+asymmetry the break-even double-maker rate is 71.7%, and 33% was observed — so as
 booked, the strategy loses.
 
 That number is wrong, and the rest of this document is why.
@@ -132,31 +133,29 @@ the tick. Repricing each recorded close at that bid:
 |  | booked | at the bid |
 | --- | ---: | ---: |
 | Single-leg exits | −$1.4700 | −$0.3100 |
-| Merges, net of gas | +$0.0772 | +$0.0772 |
-| **Run net** | **−$1.3928** | **−$0.2328** |
+| Merges | +$0.1000 | +$0.1000 |
+| **Run net** | **−$1.3700** | **−$0.2100** |
 | Exit cost per share | −2.53c | −0.53c |
-| **Break-even double-maker rate** | **76.6%** | **40.9%** |
+| **Break-even double-maker rate** | **71.7%** | **34.8%** |
 
 Five of the twelve exits sold at exactly the price they bought at, once the 2c
 floor is removed — they were never losses at all. Close #14 is a real 3c/share
 loss and close #12 a real 2c/share gain that the floor booked as zero. **The exit
 costs about a fifth of what the harness charged for it.**
 
-The merge side is contested. This table charges $0.01138 per merge, the median of
-12 on-chain `mergePositions` transactions, per
-[#149](https://github.com/AI-Degen-69/spread-hunter-live/pull/149).
-[#152](https://github.com/AI-Degen-69/spread-hunter-live/pull/152) argues the
-relayer sends those transactions and pays for them, making a merge gasless to us.
-Both:
+The merge side was contested while this was first written, and is now settled.
+[#152](https://github.com/AI-Degen-69/spread-hunter-live/pull/152) merged: Polymarket
+submits a merge through its relayer, which sends from its own address and pays for
+it, so a merge is gasless to us and a pair earns the full tick. The $0.01138 that
+[#149](https://github.com/AI-Degen-69/spread-hunter-live/pull/149) measured is real
+— it is the median burn of 12 on-chain `mergePositions` transactions — but it is the
+cost to whoever sent THOSE transactions, not to us. Charging it here cost 0.23c on a
+1c trade and six points of break-even rate. The table above no longer charges it.
 
-| merge gas | merge gain | break-even, booked | break-even, at the bid |
-| --- | ---: | ---: | ---: |
-| $0.01138 (#149) | +0.77c/share | 76.6% | 40.9% |
-| gasless (#152) | +1.00c/share | 71.7% | **34.8%** |
-
-Observed double-maker rate: **33.3%** (1 of 3 markets). Under either assumption the
-repriced run is a near-miss rather than the rout the booked figures described — and
-under neither is the margin large enough to call.
+Observed double-maker rate: **33.3%** (1 of 3 markets), against a break-even of
+**34.8%** once the exit is priced at the bid. The repriced run is a near-miss rather
+than the rout the booked figures described — and the margin is far too small to
+call either way on three markets.
 
 ## Why this run cannot answer the question
 
@@ -166,11 +165,16 @@ few closes. Recomputed at each half hour of the run:
 | elapsed | closes | markets with a fill | exit c/share | break-even rate |
 | ---: | ---: | ---: | ---: | ---: |
 | 30m | 5 | 2 | — | — |
-| 60m | 7 | 2 | −0.33c | 30.1% |
-| 90m | 9 | 2 | −0.42c | 35.2% |
-| 120m | 11 | 2 | −0.56c | 42.1% |
-| 150m | 12 | 2 | −0.28c | 26.8% |
-| 180m | 14 | 2 | −0.53c | 40.9% |
+| 60m | 7 | 2 | −0.33c | 24.8% |
+| 90m | 9 | 2 | −0.42c | 29.6% |
+| 120m | 11 | 2 | −0.56c | 35.9% |
+| 150m | 12 | 2 | −0.28c | 21.9% |
+| 180m | 14 | 2 | −0.53c | 34.8% |
+
+Break-even is `exit / (merge + exit)` with the merge gain at the full tick, since
+#152 settled that a merge is gasless. Rows are computed from the rounded exit
+figure shown; the 180m row uses the unrounded −0.5345c behind that −0.53c, which
+is why it lands at 34.8% rather than 34.6%.
 
 The estimate swings between **26.8% and 42.1%** and straddles the 33% observed rate
 in both directions. It is not converging — a single 6-share exit moves it more than
@@ -238,8 +242,6 @@ An autouse fixture now scrubs every `HUNTER_*` knob.
 3. **Then sweep `single_buy_grace_sec`,** now that it is reachable. At 0.52s the
    companion leg had no opportunity to fill; the sweep answers what fraction of the
    one-leg-or-none outcomes become pairs given 15s, 45s, 120s.
-4. **Settle the merge gas.** #149 and #152 disagree, and it is worth 0.23c on a 1c
-   trade — six points of break-even rate.
-5. **Only then revisit the split-and-sell hypothesis.** It was proposed to escape an
+4. **Only then revisit the split-and-sell hypothesis.** It was proposed to escape an
    asymmetry that is now about a fifth of what it looked, and its own caveats — the
    reversal on 0.001-tick books, and unmeasured ask-side queue depth — are unchanged.

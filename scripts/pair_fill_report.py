@@ -11,11 +11,16 @@ Two numbers come out, and both are needed to say whether the strategy works.
     many did both sides fill? A single leg is not a partial success -- it is a
     directional position the strategy exists to avoid, closed by the safety
     path at a loss.
-  * **The fill-size distribution.** Gas is a per-TRANSACTION cost
-    ($0.01138 median, measured on-chain), so it amortises over the shares
-    merged. On a 0.1c-tick book a merge needs 11.4 shares to break even and
-    the observed fills have been five and six. A high double-maker rate made
-    of small fills is not a business.
+  * **The fill-size distribution.** A pair earns one tick per share, so the
+    size of a fill IS the size of the trade -- five shares of a $0.99 pair is
+    five cents, whatever the double-maker rate. A high completion rate made of
+    five-share fills is not a business.
+
+    There is no gas floor under that. Polymarket merges are gasless: the
+    relayer submits them from its own address and pays (#152). An earlier
+    version of this report charged $0.01138 per merge -- the median burn of
+    twelve on-chain `mergePositions` transactions -- which was the cost to
+    whoever sent THOSE transactions, not to us.
 
 Reads a shadow store; writes nothing.
 """
@@ -26,9 +31,6 @@ import sqlite3
 import statistics
 from pathlib import Path
 from typing import Optional
-
-MERGE_GAS_USD = 0.01138          # median of 12 on-chain mergePositions txs
-
 
 def _pct(n: float, d: float) -> str:
     return f"{100.0 * n / d:6.2f}%" if d else "     --"
@@ -116,19 +118,15 @@ def report(db_path: Path) -> str:
                f"{_pct(len(both_legs), len(two_sided))}")
     out.append("")
 
-    out.append("FILL SIZE -- gas is per merge, so size decides if it clears")
+    out.append("FILL SIZE -- a pair earns one tick per share, so size is the trade")
     if sizes:
         srt = sorted(sizes)
         med = statistics.median(srt)
         out.append(f"  n={len(srt)}  min {min(srt):.0f}  median {med:.0f}  "
                    f"max {max(srt):.0f}")
-        for tick, edge, label in ((0.001, 0.001, "0.1c-tick book"),
-                                  (0.01, 0.01, "1c-tick book")):
-            need = MERGE_GAS_USD / edge
-            clears = sum(1 for s in srt if s >= need)
-            out.append(f"  {label:<16} needs {need:>5.1f} shares to clear "
-                       f"${MERGE_GAS_USD:.5f} gas -- "
-                       f"{clears}/{len(srt)} fills do ({_pct(clears, len(srt))})")
+        for edge, label in ((0.001, "0.1c-tick book"), (0.01, "1c-tick book")):
+            out.append(f"  {label:<16} median fill earns "
+                       f"${med * edge:>7.4f} per completed pair")
     else:
         out.append("  no fills recorded")
     out.append("")
@@ -137,9 +135,9 @@ def report(db_path: Path) -> str:
     out.append(f"  merges : {len(merged)}")
     for slug, shares, basis, proceeds, pnl in merged:
         gross = (proceeds or 0) - (basis or 0)
+        # No gas line: the merge is gasless, so gross IS net (#152).
         out.append(f"    {str(slug)[:34]:<36}{shares or 0:>7.0f}sh  "
-                   f"gross ${gross:>7.4f}  net of gas "
-                   f"${gross - MERGE_GAS_USD:>7.4f}")
+                   f"${gross:>7.4f}")
     out.append(f"  single-leg exits : {len(exited)}")
     for slug, shares, pnl in exited:
         out.append(f"    {str(slug)[:34]:<36}{shares or 0:>7.0f}sh  "

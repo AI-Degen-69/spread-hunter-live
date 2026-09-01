@@ -151,18 +151,31 @@ def test_a_one_sided_market_is_not_counted_as_two_sided(tmp_path):
     assert "markets quoted two-sidedly : 0" in text
 
 
-def test_fill_sizes_are_measured_against_the_gas_breakeven(tmp_path):
-    # Gas is per merge transaction, so a fill below the breakeven size cannot
-    # pay for its own merge however good the pair cost was.
+def test_fill_sizes_report_what_a_median_fill_earns(tmp_path):
+    # A pair earns one tick per share, so the fill size IS the trade size.
+    # There is no gas floor under it: merges are gasless (#152).
     db = _store(tmp_path, [("m", "UP", 1.0), ("m", "DOWN", 1.0)],
                 fills=[5.0, 6.0, 200.0])
 
     text = rpt.report(db)
 
-    # 0.01138 / 0.001 = 11.4 shares on a 0.1c book -- only the 200 clears.
-    assert "1/3 fills do" in text
-    # 0.01138 / 0.01 = 1.1 shares on a 1c book -- all three clear.
-    assert "3/3 fills do" in text
+    assert "median 6" in text
+    assert "$ 0.0600" in text        # 6 shares x 1c on a 1c-tick book
+    assert "$ 0.0060" in text        # 6 shares x 0.1c on a 0.1c-tick book
+
+
+def test_the_report_charges_no_merge_gas(tmp_path):
+    # An earlier version charged $0.01138 per merge -- the median burn of
+    # twelve on-chain mergePositions transactions, which was the cost to
+    # whoever sent THOSE, not to us. Polymarket's relayer submits our merges
+    # from its own address and pays for them.
+    db = _store(tmp_path, [("m", "UP", 5.0), ("m", "DOWN", 5.0)], fills=[5.0],
+                closes=[("m", "shadow_merge", 5.0, 4.95, 5.0, 0.05)])
+
+    text = rpt.report(db)
+
+    assert "gas" not in text.lower()
+    assert not hasattr(rpt, "MERGE_GAS_USD")
 
 
 def test_report_survives_a_store_with_no_fills(tmp_path):
@@ -173,7 +186,8 @@ def test_report_survives_a_store_with_no_fills(tmp_path):
     assert "no fills recorded" in text
 
 
-def test_merges_are_reported_net_of_gas(tmp_path):
+def test_merges_are_reported_at_their_full_value(tmp_path):
+    # Gross IS net for a gasless merge, so the report states one number.
     db = _store(tmp_path, [("m", "UP", 5.0), ("m", "DOWN", 5.0)],
                 fills=[5.0],
                 closes=[("m", "shadow_merge", 5.0, 4.95, 5.0, 0.05)])
@@ -181,8 +195,7 @@ def test_merges_are_reported_net_of_gas(tmp_path):
     text = rpt.report(db)
 
     assert "merges : 1" in text
-    assert "gross $ 0.0500" in text
-    assert "net of gas $ 0.0386" in text          # 0.05 - 0.01138
+    assert "$ 0.0500" in text
 
 
 @pytest.fixture(autouse=True)

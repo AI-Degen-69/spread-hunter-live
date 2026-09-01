@@ -89,7 +89,14 @@ def test_the_touch_pair_is_refused_at_the_shipped_cap_and_allowed_at_the_trial()
     try:
         trial = importlib.reload(core_config).load()
     finally:
+        # Both of these are process-global. Left set, the rehearsal flag makes
+        # every later test in the process read as a declared rehearsal, and the
+        # reloaded module hands out a different `MakerConfig` than the one
+        # already-imported modules closed over -- so the suite's result starts
+        # depending on file order. Restored here, not at some later fixture.
         os.environ.pop("HUNTER_PAIR_COST_CAP", None)
+        rehearsal.reset_for_test()
+        importlib.reload(core_config)
     assert trial.max_pair_cost == 0.995
     assert shipped.max_pair_cost == 0.99
     book = {"best_bid": 0.32, "best_ask": 0.34, "bids": {0.32: 5000.0}}

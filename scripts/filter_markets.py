@@ -25,6 +25,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from scoring.allocate import (marginal, spread_capture_daily)   # noqa: E402
+from core_brain import rehearsal   # noqa: E402
+from scoring import config as _load_cfg_module   # noqa: E402
 from scoring.config import load as _load_cfg   # noqa: E402
 from scoring.markets import parse_book   # noqa: E402
 from scoring.rewards import score_per_share   # noqa: E402
@@ -529,6 +531,7 @@ def evaluate(session: requests.Session, rate: float, m: dict,
              source: str = "rewards", *,
              min_depth_usd: Optional[float] = None,
              min_volume_usd: Optional[float] = None,
+             max_spread: Optional[float] = None,
              max_queue_minutes: Optional[float] = None,
              queue_minutes_fn=None) -> dict | None:
     """Income and capital for one market, from its live book.
@@ -640,8 +643,12 @@ def evaluate(session: requests.Session, rate: float, m: dict,
     # path) means the permanent bar; `main` passes the resolved trial bar.
     depth_bar = (MIN_TOP3_DEPTH_USD if min_depth_usd is None
                  else min_depth_usd)
+    # The spread ceiling is injectable for the same reason the depth bar is: a
+    # WIDE-BOOK TRIAL run gates on a looser ceiling without touching the
+    # permanent config value. None means the permanent bar.
+    spread_bar = MAX_BOOK_SPREAD if max_spread is None else max_spread
     books_ok, books_reason = pair_books_allowed(
-        books, depth_bar, MAX_BOOK_SPREAD)
+        books, depth_bar, spread_bar)
     if not books_ok:
         return {
             "source": source, "eligible": False,
@@ -901,6 +908,26 @@ def _effective_volume_bar(cli_trial_usd: Optional[float]) -> float:
     return MIN_VOLUME_24H
 
 
+def _effective_spread_bar(cli_trial: Optional[float]) -> float:
+    """The spread ceiling this run gates on: CLI trial > permanent.
+
+    WIDE-BOOK TRIAL (#145). Unlike the depth and volume trials there is no
+    config-level trial field to fall back to, and that is deliberate: this
+    ceiling is a SAFETY gate, not a selection preference, so the only way to
+    loosen it is a deliberate flag on a read-only run. `--trial-spread`
+    declares this process a rehearsal first -- the ranker places no orders, it
+    reads books and writes a market list -- which is what
+    `config.resolve_wide_book_trial` requires before it will widen anything.
+
+    A non-positive trial is a mistake, not a signal: fall back to the
+    permanent bar rather than gating on nothing.
+    """
+    if cli_trial is not None and cli_trial > 0:
+        rehearsal.declare_rehearsal()
+        return _load_cfg_module.resolve_wide_book_trial(str(cli_trial))
+    return MAX_BOOK_SPREAD
+
+
 def _positive_int(v: str) -> int:
     n = int(v)
     if n < 1:
@@ -938,6 +965,18 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         "permanently. See scripts/trial_depth_gate.py for the "
                         "recorded-data replay that shows which markets a bar "
                         "adopts." % MIN_TOP3_DEPTH_USD)
+    p.add_argument("--trial-spread", type=float, default=None, metavar="SPREAD",
+                   help="WIDE-BOOK TRIAL (#145): admit books up to this spread "
+                        "instead of the permanent ceiling (%.2f). Run 145 "
+                        "measured the touch pair at or above max_pair_cost in "
+                        "1247 of 1247 samples on one-tick books, and the only "
+                        "sub-$0.99 pairs it saw came from books that had "
+                        "widened. Adopted markets are tagged trial_spread in "
+                        "runtime/markets.json. The ranker places no orders, so "
+                        "this flag declares the process a rehearsal; the same "
+                        "ceiling in a QUOTING process needs "
+                        "HUNTER_WIDE_BOOK_TRIAL under core_brain.shadow_run."
+                        % MAX_BOOK_SPREAD)
     p.add_argument("--trial-volume", type=float, default=None, metavar="USD",
                    help="VOLUME-GATE TRIAL (U36): gate 24h volume on this bar "
                         "instead of the permanent one ($%.0f). Wins over "
@@ -1094,7 +1133,9 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
                              depth_gate_usd: Optional[float] = None,
                              trial_depth_usd: Optional[float] = None,
                              volume_gate_usd: Optional[float] = None,
-                             trial_volume_usd: Optional[float] = None) -> None:
+                             trial_volume_usd: Optional[float] = None,
+                             spread_gate: Optional[float] = None,
+                             trial_spread: Optional[float] = None) -> None:
     """Persist the whole selection funnel to runtime/pipeline.json.
 
     runtime/markets.json keeps only the winners, so the dashboard can show the
@@ -1196,7 +1237,15 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
         # actually screening against rather than a number frozen into the
         # markup. `max_pair_cost` is the sub-dollar rule the strategy rests
         # on; a stale figure there is worse than no figure at all.
-        "spread_gate": MAX_BOOK_SPREAD,
+        # Which spread ceiling this rank gated on, on the same trial contract
+        # as depth and volume. Passing the module constant here regardless
+        # would report the PERMANENT ceiling on a run that admitted books up
+        # to a looser one -- the dashboard funnel showing a widened safety
+        # gate as if it were the standing contract, which is exactly what the
+        # comment above exists to prevent.
+        "spread_gate": (spread_gate if spread_gate is not None
+                        else MAX_BOOK_SPREAD),
+        "trial_spread": trial_spread,
         "horizon_gate_days": MAX_DAYS_TO_RESOLVE,
         # The payout floor is a REWARD rule, and `evaluate` applies it as one:
         # a spread market is paid by whoever lifts the offer and passes on any
@@ -1285,6 +1334,7 @@ def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],
                max_workers: int = 12,
                min_depth_usd: Optional[float] = None,
                min_volume_usd: Optional[float] = None,
+               max_spread: Optional[float] = None,
                max_queue_minutes: Optional[float] = None,
                queue_minutes_fn=None) -> list[dict]:
     """Score candidate jobs across a worker pool, one session per worker.
@@ -1302,6 +1352,7 @@ def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],
                                    source=a[3],
                                    min_depth_usd=min_depth_usd,
                                    min_volume_usd=min_volume_usd,
+                                   max_spread=max_spread,
                                    max_queue_minutes=max_queue_minutes,
                                    queue_minutes_fn=queue_minutes_fn),
                 jobs):
@@ -1321,6 +1372,11 @@ def main() -> None:
     trial_active = trial_bar != MIN_TOP3_DEPTH_USD
     volume_bar = _effective_volume_bar(args.trial_volume)
     volume_trial_active = volume_bar != MIN_VOLUME_24H
+    # WIDE-BOOK TRIAL (#145). Resolved here so the bar travels as an argument
+    # from this frame down to `pair_books_allowed`, rather than as a module
+    # global that a test cannot vary.
+    spread_bar = _effective_spread_bar(args.trial_spread)
+    spread_trial_active = spread_bar != MAX_BOOK_SPREAD
 
     # Up-front universe fetches run sequentially on the main thread and keep
     # their own keep-alive session; the worker pool below uses one session
@@ -1367,6 +1423,7 @@ def main() -> None:
 
     out = score_pool(jobs, min_depth_usd=trial_bar,
                      min_volume_usd=volume_bar,
+                     max_spread=spread_bar,
                      max_queue_minutes=resolve_queue_bar(_CFG))
     # Eligibility BEFORE ranking. Sorting on return_pct_day alone put the
     # top-ranked market at $0.25/day actual against $18.96 projected, because a
@@ -1423,6 +1480,9 @@ def main() -> None:
         if volume_trial_active:
             for r in picked:
                 r["trial_volume_usd"] = volume_bar
+        if spread_trial_active:
+            for r in picked:
+                r["trial_spread"] = spread_bar
 
         # Temp file and rename: the fleet re-reads this on its own schedule and
         # a half-written file is a SystemExit on the next re-rank.
@@ -1469,7 +1529,8 @@ def main() -> None:
     gates = (f"gates: primary/main-line only, blocked submarkets/live; "
              f"24h volume >= {volume_bar_str}, "
              f"YES+NO top-3 bid depth >= {depth_bar_str} each, "
-             f"spread <= {MAX_BOOK_SPREAD:.2f}, "
+             f"spread <= {spread_bar:.2f}"
+             f"{' (TRIAL)' if spread_trial_active else ''}, "
              f"resolves within {MAX_DAYS_TO_RESOLVE:.0f}d, "
              f"income >= ${MIN_PAYOUT * FLOOR_MULTIPLE:.2f}/day\n")
     print(gates)
@@ -1492,7 +1553,9 @@ def main() -> None:
         depth_gate_usd=trial_bar,
         trial_depth_usd=(trial_bar if trial_active else None),
         volume_gate_usd=volume_bar,
-        trial_volume_usd=(volume_bar if volume_trial_active else None))
+        trial_volume_usd=(volume_bar if volume_trial_active else None),
+        spread_gate=spread_bar,
+        trial_spread=(spread_bar if spread_trial_active else None))
     # The near-miss log is the accumulated evidence for a gate decision; a
     # dry-run audit must not pollute it (it would double-count against the
     # supervised every-10-min ranks).

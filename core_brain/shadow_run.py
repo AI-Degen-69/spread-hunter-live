@@ -44,6 +44,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core_brain import rehearsal
+
 log = logging.getLogger("shadow_run")
 
 # Deprecated compatibility alias; operational callers must provide a per-run path.
@@ -899,6 +901,11 @@ def main(
     fetch_books: Optional[Callable] = None,
 ) -> int:
     """The shadow entrypoint: argparse, banner, time box, clean exit code."""
+    # Declared before anything reads config. This process builds a
+    # credential-free client behind a deny-by-default proxy, so it cannot
+    # place an order whatever sits in `.env` -- which is what licenses the
+    # rehearsal-only trial knobs to apply here and nowhere else.
+    rehearsal.declare_rehearsal()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(message)s",

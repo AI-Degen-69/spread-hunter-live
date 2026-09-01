@@ -8,6 +8,8 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass
+
+from core_brain import rehearsal
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -126,6 +128,17 @@ class MakerConfig:
     # -- measured on a 0.26/0.42 market, six cents better than anyone else.
     # 6c leaves margin under that arithmetic.
     max_book_spread: float = 0.06
+    # WIDE-BOOK TRIAL (#145). The ranker half of the knob documented in
+    # `core_brain/config.py`. This module is the one `scripts.filter_markets`
+    # loads, so without the field here the ranker would keep refusing every
+    # wide market and the trial would measure nothing -- the fleet would be
+    # willing to quote a regime it is never offered.
+    #
+    # Set only from `HUNTER_WIDE_BOOK_TRIAL`, and only with no signer loaded.
+    # The refusal lives in `resolve_wide_book_trial` below, duplicated from
+    # `core_brain.config` rather than imported: a safety refusal that can be
+    # disabled by an import failure is not one.
+    wide_book_trial: float | None = None
     # Summed bid depth below which the book cannot absorb an exit. A proxy,
     # not a measurement of exit liquidity: one aggregated number is the most
     # the recorded book shape supports.
@@ -796,6 +809,68 @@ class MakerConfig:
     market_daily_rate: float = 0.0
 
 
+def _bounded_float(name: str, raw: str, lo: float, hi: float) -> float:
+    """One env override, parsed and bounded, or a ValueError naming the variable.
+
+    The twin of `core_brain.config._bounded_float`, copied for the same reason
+    the refusal below is copied. `float()` accepts "nan" and "inf" without
+    complaint, and NaN poisons every comparison it touches: a ceiling set to
+    NaN reads as enforced while permitting anything. Raising beats clamping --
+    a silently clamped value is a config the operator believes is in force and
+    is not.
+    """
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{name}={raw!r} is not a number") from None
+    if not math.isfinite(value):
+        raise ValueError(f"{name}={raw!r} is not finite")
+    if not lo <= value <= hi:
+        raise ValueError(f"{name}={raw!r} is outside {lo:g}..{hi:g}")
+    return value
+
+
+def resolve_wide_book_trial(raw: str) -> float | None:
+    """Parse `HUNTER_WIDE_BOOK_TRIAL`, refusing outside a declared rehearsal.
+
+    The gate is `rehearsal.is_rehearsal()`, and the choice of question matters.
+    The obvious alternative -- "is a signing key reachable?" -- is wrong twice
+    over. Too weak, because `.env` is the documented home for the key and
+    `venue.signed_client` copies it into `os.environ` only when it builds a
+    signer, which on the live path can happen after `load()` has run. Too
+    strong, because `core_brain.shadow_run` cannot sign whatever sits in
+    `.env`: it builds a credential-free client behind a deny-by-default proxy,
+    so a key on disk says nothing about what that process can do. Gating on
+    the key would refuse the one place this trial is safe while passing on a
+    live trader whose key had not been read yet.
+
+    So the question is whether this process can place an order, which is a
+    property of the entrypoint. Once that is answered no, the key is
+    irrelevant and is not consulted -- a second check there would be dead code
+    wearing the costume of a safety layer.
+
+    Refusing beats ignoring and beats clamping. An operator who sets this
+    outside a rehearsal has asked for a widened SAFETY gate on the money path;
+    dropping the override silently would leave them believing a trial is
+    running when it is not. Raising stops the process at config load, before a
+    client is built.
+
+    The bound is 0.30. A binary market whose two sides are thirty cents apart
+    is not a wide book, it is an absent one, and a value past that is a typo.
+    """
+    if not raw.strip():
+        return None
+    if not rehearsal.is_rehearsal():
+        raise ValueError(
+            "HUNTER_WIDE_BOOK_TRIAL widens max_book_spread, the gate that "
+            "refuses a book where a fill may leave a leg that cannot be "
+            "closed. It applies only in a process that has declared itself "
+            "unable to place an order: core_brain.shadow_run, whose client "
+            "cannot sign, or the ranker's --trial-spread, which only reads "
+            "books and writes a market list.")
+    return _bounded_float("HUNTER_WIDE_BOOK_TRIAL", raw, 0.0, 0.30)
+
+
 def load() -> MakerConfig:
     """Config, with the per-bot fields overridable from the environment.
 
@@ -823,6 +898,13 @@ def load() -> MakerConfig:
         tk = os.environ.get("HUNTER_TICK")
         if tk:
             kw["price_tick"] = float(tk)
+    wide = resolve_wide_book_trial(os.environ.get("HUNTER_WIDE_BOOK_TRIAL") or "")
+    if wide is not None and wide > 0:
+        kw["wide_book_trial"] = wide
+        kw["max_book_spread"] = wide
+        kw["select_max_book_spread"] = wide
+        window = kw.get("max_spread_from_mid", MakerConfig.max_spread_from_mid)
+        kw["max_spread_from_mid"] = max(window, wide)
     trial = os.environ.get("HUNTER_DEPTH_TRIAL_USD") or ""
     if trial.strip():
         kw["select_min_top3_depth_usd_trial"] = float(trial)

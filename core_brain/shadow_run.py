@@ -105,6 +105,23 @@ def write_shadow_heartbeat(
     return target
 
 
+def shadow_cfg():
+    """The rehearsal's config: whatever `load()` reads, grace included.
+
+    This used to force `single_buy_grace_sec=0.0` unconditionally. That made
+    the exit path unmeasurable on the only surface it is safe to measure on --
+    every stranded leg was dumped on the first pass after its fill (0.5s, in
+    `data/15_shadow_touchpair.db`), the operator's `HUNTER_SINGLE_BUY_GRACE_SEC`
+    was discarded on the way in, and so the knob could never be swept.
+
+    `load()` already defaults the field to 0.0, so an operator who sets nothing
+    still gets the old baseline; only an explicit setting now reaches
+    `_route_pair`.
+    """
+    from core_brain.config import load
+    return load()
+
+
 def shadow_run_id() -> str:
     """A fresh run_id for one rehearsal, never the live session's.
 
@@ -560,7 +577,6 @@ def run_shadow(
     """
     from dataclasses import replace as dc_replace
 
-    from core_brain.config import load
     from core_brain.shadow_guard import assert_not_production_registry
     from core_brain.trader_loop import _fleet_state
     from core_brain.trader_loop import run as loop_run
@@ -584,7 +600,7 @@ def run_shadow(
     run_id = run_id if run_id is not None else shadow_run_id()
 
     if cfg is None:
-        cfg = dc_replace(load(), single_buy_grace_sec=0.0)
+        cfg = shadow_cfg()
 
         # Same open question, same answer as the live loop: attempt the real
         # balance read (it needs only the public funder address), fall back to the

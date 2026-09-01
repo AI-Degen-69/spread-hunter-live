@@ -36,11 +36,22 @@ SAMPLE_ROW = {
 
 
 def _real_feed_or_skip():
-    """Return the ranker's live feed, or skip when this checkout has none."""
+    """Return the ranker's live feed, or skip when there is nothing in it.
+
+    Absent and EMPTY are both "nothing to check". The empty case is not a
+    corner: the ranker writes `[]` whenever no market clears its gates, and on
+    2026-09-01 it did so for over an hour straight -- 105 markets scored, 105
+    rejected, `wrote top 0`. Skipping only on the absent file left these tests
+    asserting that the venue must always have a tradeable market in it, which
+    is not a property of this code and not one the suite can hold.
+    """
     try:
-        return load_graduated_markets()
+        markets = load_graduated_markets()
     except MarketFeedAbsentError as exc:
         pytest.skip(f"no ranker feed in this checkout: {exc}")
+    if not markets:
+        pytest.skip("ranker feed is empty: no market cleared the gates")
+    return markets
 
 
 def test_load_graduated_markets_real_file():
@@ -53,11 +64,11 @@ def test_load_graduated_markets_real_file():
     contents are not.
 
     The feed is generated, not committed, so a clean checkout (CI) has no file
-    to read. Skip there rather than fail: the assertion is about the ranker's
-    output shape, and there is no output to check.
+    to read, and the ranker writes `[]` whenever nothing clears its gates.
+    Skip in both cases rather than fail: the assertion is about the ranker's
+    output shape, and neither case has output to check.
     """
     markets = _real_feed_or_skip()
-    assert markets, "ranker feed is present but empty"
     for m in markets:
         assert isinstance(m, GraduatedMarket)
         assert m.cid.startswith("0x")

@@ -173,6 +173,39 @@ class MakerConfig:
     # -- measured on a 0.26/0.42 market, six cents better than anyone else.
     # 6c leaves margin under that arithmetic.
     max_book_spread: float = 0.06
+    # WIDE-BOOK TRIAL (#145). When set, this REPLACES the three ceilings that
+    # together decide whether a wide book can be quoted at all. It is not a
+    # tuning knob and it has no permanent counterpart: the shipped values above
+    # never change, and a run either carries the trial or it does not.
+    #
+    # Why one knob moves three numbers. Run 145 measured `mid_UP + mid_DOWN` at
+    # 1.0000 in 1,247 of 1,247 samples and the touch pair at or above
+    # `max_pair_cost` in every one of them, so a one-tick book has no pair to
+    # assemble at any offset. The only sub-$0.99 touch pairs the run saw --
+    # $0.85 and $0.96 -- came from the ten samples where a book widened to
+    # ~2.8c. Three separate gates refuse that regime, and leaving any one of
+    # them at its shipped value makes the trial measure nothing:
+    #
+    #   * `select_max_book_spread` -- the ranker never offers the market;
+    #   * `max_book_spread` -- `risk.book_health` refuses to quote it
+    #     ("book too wide 13.0c > 6.0c", observed in run 145's own log);
+    #   * `max_spread_from_mid` -- on a wide book the `best_bid + tick` cap in
+    #     `quote_resting_price` pushes the price further from mid than the
+    #     reward window allows, and `_decide_quotes_from_mid` then refuses it
+    #     as outside that window. This is the subtlest of the three and the
+    #     easiest to leave behind.
+    #
+    # The third is a REWARD rule binding on markets that pay no reward: every
+    # market in run 145's universe carried `daily = 0.0`. Widening it costs
+    # reward score that is already zero.
+    #
+    # SET ONLY FROM `HUNTER_WIDE_BOOK_TRIAL`, AND ONLY WITH NO SIGNER LOADED.
+    # `max_book_spread` is a safety gate, not a preference: a wide book is one
+    # where a fill leaves a leg that may not be closeable. Every other
+    # `HUNTER_*` override in `load()` documents itself as scoped to a
+    # rehearsal and none of them enforces it, because `load()` is shared by
+    # both paths. This one enforces it -- see `_signing_credential_present`.
+    wide_book_trial: float | None = None
     # Summed bid depth below which the book cannot absorb an exit. A proxy,
     # not a measurement of exit liquidity: one aggregated number is the most
     # the recorded book shape supports.
@@ -952,6 +985,46 @@ def _bounded_float(name: str, raw: str, lo: float, hi: float) -> float:
     return value
 
 
+SIGNING_KEY_VARS = ("POLY_PRIVATE_KEY", "POLY_KEY")
+
+
+def _signing_credential_present(env=None) -> bool:
+    """Is a key loaded with which an order could be signed?
+
+    The same two variables `core_brain.venue.signed_client` reads to build a
+    signer. Anything else in `.env` -- funder, API key, passphrase -- cannot
+    sign on its own, so requiring their absence would refuse the trial on
+    machines that are configured but not armed.
+    """
+    src = os.environ if env is None else env
+    return any((src.get(name) or "").strip() for name in SIGNING_KEY_VARS)
+
+
+def resolve_wide_book_trial(raw: str, env=None) -> float | None:
+    """Parse `HUNTER_WIDE_BOOK_TRIAL`, refusing outright if a signer is loaded.
+
+    Refusing beats ignoring, and it beats clamping. An operator who sets this
+    on a machine holding a key has asked for a widened SAFETY gate on the money
+    path; silently dropping the override would leave them believing a trial is
+    running when it is not, and silently honouring it would quote into books
+    where a fill may not be closeable. Raising stops the process at config
+    load, before a client is built and long before a share is bought.
+
+    The bound is 0.30. A binary market whose two sides are thirty cents apart
+    is not a wide book, it is an absent one, and a value past that is a typo.
+    """
+    if not raw.strip():
+        return None
+    if _signing_credential_present(env):
+        raise ValueError(
+            "HUNTER_WIDE_BOOK_TRIAL widens max_book_spread, which is the gate "
+            "that refuses a book where a fill may not be closeable. It is "
+            f"refused while a signing key is loaded ({' or '.join(SIGNING_KEY_VARS)} "
+            "is set). Run it from a shell with no key -- "
+            "core_brain.shadow_run builds a client that cannot sign.")
+    return _bounded_float("HUNTER_WIDE_BOOK_TRIAL", raw, 0.0, 0.30)
+
+
 def load() -> MakerConfig:
     """Config, with the per-bot fields overridable from the environment.
 
@@ -979,6 +1052,19 @@ def load() -> MakerConfig:
         tk = os.environ.get("HUNTER_TICK")
         if tk:
             kw["price_tick"] = float(tk)
+    wide = resolve_wide_book_trial(os.environ.get("HUNTER_WIDE_BOOK_TRIAL") or "")
+    if wide is not None and wide > 0:
+        # All three ceilings move together. The reward window is widened only
+        # if the trial is wider than it already is -- a trial NARROWER than
+        # 4.5c must not quietly tighten where we may quote.
+        kw["wide_book_trial"] = wide
+        kw["max_book_spread"] = wide
+        kw["select_max_book_spread"] = wide
+        # Read whatever the per-bot `HUNTER_MAX_SPREAD` block above may have
+        # set, not the class default, so a venue-supplied window is widened
+        # rather than replaced.
+        window = kw.get("max_spread_from_mid", MakerConfig.max_spread_from_mid)
+        kw["max_spread_from_mid"] = max(window, wide)
     trial = os.environ.get("HUNTER_DEPTH_TRIAL_USD") or ""
     if trial.strip():
         kw["select_min_top3_depth_usd_trial"] = float(trial)

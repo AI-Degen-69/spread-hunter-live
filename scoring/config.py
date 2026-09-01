@@ -126,6 +126,17 @@ class MakerConfig:
     # -- measured on a 0.26/0.42 market, six cents better than anyone else.
     # 6c leaves margin under that arithmetic.
     max_book_spread: float = 0.06
+    # WIDE-BOOK TRIAL (#145). The ranker half of the knob documented in
+    # `core_brain/config.py`. This module is the one `scripts.filter_markets`
+    # loads, so without the field here the ranker would keep refusing every
+    # wide market and the trial would measure nothing -- the fleet would be
+    # willing to quote a regime it is never offered.
+    #
+    # Set only from `HUNTER_WIDE_BOOK_TRIAL`, and only with no signer loaded.
+    # The refusal lives in `resolve_wide_book_trial` below, duplicated from
+    # `core_brain.config` rather than imported: a safety refusal that can be
+    # disabled by an import failure is not one.
+    wide_book_trial: float | None = None
     # Summed bid depth below which the book cannot absorb an exit. A proxy,
     # not a measurement of exit liquidity: one aggregated number is the most
     # the recorded book shape supports.
@@ -796,6 +807,63 @@ class MakerConfig:
     market_daily_rate: float = 0.0
 
 
+def _bounded_float(name: str, raw: str, lo: float, hi: float) -> float:
+    """One env override, parsed and bounded, or a ValueError naming the variable.
+
+    The twin of `core_brain.config._bounded_float`, copied for the same reason
+    the refusal below is copied. `float()` accepts "nan" and "inf" without
+    complaint, and NaN poisons every comparison it touches: a ceiling set to
+    NaN reads as enforced while permitting anything. Raising beats clamping --
+    a silently clamped value is a config the operator believes is in force and
+    is not.
+    """
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"{name}={raw!r} is not a number") from None
+    if not math.isfinite(value):
+        raise ValueError(f"{name}={raw!r} is not finite")
+    if not lo <= value <= hi:
+        raise ValueError(f"{name}={raw!r} is outside {lo:g}..{hi:g}")
+    return value
+
+
+SIGNING_KEY_VARS = ("POLY_PRIVATE_KEY", "POLY_KEY")
+
+
+def _signing_credential_present(env=None) -> bool:
+    """Is a key loaded with which an order could be signed?
+
+    The same two variables `core_brain.venue.signed_client` reads to build a
+    signer. Anything else in `.env` -- funder, API key, passphrase -- cannot
+    sign on its own, so requiring their absence would refuse the trial on
+    machines that are configured but not armed.
+    """
+    src = os.environ if env is None else env
+    return any((src.get(name) or "").strip() for name in SIGNING_KEY_VARS)
+
+
+def resolve_wide_book_trial(raw: str, env=None) -> float | None:
+    """Parse `HUNTER_WIDE_BOOK_TRIAL`, refusing outright if a signer is loaded.
+
+    The twin of `core_brain.config.resolve_wide_book_trial`, and deliberately a
+    copy rather than an import: this module is loaded by the ranker and that
+    one by the fleet, and a safety refusal that stops working because an import
+    moved is not a safety refusal. `tests/test_wide_book_trial.py` pins the two
+    to the same behaviour.
+    """
+    if not raw.strip():
+        return None
+    if _signing_credential_present(env):
+        raise ValueError(
+            "HUNTER_WIDE_BOOK_TRIAL widens max_book_spread, which is the gate "
+            "that refuses a book where a fill may not be closeable. It is "
+            f"refused while a signing key is loaded ({' or '.join(SIGNING_KEY_VARS)} "
+            "is set). Run it from a shell with no key -- "
+            "core_brain.shadow_run builds a client that cannot sign.")
+    return _bounded_float("HUNTER_WIDE_BOOK_TRIAL", raw, 0.0, 0.30)
+
+
 def load() -> MakerConfig:
     """Config, with the per-bot fields overridable from the environment.
 
@@ -823,6 +891,13 @@ def load() -> MakerConfig:
         tk = os.environ.get("HUNTER_TICK")
         if tk:
             kw["price_tick"] = float(tk)
+    wide = resolve_wide_book_trial(os.environ.get("HUNTER_WIDE_BOOK_TRIAL") or "")
+    if wide is not None and wide > 0:
+        kw["wide_book_trial"] = wide
+        kw["max_book_spread"] = wide
+        kw["select_max_book_spread"] = wide
+        window = kw.get("max_spread_from_mid", MakerConfig.max_spread_from_mid)
+        kw["max_spread_from_mid"] = max(window, wide)
     trial = os.environ.get("HUNTER_DEPTH_TRIAL_USD") or ""
     if trial.strip():
         kw["select_min_top3_depth_usd_trial"] = float(trial)

@@ -212,11 +212,17 @@ result.
 The two legs of the merged pair drift in opposite directions and their mids sum
 to 0.205 + 0.795 = **1.0000** five minutes after the fills — the same identity
 that holds before the fill. The per-leg numbers are real measurements and they
-do move (+0.065 on one leg, −0.035 on the other); what carries no information
-is the **pair-level** markout, because the two legs move by equal and opposite
-amounts and the pair is worth exactly $1.00 by construction. That is the whole
-point of the strategy. **Pair-level markout cannot detect adverse selection on
-a merged pair; only the single-leg markouts can.**
+do move (+0.065 on one leg, −0.035 on the other). What carries no information
+is the **pair-level** markout: the two mids move equal and opposite, so their
+sum is pinned at 1.0000 and the pair's market value cannot drift away from the
+$1.00 the merge pays.
+
+The two per-leg drifts do not cancel — they sum to +0.030 — but that residual
+is not adverse selection either. It is exactly the pair's edge: the legs cost
+0.24 + 0.73 = $0.97, the mids sum to $1.00, and the difference is the 3 cents
+the merge books. It is fixed at the moment the second leg fills and says
+nothing about what the market did afterwards. **Pair-level markout cannot
+detect adverse selection on a merged pair; only the single-leg markouts can.**
 
 The single leg is where it does matter, and the one observation is unflattering.
 We bought at 0.72, the safety path exited at 0.71 for −$0.06, and the mid was

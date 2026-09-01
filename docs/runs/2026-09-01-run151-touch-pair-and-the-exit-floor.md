@@ -25,11 +25,12 @@ against 33% observed.**
 | Store | `data/15_shadow_touchpair.db`, run id `shadow-15-touchpair` |
 | Console | `runtime/run151/15_shadow.console.log` |
 | Universe | 3 markets, ATP match books, refreshed by `scripts.filter_loop` |
-| Figures below read at | 20:45, with the run still in flight |
+| Figures below read at | 3h elapsed — 169 quotes, 15 fills, 14 closes |
 
-> The run was still resting quotes when these figures were taken (134 quotes,
-> 13 fills, 12 closes). The counts will grow; the per-share economics and the
-> break-even rate are ratios and have been stable since the 1-hour read.
+> Read at 3 hours rather than at the 4-hour end, deliberately. The number of
+> markets carrying a fill has been **frozen at 2 since minute 30**, so the run
+> stopped accumulating the evidence that decides anything long before it
+> stopped running. See *Why this run cannot answer the question*.
 
 Four environment knobs, each load-bearing. Without them the run measures nothing:
 
@@ -55,12 +56,12 @@ had recorded a completed pair.
 | One leg filled | 1 (33.3%) |
 | No leg filled | 1 |
 | Merges | 2, 10 shares, +$0.0772 net of gas |
-| Single-leg exits | 10, 46 shares, −$1.0500 |
-| **Run net as booked** | **−$0.9728** |
+| Single-leg exits | 12, 58 shares, −$1.4700 |
+| **Run net as booked** | **−$1.3928** |
 
-A merged pair won 1c/share. A stranded leg lost 2.28c/share. Against that asymmetry
-the break-even double-maker rate is 74.7%, and 33% was observed — so as booked, the
-strategy loses.
+A merged pair won 0.77c/share. A stranded leg lost 2.53c/share. Against that
+asymmetry the break-even double-maker rate is 76.6%, and 33% was observed — so as
+booked, the strategy loses.
 
 That number is wrong, and the rest of this document is why.
 
@@ -123,20 +124,68 @@ the tick. Repricing each recorded close at that bid:
 | 10 | 5 | 0.58 | 0.55 | 0.57 | −0.1500 | −0.0500 |
 | 11 | 5 | 0.40 | 0.37 | 0.39 | −0.1500 | −0.0500 |
 | 12 | 5 | 0.43 | 0.43 | 0.45 | +0.0000 | +0.1000 |
+| 13 | 6 | 0.78 | 0.76 | 0.78 | −0.1200 | +0.0000 |
+| 14 | 6 | 0.71 | 0.66 | 0.68 | −0.3000 | −0.1800 |
 
 |  | booked | at the bid |
 | --- | ---: | ---: |
-| Single-leg exits | −$1.0500 | −$0.1300 |
+| Single-leg exits | −$1.4700 | −$0.3100 |
 | Merges, net of gas | +$0.0772 | +$0.0772 |
-| **Run net** | **−$0.9728** | **−$0.0528** |
-| Exit cost per share | −2.28c | −0.28c |
-| Merge gain per share | +0.77c | +0.77c |
-| **Break-even double-maker rate** | **74.7%** | **26.8%** |
+| **Run net** | **−$1.3928** | **−$0.2328** |
+| Exit cost per share | −2.53c | −0.53c |
+| **Break-even double-maker rate** | **76.6%** | **40.9%** |
 
-Observed double-maker rate: **33%**. The conclusion inverts.
+Five of the twelve exits sold at exactly the price they bought at, once the 2c
+floor is removed — they were never losses at all. Close #14 is a real 3c/share
+loss and close #12 a real 2c/share gain that the floor booked as zero. **The exit
+costs about a fifth of what the harness charged for it.**
 
-Four of the ten exits sold at exactly the price they bought at once the 2c floor is
-removed — they were never losses. Close #12 was a 2c *gain* booked as zero.
+The merge side is contested. This table charges $0.01138 per merge, the median of
+12 on-chain `mergePositions` transactions, per
+[#149](https://github.com/AI-Degen-69/spread-hunter-live/pull/149).
+[#152](https://github.com/AI-Degen-69/spread-hunter-live/pull/152) argues the
+relayer sends those transactions and pays for them, making a merge gasless to us.
+Both:
+
+| merge gas | merge gain | break-even, booked | break-even, at the bid |
+| --- | ---: | ---: | ---: |
+| $0.01138 (#149) | +0.77c/share | 76.6% | 40.9% |
+| gasless (#152) | +1.00c/share | 71.7% | **34.8%** |
+
+Observed double-maker rate: **33.3%** (1 of 3 markets). Under either assumption the
+repriced run is a near-miss rather than the rout the booked figures described — and
+under neither is the margin large enough to call.
+
+## Why this run cannot answer the question
+
+The break-even rate is a ratio of two per-share figures, both estimated from very
+few closes. Recomputed at each half hour of the run:
+
+| elapsed | closes | markets with a fill | exit c/share | break-even rate |
+| ---: | ---: | ---: | ---: | ---: |
+| 30m | 5 | 2 | — | — |
+| 60m | 7 | 2 | −0.33c | 30.1% |
+| 90m | 9 | 2 | −0.42c | 35.2% |
+| 120m | 11 | 2 | −0.56c | 42.1% |
+| 150m | 12 | 2 | −0.28c | 26.8% |
+| 180m | 14 | 2 | −0.53c | 40.9% |
+
+The estimate swings between **26.8% and 42.1%** and straddles the 33% observed rate
+in both directions. It is not converging — a single 6-share exit moves it more than
+ten points. Any claim that this run shows the strategy winning or losing is reading
+noise.
+
+The cause is the third column. **Markets carrying a fill has been 2 since minute
+30**; 3 markets were ever quoted. The double-maker rate — the number the whole
+strategy turns on — has a denominator of 3 and has not moved in two and a half
+hours. The remaining hour of the run adds roughly two more closes on the same two
+markets.
+
+So the binding constraint is no longer the exit, and it was never the fill rate or
+the queue. **It is the size of the eligible universe.** At 0–2 markets nothing
+downstream can be measured to a useful precision, however long a rehearsal runs.
+That is the $500 depth floor in `scripts/filter_markets.py`, which out-rejects the
+spread ceiling roughly 5:1 in every scan.
 
 ## What this does and does not establish
 
@@ -145,15 +194,16 @@ binding constraint is largely an artifact of the measurement path. The exit path
 a rehearsal charged a fixed 2c per share that the venue was never asked for, and the
 grace window that exists to avoid the exit entirely was disabled before it could act.
 
-**Does not establish.** That the strategy is profitable. The sample is 3 markets and
-12 closes, the double-maker rate is n=3, and the repricing is a reconstruction of
-what the venue would have paid, not an observation of what it did pay. It assumes the
-full size would have filled at the touch — which `exit_single_buy` already sizes for
-via `depth_at_or_above(book, min_price)`, but which this run did not verify
+**Does not establish.** That the strategy is profitable, or that it is not. The
+double-maker rate is n=3, the break-even estimate has not converged, and the
+repricing is a reconstruction of what the venue would have paid rather than an
+observation of what it did pay — it assumes the full size would have filled at the
+touch, which `exit_single_buy` already sizes for via
+`depth_at_or_above(book, min_price)` but which this run did not verify
 independently.
 
 The honest statement is that the run's headline number was not a measurement of the
-strategy, and the next run can be.
+strategy, and that no rehearsal on a 2-market universe will be.
 
 ## Fixes
 
@@ -177,11 +227,17 @@ An autouse fixture now scrubs every `HUNTER_*` knob.
 
 ## Next
 
-1. **Re-run this rehearsal on the fixed code.** Every figure above is a
-   reconstruction until a run records the exit price the ladder actually gives.
-2. **Then sweep `single_buy_grace_sec`,** which is now reachable. At 0.52s the
-   companion leg had no opportunity to fill; the question the sweep answers is what
-   fraction of the 67% one-leg-or-none outcomes become pairs given 15s, 45s, 120s.
-3. **Only then revisit the split-and-sell hypothesis.** It was proposed to escape an
-   asymmetry that is now much smaller than it looked, and its own caveats — the
+1. **Widen the universe first.** Every other measurement is gated on it. The trial
+   contract already exists: `--trial-depth` in `scripts/filter_markets.py`. Until a
+   rehearsal quotes tens of markets rather than two, no run can separate a 27%
+   double-maker rate from a 42% one — and that range spans the entire decision.
+2. **Then re-run this rehearsal on the fixed code,** which records the exit price
+   the ladder actually gives instead of the floor.
+3. **Then sweep `single_buy_grace_sec`,** now that it is reachable. At 0.52s the
+   companion leg had no opportunity to fill; the sweep answers what fraction of the
+   one-leg-or-none outcomes become pairs given 15s, 45s, 120s.
+4. **Settle the merge gas.** #149 and #152 disagree, and it is worth 0.23c on a 1c
+   trade — six points of break-even rate.
+5. **Only then revisit the split-and-sell hypothesis.** It was proposed to escape an
+   asymmetry that is now about a fifth of what it looked, and its own caveats — the
    reversal on 0.001-tick books, and unmeasured ask-side queue depth — are unchanged.

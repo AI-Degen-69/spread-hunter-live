@@ -1,10 +1,10 @@
 """The Orders & Trades table: three views of the same run.
 
-A market the screener graduated, an order resting in the book, and a filled
-leg the account is holding are three stages of one object, and the operator
-reads them in that order. They are three views of one table rather than three
-panels because only the last stage has PnL: an order in the book is not a
-position, and putting a PnL column beside it invites the reading that it is.
+A market the Market Filter graduated, an order resting on the book, and a
+filled leg the account is holding are three stages of one object, and the
+operator reads them in that order. They are three views of one table rather
+than three panels because only the last stage has PnL: an order on the book
+is not a position, and a PnL column beside it invites the reading that it is.
 
 The column sets encode that. ACTIVE MARKETS carries no share count -- nothing
 is owned yet. OPEN ORDERS carries no PnL -- nothing is exposed yet. POSITIONS
@@ -142,9 +142,9 @@ def test_open_orders_carries_no_pnl():
     joined = " ".join(rendered["columns"]).lower()
     assert "pnl" not in joined
     assert "unrealized" not in joined
-    assert rendered["columns"] == ["Market", "Leg", "Price", "Shares", "Filled",
+    assert rendered["columns"] == ["Market", "Leg", "Price", "Size", "Filled",
                                    "Remaining", "Total Cost", "Queue Ahead",
-                                   "Age", "Status"]
+                                   "Age", "Order Status"]
 
 
 @requires_node
@@ -155,7 +155,19 @@ def test_positions_carries_the_pnl_columns():
     # Act / Assert
     assert "Unrealized" in rendered["columns"]
     assert "Realized" in rendered["columns"]
-    assert "UP Shares" in rendered["columns"]
+
+
+@requires_node
+def test_positions_reads_per_leg_like_the_open_book():
+    # Arrange — both tables describe pairs of legs, so both list one leg per
+    # row under one Size column. A UP Shares / DOWN Shares pair of columns
+    # made Positions the odd one out and left half of every row empty.
+    rendered = _render("positions", _kpi(), _state())
+
+    # Act / Assert
+    assert rendered["columns"] == ["Market", "Leg", "Size", "Avg Price", "Cost",
+                                   "Mark Value", "Unrealized", "Realized"]
+    assert "Hedge" not in rendered["columns"]
 
 
 # ── Active markets ──────────────────────────────────────────────────────────
@@ -394,7 +406,7 @@ def test_open_orders_labels_a_half_built_pair_unpaired():
 
     # Assert
     assert "Unpaired" in rendered["html"]
-    assert "ot-tag is-warn" in rendered["html"]
+    assert "ot-tag is-alert" in rendered["html"]
     assert "Pair Cost" not in rendered["html"]
     assert "single buy" not in rendered["html"].lower()
 
@@ -518,9 +530,9 @@ def test_positions_lists_only_markets_with_filled_shares():
     # Arrange / Act
     rendered = _render("positions", _kpi(), _state())
 
-    # Assert
-    assert rendered["rows"] == 1
-    assert "Held Market" in rendered["html"]
+    # Assert — one row per held leg, the market named once across both.
+    assert rendered["rows"] == 2
+    assert rendered["html"].count("Held Market") == 1
     assert "Quoted Market" not in rendered["html"]
 
 
@@ -555,9 +567,10 @@ def test_positions_leaves_the_mark_blank_when_the_naked_leg_has_no_mid():
 
 
 @requires_node
-def test_positions_flags_a_single_leg():
+def test_positions_calls_a_lone_filled_leg_unpaired():
     # Arrange — one leg filled and the other not is a directional bet nobody
-    # decided to take, so the row has to name it.
+    # decided to take. It wears the same name and the same tone here as an
+    # order with no partner does on the book.
     kpi = _kpi()
     kpi["by_market"][CID_HELD]["dn_sh"] = 0
     kpi["by_market"][CID_HELD]["total_sh"] = 10
@@ -566,7 +579,9 @@ def test_positions_flags_a_single_leg():
     rendered = _render("positions", kpi, _state())
 
     # Assert
-    assert "Single Leg" in rendered["html"]
+    assert "Unpaired" in rendered["html"]
+    assert "ot-tag is-alert" in rendered["html"]
+    assert rendered["rows"] == 1
 
 
 @requires_node

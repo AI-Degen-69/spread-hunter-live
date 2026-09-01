@@ -1245,6 +1245,15 @@ td { font-size: 13px; }
   vertical-align: middle;
   border-right: 1px solid var(--border-subtle);
 }
+/* Pair-level numbers span both legs for the same reason the market name does:
+   they describe the pair, not one side of it. The rule marks where the
+   per-leg columns stop. */
+#orders-trades-table .ot-pair-row > td.ot-pair-value {
+  vertical-align: middle;
+}
+#orders-trades-table .ot-pair-row > td.ot-pair-value:first-of-type {
+  border-left: 1px solid var(--border-subtle);
+}
 /* Status tags under the market name. Three tones, one meaning each:
    good — the merge books a profit; alert — it books a loss; warn — the pair is
    half-built and the resting leg is a single buy waiting to happen. */

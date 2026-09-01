@@ -88,7 +88,7 @@
   <nav class="tab-switcher" role="tablist" aria-label="Dashboard tabs">
     <button class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-1" id="tab-btn-1" type="button">LIVE OPERATIONS</button>
     <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-2" id="tab-btn-2" type="button">PERFORMANCE &amp; ANALYTICS</button>
-    <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-3" id="tab-btn-3" type="button">SCREENER</button>
+    <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-3" id="tab-btn-3" type="button">MARKET FILTER</button>
   </nav>
 
   <!-- ── Tab 1: Live Operations ── -->
@@ -254,7 +254,7 @@
           <div class="ticker-filters" role="group" aria-label="Ticker event filter" style="display:flex;gap:4px">
             <button class="ticker-filter-btn active" data-filter="all" type="button">ALL</button>
             <button class="ticker-filter-btn" data-filter="decide" type="button">TRADES</button>
-            <button class="ticker-filter-btn" data-filter="filter" type="button">SCREENER</button>
+            <button class="ticker-filter-btn" data-filter="filter" type="button">MARKET FILTER</button>
             <button class="ticker-filter-btn" data-filter="guardrail" type="button">ALERTS</button>
           </div>
           <button id="btn-clear-ticker" class="toggle-cancelled-btn" type="button" style="padding:4px 8px;font-size:11px">CLEAR FEED</button>
@@ -578,9 +578,9 @@
     </div>
   </section>
 
-  <!-- ── Tab 3: Screener Pipeline (kanban) ── -->
+  <!-- ── Tab 3: Market Filter Pipeline (kanban) ── -->
   <section id="tab-3" role="tabpanel" aria-labelledby="tab-btn-3" hidden>
-    <!-- Screener header: scan state, snapshot age, census, gates -->
+    <!-- Market Filter header: scan state, snapshot age, census, gates -->
     <div class="card" id="screener-header">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div style="display:flex;align-items:center;gap:10px">
@@ -602,7 +602,7 @@
         </svg>
       </button>
 
-      <div id="kanban-board" class="kanban-board" role="list" aria-label="Screener pipeline buckets" tabindex="0">
+      <div id="kanban-board" class="kanban-board" role="list" aria-label="Market Filter pipeline buckets" tabindex="0">
         <!-- Buckets rendered by JS -->
       </div>
 

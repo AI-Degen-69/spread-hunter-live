@@ -43,7 +43,7 @@ const PAGE_LAYOUT = [
     page: 'data-markets',
     label: 'Data & Markets',
     icon: '▤',
-    note: 'What the screener saw: the pipeline buckets, the filter’s own state, ' +
+    note: 'What the Market Filter saw: the pipeline buckets, its own state, ' +
           'and the market inspection table.',
     selectors: ['#screener-header', '#kanban-carousel-container', '#market-inspection-card'],
   },

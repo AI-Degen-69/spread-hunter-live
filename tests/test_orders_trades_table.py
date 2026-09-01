@@ -229,7 +229,7 @@ def test_active_markets_says_so_when_nothing_is_quoted():
     rendered = _render("active-markets", {"by_market": {}}, {"orders": []})
 
     # Assert
-    assert "No markets are being quoted" in rendered["html"]
+    assert "No markets are being quoted." in rendered["html"]
 
 
 # ── Open orders ─────────────────────────────────────────────────────────────
@@ -358,7 +358,9 @@ def test_open_orders_prices_the_pair_the_two_legs_would_make():
     rendered = _render("open-orders", _kpi(), _state())
 
     # Act / Assert — 0.47 + 0.51 = $0.980.
-    assert "pair $0.980" in rendered["html"]
+    assert "Pair Cost" in rendered["html"]
+    assert "$0.980" in rendered["html"]
+    assert "ot-tag is-good" in rendered["html"]
 
 
 @requires_node
@@ -372,15 +374,18 @@ def test_open_orders_does_not_call_a_break_even_pair_a_loss():
     # Act
     rendered = _render("open-orders", _kpi(), state)
 
-    # Assert
-    assert "pair $1.000" in rendered["html"]
-    assert "negative" not in rendered["html"]
+    # Assert — a warning that the capital earns nothing, not a loss in red.
+    assert "$1.000" in rendered["html"]
+    assert "ot-tag is-warn" in rendered["html"]
+    assert "ot-tag is-alert" not in rendered["html"]
 
 
 @requires_node
-def test_open_orders_flags_a_pair_with_only_one_leg_resting():
-    # Arrange — a lone resting leg is half a pair. If it fills the account is
-    # holding a directional bet nobody decided to take.
+def test_open_orders_labels_a_half_built_pair_unpaired():
+    # Arrange — an order whose partner leg is not on the book is Unpaired.
+    # If it fills alone it becomes a single buy: a directional bet nobody
+    # decided to take. The glossary keeps those two names apart, so the tag
+    # names the order’s state, not the position it has not become yet.
     state = _state()
     state["orders"] = [o for o in state["orders"] if o["order_id"] != "ord-dn"]
 
@@ -388,8 +393,10 @@ def test_open_orders_flags_a_pair_with_only_one_leg_resting():
     rendered = _render("open-orders", _kpi(), state)
 
     # Assert
-    assert "one leg resting" in rendered["html"]
-    assert "pair $" not in rendered["html"]
+    assert "Unpaired" in rendered["html"]
+    assert "ot-tag is-warn" in rendered["html"]
+    assert "Pair Cost" not in rendered["html"]
+    assert "single buy" not in rendered["html"].lower()
 
 
 @requires_node
@@ -415,6 +422,51 @@ def test_open_orders_bands_alternate_pairs():
     assert rendered["html"].count("ot-pair-start") == 2
     assert rendered["html"].count("ot-pair-alt") == 2
     assert rendered["rows"] == 4
+
+
+@requires_node
+def test_a_pair_that_cannot_merge_at_a_profit_reads_as_an_alert():
+    # Arrange — a pair assembled at or over $1.00 is a booked loss, not a
+    # warning about one. It must not wear the same colour as a healthy pair.
+    state = _state()
+    for order in state["orders"]:
+        if order.get("pair_id") == "pair-a":
+            order["price"] = 0.55
+
+    # Act
+    rendered = _render("open-orders", _kpi(), state)
+
+    # Assert — 0.55 + 0.55 = $1.100.
+    assert "ot-tag is-alert" in rendered["html"]
+    assert "ot-tag is-good" not in rendered["html"]
+
+
+def test_the_panel_copy_uses_the_glossary_names():
+    # Arrange — `docs/agents/glossary.md` retired "screener" for "Market
+    # Filter", and operator-facing copy is where the old name survives longest.
+    app = (_STATIC / "app.js").read_text(encoding="utf-8")
+    index = (_STATIC / "index.html").read_text(encoding="utf-8")
+
+    # Act — the three view notes, which is the copy this panel owns.
+    notes = app.split("const OT_NOTES = {")[1].split("};")[0]
+
+    # Assert
+    assert "Market Filter" in notes
+    assert "screener" not in notes.lower()
+    assert "Market Filter" in index.split('id="orders-trades-note"')[1][:300]
+
+
+def test_the_glossary_separates_an_unpaired_order_from_a_single_buy():
+    # Arrange — `Unpaired` is the state of the order; `single buy` is the state
+    # of the position it turns into if it fills alone. Collapsing the two
+    # names loses the distinction between a risk and a booked one.
+    glossary = (_ROOT / "docs" / "agents" / "glossary.md").read_text(encoding="utf-8")
+
+    # Act / Assert
+    assert "**Unpaired**" in glossary
+    assert "**Pair Cost**" in glossary
+    assert "single buy" in glossary
+    assert "one leg resting" in glossary  # named as the wording to avoid
 
 
 def test_the_market_column_has_a_width_floor():
@@ -456,7 +508,7 @@ def test_open_orders_says_so_when_the_book_is_empty():
     rendered = _render("open-orders", _kpi(), {"orders": []})
 
     # Assert
-    assert "No orders resting in the book" in rendered["html"]
+    assert "No orders are resting on the book." in rendered["html"]
 
 
 # ── Positions ───────────────────────────────────────────────────────────────
@@ -523,7 +575,7 @@ def test_positions_says_so_when_nothing_is_held():
     rendered = _render("positions", {"by_market": {}}, {"orders": []})
 
     # Assert
-    assert "No filled legs" in rendered["html"]
+    assert "No legs have filled, so nothing is held." in rendered["html"]
 
 
 # ── Tab counts ──────────────────────────────────────────────────────────────

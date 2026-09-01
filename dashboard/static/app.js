@@ -2883,7 +2883,7 @@ function renderExpandedOrders(orders, fills, showCancelled) {
  * One table, three tabs, because they are three stages of the same object and
  * the operator reads them in that order:
  *
- *   ACTIVE MARKETS — graduated the screener and currently quoted. What the bot
+ *   ACTIVE MARKETS — graduated the Market Filter and currently quoted. What the
  *                    is looking at. No share counts here: nothing is owned yet.
  *   OPEN ORDERS    — resting in the book. Size, price, what it would cost.
  *                    No PnL here: an order in the book is not a position.
@@ -2896,9 +2896,9 @@ const OT_STORAGE_KEY = 'sh-orders-trades-view';
 let currentOrdersTradesView = 'active-markets';
 
 const OT_NOTES = {
-  'active-markets': 'Markets the screener graduated and the bot is quoting',
-  'open-orders': 'Orders resting in the book — no position taken yet, so no PnL',
-  'positions': 'Filled legs the account is actually holding',
+  'active-markets': 'Markets that graduated the Market Filter and are being quoted.',
+  'open-orders': 'Orders resting on the book. Nothing is held yet, so there is no PnL.',
+  'positions': 'Filled legs the account is holding.',
 };
 
 const OT_COLUMNS = {
@@ -3052,6 +3052,15 @@ function marketCell(market, conditionId) {
   return `<span class="mono" title="${esc(cid)}">${esc(cid.slice(0, 10))}…</span>`;
 }
 
+/* A labelled status tag: a named condition, optionally with the number behind
+ * it. `tone` is one of good / warn / alert, so the same three colours mean the
+ * same three things everywhere in this table. */
+function otTag(tone, label, value) {
+  const valueHtml = (value === null || value === undefined)
+    ? '' : ` <span class="ot-tag-value mono">${esc(value)}</span>`;
+  return `<div class="ot-tag is-${esc(tone)}">${esc(label)}${valueHtml}</div>`;
+}
+
 function otEmptyRow(view, message) {
   return `<tr><td colspan="${OT_COLUMNS[view].length}" style="text-align:center;color:var(--text-muted);padding:20px">${esc(message)}</td></tr>`;
 }
@@ -3098,7 +3107,7 @@ function activeMarketsRows(kpi, state) {
   const entries = Object.entries((kpi && kpi.by_market) || {})
     .filter(([cid, m]) => isQuotedMarket(m, ordersByMarket[cid]));
 
-  if (!entries.length) return otEmptyRow('active-markets', 'No markets are being quoted');
+  if (!entries.length) return otEmptyRow('active-markets', 'No markets are being quoted.');
 
   entries.sort((a, b) => (b[1].quotes_count || 0) - (a[1].quotes_count || 0)
     || String(a[1].title || '').localeCompare(String(b[1].title || '')));
@@ -3182,7 +3191,7 @@ function restingPairCost(orders, kpi) {
 
 function openOrdersRows(kpi, state) {
   const orders = ((state && state.orders) || []).filter(isRestingOrder);
-  if (!orders.length) return otEmptyRow('open-orders', 'No orders resting in the book');
+  if (!orders.length) return otEmptyRow('open-orders', 'No orders are resting on the book.');
 
   const byMarket = (kpi && kpi.by_market) || {};
   const legs = tokenLegMap(kpi);
@@ -3197,9 +3206,15 @@ function openOrdersRows(kpi, state) {
 
     // The pair cell says whether this pair can merge at a profit at all, and
     // names the half-built pair when only one leg is on the book.
-    const pairNote = complete
-      ? `<div class="ot-pair-cost mono ${pairCost > 1 ? 'negative' : 'positive'}">pair ${fmtPrice(pairCost)}</div>`
-      : `<div class="ot-pair-cost mono ot-pair-incomplete">one leg resting</div>`;
+    // The tag under the market name answers the only question the pair poses:
+    // if both legs fill, does the merge book a profit? Under $1.00 it does.
+    // Exactly $1.00 merges back into what it cost -- zero, not a loss, so it
+    // is a warning rather than an alert. Over $1.00 the loss is already
+    // decided the moment both legs fill.
+    const pairTone = pairCost < 1 ? 'good' : (pairCost > 1 ? 'alert' : 'warn');
+    const pairTag = complete
+      ? otTag(pairTone, 'Pair Cost', fmtPrice(pairCost))
+      : otTag('warn', 'Unpaired', null);
 
     return group.orders.map((o, legIndex) => {
       const leg = legForOrder(o, legs, byMarket) || '--';
@@ -3213,7 +3228,7 @@ function openOrdersRows(kpi, state) {
       // One market name for both legs: the merged cell is what makes the two
       // rows read as one pair rather than two unrelated orders.
       const marketTd = legIndex === 0
-        ? `<td class="ot-market" rowspan="${group.orders.length}">${marketCell(market, o.condition_id)}${pairNote}</td>`
+        ? `<td class="ot-market" rowspan="${group.orders.length}">${marketCell(market, o.condition_id)}${pairTag}</td>`
         : '';
       return `<tr class="${rowClass.join(' ')}" data-order-id="${esc(o.order_id)}" data-pair="${esc(group.key)}">
       ${marketTd}
@@ -3235,7 +3250,7 @@ function positionsRows(kpi) {
   const entries = Object.entries((kpi && kpi.by_market) || {})
     .filter(([, m]) => (Number(m.total_sh) || 0) > 0);
 
-  if (!entries.length) return otEmptyRow('positions', 'No filled legs — nothing is held yet');
+  if (!entries.length) return otEmptyRow('positions', 'No legs have filled, so nothing is held.');
 
   entries.sort((a, b) => (Number(b[1].total_cost) || 0) - (Number(a[1].total_cost) || 0));
 

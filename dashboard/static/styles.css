@@ -1245,13 +1245,45 @@ td { font-size: 13px; }
   vertical-align: middle;
   border-right: 1px solid var(--border-subtle);
 }
-.ot-pair-cost {
-  margin-top: 4px;
+/* Status tags under the market name. Three tones, one meaning each:
+   good — the merge books a profit; alert — it books a loss; warn — the pair is
+   half-built and the resting leg is a single buy waiting to happen. */
+.ot-tag {
+  /* Block-level so the tag always starts its own line under the market name.
+     Inline, it tucked in beside a short name and left the rows uneven. */
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  align-items: baseline;
+  gap: 5px;
+  margin-top: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-family: 'Inter', sans-serif;
   font-size: 10.5px;
+  font-weight: 600;
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
-.ot-pair-incomplete {
-  color: var(--text-muted);
+.ot-tag-value {
+  font-weight: 700;
+  letter-spacing: 0;
+}
+.ot-tag.is-good {
+  background: var(--green-bg);
+  border-color: var(--green-border);
+  color: #34d399;
+}
+.ot-tag.is-warn {
+  background: var(--amber-bg);
+  border-color: var(--amber-border);
+  color: #fbbf24;
+}
+.ot-tag.is-alert {
+  background: var(--red-bg);
+  border-color: var(--red-border);
+  color: #fca5a5;
 }
 
 /* ── Quant Risk Metrics Grid ── */

@@ -252,10 +252,12 @@ it is pointed at the single-buy exit rather than at the entry.
    informative markout in the sweep is the single leg the safety path closed at
    −$0.06 at 0.71, with the mid 20.5 cents higher fifteen minutes later. Merged
    pairs cannot produce an informative pair-level markout at all.
-6. **Neither #88's lever nor #138's lever is the answer.** Gates were measured
-   and found innocent; distance from mid has now been measured and is worse in
-   the direction proposed and unusable in the extreme. The fill rate is not
-   controlled by either.
+6. **Neither #88's lever nor #138's lever moved the fill rate here.** Gates were
+   measured and found innocent; distance from mid has now been measured and is
+   worse in the direction proposed and unusable in the extreme. On three control
+   fills, no arm A fills and an unresolved time confound, this sweep did not show
+   a fill-rate benefit from either lever — which is an observed result, not a
+   demonstration that neither lever controls the fill rate.
 
 ## What this sweep does NOT establish
 

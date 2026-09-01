@@ -106,17 +106,20 @@ and the theoretical maximum if every one of them filled:
 
 | Market | Spread | Edge | Pairs at touch | Max |
 | --- | --- | --- | --- | --- |
-| `zay-flowers-774pt5` | 0.152 | 15.2c | **8** | $1.22 |
-| `ucl-fcb-fey` | 0.089 | 8.9c | **6** | $0.53 |
-| `putin-meets-iranian-officials` | 0.141 | 14.1c | 28 | $3.95 |
-| `nfl-sf-la-spread-home-6pt5` | 0.055 | 5.5c | **187** | $10.21 |
-| `fed-no-change` (tight) | 0.010 | 1.0c | 23,152 | $231 |
-| `crystal-palace` (tight) | 0.001 | 0.1c | 770,875 | $771 |
+| `zay-flowers-774pt5` | 0.1519 | 15.19c | **8** | $1.22 |
+| `ucl-fcb-fey` | 0.0887 | 8.87c | **6** | $0.53 |
+| `putin-meets-iranian-officials` | 0.1413 | 14.13c | 28 | $3.96 |
+| `nfl-sf-la-spread-home-6pt5` | 0.0546 | 5.46c | **187** | $10.21 |
+| `fed-no-change` (tight) | 0.0100 | 1.00c | 23,152 | $231.52 |
+| `crystal-palace` (tight) | 0.0010 | 0.10c | 770,875 | $770.87 |
+
+Spreads are the run's mean per market, carried to four places so the `Max`
+column multiplies out. Rounding them to three made two rows fail to.
 
 Edge and size are inversely coupled through the spread, because both are the
 spread. Seventeen cents on eight shares, or 770,875 shares at a tenth of a cent.
 
-One row is unlike the others. `nfl-sf-la` carries a 5.5c spread AND 187 pairs at
+One row is unlike the others. `nfl-sf-la` carries a 5.46c spread AND 187 pairs at
 the touch — real edge on real size. It is one market of eight, and it is the
 shape worth looking for.
 

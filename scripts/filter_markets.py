@@ -1133,7 +1133,9 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
                              depth_gate_usd: Optional[float] = None,
                              trial_depth_usd: Optional[float] = None,
                              volume_gate_usd: Optional[float] = None,
-                             trial_volume_usd: Optional[float] = None) -> None:
+                             trial_volume_usd: Optional[float] = None,
+                             spread_gate: Optional[float] = None,
+                             trial_spread: Optional[float] = None) -> None:
     """Persist the whole selection funnel to runtime/pipeline.json.
 
     runtime/markets.json keeps only the winners, so the dashboard can show the
@@ -1235,7 +1237,15 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
         # actually screening against rather than a number frozen into the
         # markup. `max_pair_cost` is the sub-dollar rule the strategy rests
         # on; a stale figure there is worse than no figure at all.
-        "spread_gate": MAX_BOOK_SPREAD,
+        # Which spread ceiling this rank gated on, on the same trial contract
+        # as depth and volume. Passing the module constant here regardless
+        # would report the PERMANENT ceiling on a run that admitted books up
+        # to a looser one -- the dashboard funnel showing a widened safety
+        # gate as if it were the standing contract, which is exactly what the
+        # comment above exists to prevent.
+        "spread_gate": (spread_gate if spread_gate is not None
+                        else MAX_BOOK_SPREAD),
+        "trial_spread": trial_spread,
         "horizon_gate_days": MAX_DAYS_TO_RESOLVE,
         # The payout floor is a REWARD rule, and `evaluate` applies it as one:
         # a spread market is paid by whoever lifts the offer and passes on any
@@ -1543,7 +1553,9 @@ def main() -> None:
         depth_gate_usd=trial_bar,
         trial_depth_usd=(trial_bar if trial_active else None),
         volume_gate_usd=volume_bar,
-        trial_volume_usd=(volume_bar if volume_trial_active else None))
+        trial_volume_usd=(volume_bar if volume_trial_active else None),
+        spread_gate=spread_bar,
+        trial_spread=(spread_bar if spread_trial_active else None))
     # The near-miss log is the accumulated evidence for a gate decision; a
     # dry-run audit must not pollute it (it would double-count against the
     # supervised every-10-min ranks).

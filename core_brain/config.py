@@ -201,12 +201,13 @@ class MakerConfig:
     # market in run 145's universe carried `daily = 0.0`. Widening it costs
     # reward score that is already zero.
     #
-    # SET ONLY FROM `HUNTER_WIDE_BOOK_TRIAL`, AND ONLY WITH NO SIGNER LOADED.
+    # SET ONLY FROM `HUNTER_WIDE_BOOK_TRIAL`, AND ONLY IN A DECLARED REHEARSAL.
     # `max_book_spread` is a safety gate, not a preference: a wide book is one
     # where a fill leaves a leg that may not be closeable. Every other
     # `HUNTER_*` override in `load()` documents itself as scoped to a
     # rehearsal and none of them enforces it, because `load()` is shared by
-    # both paths. This one enforces it -- see `_signing_credential_present`.
+    # both paths. This one enforces it -- see `resolve_wide_book_trial`, which
+    # refuses unless `rehearsal.is_rehearsal()` holds.
     wide_book_trial: float | None = None
     # Summed bid depth below which the book cannot absorb an exit. A proxy,
     # not a measurement of exit liquidity: one aggregated number is the most

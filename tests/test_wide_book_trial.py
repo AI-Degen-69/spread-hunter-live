@@ -249,12 +249,15 @@ class _FakeResponse:
 class _FakeSession:
     """Serves the two books `evaluate` fetches, 13c wide on both legs."""
 
+    # Both legs are 13c wide on purpose: the tests below assert which ceiling
+    # the gate was handed, and a 13c book is refused at the shipped 6c and
+    # admitted at the 15c trial. Do not narrow these without re-reading them.
+    BID, ASK = 0.435, 0.565
+
     def get(self, url, params=None, timeout=None):
-        up = params["token_id"] == "tok_up"
-        bid, ask = (0.435, 0.565) if up else (0.435, 0.565)
         return _FakeResponse({
-            "bids": [{"price": str(bid), "size": "5000"}],
-            "asks": [{"price": str(ask), "size": "5000"}],
+            "bids": [{"price": str(self.BID), "size": "5000"}],
+            "asks": [{"price": str(self.ASK), "size": "5000"}],
         })
 
 
@@ -341,3 +344,41 @@ def _restore_config_modules():
     yield
     importlib.reload(core_config)
     importlib.reload(scoring_config)
+
+
+def test_pipeline_snapshot_records_the_ceiling_actually_in_force(tmp_path,
+                                                                monkeypatch):
+    # A trial run that reports the PERMANENT ceiling shows the dashboard funnel
+    # a widened safety gate as if it were the standing contract -- the exact
+    # failure the depth and volume trials added parameters to prevent.
+    import json
+
+    from scripts import filter_markets as fm
+
+    monkeypatch.setattr(fm, "RUN", tmp_path)
+    fm._write_pipeline_snapshot(
+        cands=[], spread_cands=[], out=[], eligible=[], picked=[],
+        causes={}, census={}, gates={}, attempted=0, rejected=0,
+        spread_gate=0.15, trial_spread=0.15)
+
+    snap = json.loads((tmp_path / "pipeline.json").read_text(encoding="utf-8"))
+
+    assert snap["spread_gate"] == 0.15
+    assert snap["trial_spread"] == 0.15
+
+
+def test_pipeline_snapshot_falls_back_to_the_permanent_ceiling(tmp_path,
+                                                               monkeypatch):
+    import json
+
+    from scripts import filter_markets as fm
+
+    monkeypatch.setattr(fm, "RUN", tmp_path)
+    fm._write_pipeline_snapshot(
+        cands=[], spread_cands=[], out=[], eligible=[], picked=[],
+        causes={}, census={}, gates={}, attempted=0, rejected=0)
+
+    snap = json.loads((tmp_path / "pipeline.json").read_text(encoding="utf-8"))
+
+    assert snap["spread_gate"] == fm.MAX_BOOK_SPREAD
+    assert snap["trial_spread"] is None

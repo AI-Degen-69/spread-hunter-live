@@ -330,6 +330,16 @@ def run(minutes: float, interval: float, db_path: Path, run_id: str,
                                         fetch_tape, seen, clob_host)
                 except Exception as e:                      # noqa: BLE001
                     log.warning("%s unreadable: %s", market.get("slug") or cid[:12], e)
+                    # Drop the tape baseline. `fetch_tape` runs after the book
+                    # fetches, so a pass that dies here never read the tape,
+                    # and `recent_trades` keeps accumulating on the venue side
+                    # meanwhile. Left alone, the recovery pass returns every
+                    # trade from the missed interval with a non-empty `seen`
+                    # behind it -- so it is written as LIVE and stamped
+                    # against the recovery-time mid, which is the bootstrap
+                    # bug again by a slower route. Clearing makes the recovery
+                    # pass bootstrap, which is what it is.
+                    seen.clear()
                     continue
                 if got is None:
                     continue

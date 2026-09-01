@@ -182,14 +182,17 @@
         </div>
         <div class="ot-tabs" role="tablist" aria-label="Orders and trades view">
           <button class="ot-tab-btn active" type="button" role="tab" aria-selected="true"
+                  aria-controls="orders-trades-panel"
                   data-ot-view="active-markets">ACTIVE MARKETS <span class="ot-count mono" data-ot-count="active-markets">0</span></button>
           <button class="ot-tab-btn" type="button" role="tab" aria-selected="false"
+                  aria-controls="orders-trades-panel"
                   data-ot-view="open-orders">OPEN ORDERS <span class="ot-count mono" data-ot-count="open-orders">0</span></button>
           <button class="ot-tab-btn" type="button" role="tab" aria-selected="false"
+                  aria-controls="orders-trades-panel"
                   data-ot-view="positions">POSITIONS <span class="ot-count mono" data-ot-count="positions">0</span></button>
         </div>
       </div>
-      <div style="overflow-x:auto">
+      <div id="orders-trades-panel" role="tabpanel" style="overflow-x:auto">
         <table id="orders-trades-table">
           <thead id="orders-trades-head"></thead>
           <tbody id="orders-trades-body"></tbody>

@@ -285,24 +285,44 @@ def test_the_layout_stylesheet_is_inert_on_the_live_page():
     assert not unscoped, f"these rules would restyle the live page: {unscoped}"
 
 
+def _client():
+    """A test client over the real app. Both pages are served from disk."""
+    from fastapi.testclient import TestClient
+
+    from dashboard.server import app
+
+    return TestClient(app)
+
+
 def test_the_live_dashboard_is_still_served_at_the_root():
     # Arrange — the layout under review must not displace the control surface.
-    server = (_ROOT / "dashboard" / "server.py").read_text(encoding="utf-8")
+    client = _client()
 
-    # Act / Assert
-    assert '@app.get("/", response_class=HTMLResponse)' in server
-    assert '@app.get("/prototype", response_class=HTMLResponse)' in server
+    # Act
+    root = client.get("/")
+    proto = client.get("/prototype")
+
+    # Assert — both answer, and the root still carries the live panels.
+    assert root.status_code == 200
+    assert proto.status_code == 200
+    assert 'id="orders-trades-table"' in root.text
 
 
 def test_the_prototype_path_serves_the_live_document_with_its_token():
     # Arrange — the panels only show data if app.js can authenticate its
     # control calls, so the placeholder has to be filled here too.
-    server = (_ROOT / "dashboard" / "server.py").read_text(encoding="utf-8")
-    prototype = server.split("def prototype_page")[1].split("def index")[0]
+    from dashboard.server import CONTROL_TOKEN, CONTROL_TOKEN_PLACEHOLDER
 
-    # Act / Assert
-    assert "_load_page_html()" in prototype
-    assert "CONTROL_TOKEN_PLACEHOLDER, CONTROL_TOKEN" in prototype
+    client = _client()
+
+    # Act
+    proto = client.get("/prototype")
+
+    # Assert — the live panels moved in, and the token was substituted.
+    assert 'id="orders-trades-table"' in proto.text
+    assert "proto-" in proto.text
+    assert CONTROL_TOKEN_PLACEHOLDER not in proto.text
+    assert CONTROL_TOKEN in proto.text
 
 
 def test_the_layout_is_reachable_from_the_live_page():

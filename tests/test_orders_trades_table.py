@@ -359,9 +359,12 @@ def test_positions_leaves_the_mark_blank_when_the_naked_leg_has_no_mid():
     # Act
     rendered = _render("positions", kpi, _state())
 
-    # Assert
+    # Assert -- read the Mark Value cell itself. A bare `"--" in html` passes
+    # on any row, so it would stay green if the naked shares were valued at 0.
+    cells = rendered["html"].split("</td>")
+    mark_cell = cells[rendered["columns"].index("Mark Value")]
+    assert ">--" in mark_cell
     assert "$8.40" not in rendered["html"]
-    assert "--" in rendered["html"]
 
 
 @requires_node

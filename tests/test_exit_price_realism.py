@@ -96,13 +96,21 @@ def test_rehearsed_sell_never_fills_below_the_floor_it_was_given(registry):
 
 
 def test_rehearsed_sell_falls_back_to_the_floor_without_a_book(registry):
-    """No book means no better information -- keep the conservative floor."""
+    """No book means no better information -- keep the conservative floor.
+
+    Driven through `_sell_into_bids` rather than through
+    `create_and_post_market_order`, deliberately. The old implementation
+    returned the requested size at the floor for EVERY book, so asserting that
+    outcome through the public method would pass with this change reverted --
+    it is the one input where old and new agree. Naming the ladder walk is what
+    ties the assertion to the new path.
+    """
     client = _client(registry, {"bids": {}, "asks": {}})
 
-    resp = client.create_and_post_market_order(_args("tok-dn", 5.0, 0.64))
+    filled, avg = client._sell_into_bids("tok-dn", 5.0, floor=0.64)
 
-    assert resp["price"] == pytest.approx(0.64)
-    assert resp["size"] == pytest.approx(5.0)
+    assert filled == pytest.approx(5.0)
+    assert avg == pytest.approx(0.64)
 
 
 # --- 3. the close must record what the venue reported --------------------

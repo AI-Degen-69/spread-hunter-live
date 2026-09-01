@@ -372,7 +372,10 @@ def test_open_orders_prices_the_pair_the_two_legs_would_make():
     # Act / Assert — 0.47 + 0.51 = $0.980.
     assert "Pair Cost" in rendered["html"]
     assert "$0.980" in rendered["html"]
-    assert "ot-tag is-good" in rendered["html"]
+    assert "ot-cost is-good" in rendered["html"]
+    # Plain text beside the status pill, not a second pill: a pill reads as a
+    # state, and two of them stacked look like two verdicts on one pair.
+    assert 'ot-tag is-good">Pair Cost' not in rendered["html"]
 
 
 @requires_node
@@ -388,8 +391,8 @@ def test_open_orders_does_not_call_a_break_even_pair_a_loss():
 
     # Assert — a warning that the capital earns nothing, not a loss in red.
     assert "$1.000" in rendered["html"]
-    assert "ot-tag is-warn" in rendered["html"]
-    assert "ot-tag is-alert" not in rendered["html"]
+    assert "ot-cost is-warn" in rendered["html"]
+    assert "ot-cost is-alert" not in rendered["html"]
 
 
 @requires_node
@@ -449,8 +452,8 @@ def test_a_pair_that_cannot_merge_at_a_profit_reads_as_an_alert():
     rendered = _render("open-orders", _kpi(), state)
 
     # Assert — 0.55 + 0.55 = $1.100.
-    assert "ot-tag is-alert" in rendered["html"]
-    assert "ot-tag is-good" not in rendered["html"]
+    assert "ot-cost is-alert" in rendered["html"]
+    assert "ot-cost is-good" not in rendered["html"]
 
 
 def test_the_panel_copy_uses_the_glossary_names():

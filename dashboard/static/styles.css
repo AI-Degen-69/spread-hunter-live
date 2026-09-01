@@ -1279,6 +1279,34 @@ td { font-size: 13px; }
   font-weight: 700;
   letter-spacing: 0;
 }
+
+/* The status pill and its measurement share one line. The pair cost is plain
+   text, not a second pill: a pill reads as a state the row is in, and two of
+   them stacked looked like two competing verdicts on the same pair. */
+.ot-pair-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ot-cost {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  font-family: 'Inter', sans-serif;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ot-cost-label {
+  color: var(--text-muted);
+}
+.ot-cost-value {
+  font-weight: 700;
+}
+.ot-cost.is-good .ot-cost-value { color: #34d399; }
+.ot-cost.is-warn .ot-cost-value { color: #fbbf24; }
+.ot-cost.is-alert .ot-cost-value { color: #fca5a5; }
 .ot-tag.is-good {
   background: var(--green-bg);
   border-color: var(--green-border);

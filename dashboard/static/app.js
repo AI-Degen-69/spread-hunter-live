@@ -3089,14 +3089,25 @@ function pairStatusTag(status) {
   return otTag(state.tone, state.label, null);
 }
 
-/* Pair cost reads on its own tag because it answers a different question from
- * the pair status: not "is this pair whole" but "if it merges, does it pay".
- * Under $1.00 it does; at exactly $1.00 it books nothing, so the capital
- * earned nothing; over $1.00 the loss is decided the moment both legs fill. */
-function pairCostTag(pairCost) {
+/* Pair cost sits beside the status, not inside a second pill. A pill reads as
+ * a state the row is in; the pair cost is a measurement of that state, and two
+ * pills stacked made the cell look like two competing verdicts.
+ *
+ * It keeps its own colour because it answers its own question: not "is this
+ * pair whole" but "if it merges, does it pay". Under $1.00 it does; at exactly
+ * $1.00 it books nothing, so the capital earned nothing; over $1.00 the loss
+ * is decided the moment both legs fill. */
+function pairCostText(pairCost) {
   if (pairCost === null || pairCost === undefined) return '';
   const tone = pairCost < 1 ? 'good' : (pairCost > 1 ? 'alert' : 'warn');
-  return otTag(tone, 'Pair Cost', fmtPrice(pairCost));
+  return `<span class="ot-cost is-${tone}">`
+    + `<span class="ot-cost-label">Pair Cost</span> `
+    + `<span class="ot-cost-value mono">${esc(fmtPrice(pairCost))}</span></span>`;
+}
+
+/* The status and its measurement on one line, under the market name. */
+function pairSummary(status, pairCost) {
+  return `<div class="ot-pair-line">${pairStatusTag(status)}${pairCostText(pairCost)}</div>`;
 }
 
 /* A labelled status tag: a named condition, optionally with the number behind
@@ -3263,8 +3274,7 @@ function openOrdersRows(kpi, state) {
       restingLegs.UP ? restingLegs.UP.size : 0,
       restingLegs.DN ? restingLegs.DN.size : 0);
     const pairCost = restingPairCost(group.orders, kpi);
-    const pairTags = pairStatusTag(status)
-      + pairCostTag(status === 'unpaired' ? null : pairCost);
+    const pairTags = pairSummary(status, status === 'unpaired' ? null : pairCost);
 
     return group.orders.map((o, legIndex) => {
       const leg = legForOrder(o, legs, byMarket) || '--';
@@ -3321,8 +3331,7 @@ function positionsRows(kpi) {
     ].filter(entry => entry.size > 0);
     if (!heldLegs.length) return '';
 
-    const pairTags = pairStatusTag(status) + pairCostTag(
-      (status === 'unpaired') ? null : m.pair_cost);
+    const pairTags = pairSummary(status, (status === 'unpaired') ? null : m.pair_cost);
     const span = heldLegs.length;
 
     return heldLegs.map((entry, legIndex) => {

@@ -1270,11 +1270,17 @@ def test_market_table_has_clickable_role(tmp_path):
 
 # ── Screener kanban tab (Tab 3) ──
 
-def test_html_has_screener_tab_button():
-    """The HTML has a 3rd tab button for the screener."""
+def test_html_has_market_filter_tab_button():
+    """The HTML has a 3rd tab button for the Market Filter.
+
+    Named for the component, not the retired word: `docs/agents/glossary.md`
+    replaced "screener" with **Market Filter** everywhere, operator-facing
+    copy included.
+    """
     html = _read_static("index.html")
     assert 'tab-btn-3' in html
-    assert 'SCREENER' in html
+    assert 'MARKET FILTER' in html
+    assert 'SCREENER' not in html
     assert 'tab-3' in html
     assert 'role="tab"' in html
     assert 'aria-controls="tab-3"' in html
@@ -1320,7 +1326,7 @@ def test_app_js_has_render_screener():
     assert 'scan_state' in app_js
     assert 'scanState' in app_js
     # Empty state for missing pipeline
-    assert 'No screener data yet' in app_js
+    assert 'No Market Filter data yet' in app_js
     # Near-miss footer
     assert 'would_fund' in app_js or 'would_clear' in app_js
     # Categorization and flow progression

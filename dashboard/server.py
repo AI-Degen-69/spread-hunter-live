@@ -2022,20 +2022,28 @@ PAGE_HTML = _load_page_html()
 
 @app.get("/prototype", response_class=HTMLResponse)
 def prototype_page():
-    """The sidebar-pages frame prototype (#95).
+    """The sidebar-pages layout under review (#95 frame, #140 content).
 
-    Served on its own path rather than replacing `/`: this repo's dashboard is
-    the control surface for a loop that places real orders, and an empty
-    scaffold standing where the live page used to be would take that surface
-    away while the frame is still being judged. Swapping it in is a one-line
-    change to `index()` once the layout is approved.
+    It serves the same document as `/`, control token and all. `prototype.js`
+    reads the path and, only here, moves the live panels into five sidebar
+    pages -- so the layout is judged against real data with no second copy of
+    the markup to keep in sync.
+
+    It stays on its own path rather than replacing `/`: this dashboard is the
+    control surface for a loop that places real orders, and the operator keeps
+    the surface they know until the layout is signed off. Swapping it in is a
+    one-line change to `LAYOUT_PATHS` in `prototype.js`.
     """
-    page = _STATIC_DIR / "prototype.html"
-    if not page.exists():
-        raise HTTPException(status_code=404, detail="prototype page not built")
+    html = _load_page_html()
+    if not html:
+        raise HTTPException(status_code=404, detail="dashboard page not built")
     return HTMLResponse(
-        page.read_text(encoding="utf-8"),
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        html.replace(CONTROL_TOKEN_PLACEHOLDER, CONTROL_TOKEN),
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
+        },
     )
 
 

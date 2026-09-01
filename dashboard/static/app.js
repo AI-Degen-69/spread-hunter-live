@@ -16,7 +16,7 @@
  *   GET  /api/active-markets   — active markets (NEW)
  *   GET  /api/closed-markets   — closed markets (NEW)
  *
- * Tab 3 (Screener) reads funnel data from /api/kpi's `funnel` field
+ * Tab 3 (Market Filter) reads funnel data from /api/kpi's `funnel` field
  * and scan state from /api/scan-state. No new endpoints needed.
  */
 
@@ -603,7 +603,7 @@ const SERVICE_DEFS = [
     tag: 'CIRCUIT BREAKER',
     desc: 'Continuous risk monitor enforcing hard exposure and single-leg unwind limits.',
     readOnly: true },
-  { key: 'filter', name: 'Market Discovery & Screener', cmd: 'python -m scripts.filter_loop',
+  { key: 'filter', name: 'Market Filter', cmd: 'python -m scripts.filter_loop',
     tag: 'UNIVERSE SCANNER',
     desc: 'Scans 500+ Polymarket binary markets and screens down to graduated pairs with positive spread.' },
   { key: 'query', name: 'Venue Engine & Order Poller', cmd: 'python -m core_brain.order_manager poll --interval 0.5',
@@ -2878,6 +2878,560 @@ function renderExpandedOrders(orders, fills, showCancelled) {
   return html;
 }
 
+/* ── Orders & Trades: three views of the same run ─────────────────────────
+ *
+ * One table, three tabs, because they are three stages of the same object and
+ * the operator reads them in that order:
+ *
+ *   ACTIVE MARKETS — graduated the Market Filter and currently quoted. What the
+ *                    is looking at. No share counts here: nothing is owned yet.
+ *   OPEN ORDERS    — resting in the book. Size, price, what it would cost.
+ *                    No PnL here: an order in the book is not a position.
+ *   POSITIONS      — filled legs. This is where PnL exists, because this is
+ *                    the only stage where the account is actually exposed.
+ */
+
+const OT_VIEWS = ['active-markets', 'open-orders', 'positions'];
+const OT_STORAGE_KEY = 'sh-orders-trades-view';
+let currentOrdersTradesView = 'active-markets';
+
+const OT_NOTES = {
+  'active-markets': 'Markets that graduated the Market Filter and are being quoted.',
+  'open-orders': 'Orders resting on the book. Nothing is held yet, so there is no PnL.',
+  'positions': 'Filled legs the account is holding.',
+};
+
+const OT_COLUMNS = {
+  'active-markets': ['Market', 'Category', 'UP Quote', 'DOWN Quote', 'Pair Cost',
+                     'Edge', '24h Volume', 'Resolves', 'Status'],
+  'open-orders': ['Market', 'Leg', 'Price', 'Size', 'Filled', 'Remaining',
+                  'Total Cost', 'Queue Ahead', 'Age', 'Order Status'],
+  // Per-leg on the left, pair-level on the right. Mark Value and both PnLs
+  // span the pair because they are pair numbers: a matched pair merges at par
+  // and only the remainder is marked, which cannot be split across two rows
+  // without inventing a per-leg figure that does not exist.
+  'positions': ['Market', 'Leg', 'Size', 'Avg Price', 'Cost',
+                'Mark Value', 'Unrealized', 'Realized'],
+};
+
+/* The quote log writes the down leg as `DOWN`; orders and the pair summary
+ * call it `DN`. One spelling in, one spelling out, or half the table reads as
+ * unquoted when both legs were quoted all along. */
+function normalizeLeg(side) {
+  const v = String(side || '').toUpperCase();
+  if (v === 'UP') return 'UP';
+  if (v === 'DN' || v === 'DOWN') return 'DN';
+  return null;
+}
+
+/* The newest quote this market logged on each leg: the price the bot is
+ * bidding and the mid it was priced against. */
+function latestLegQuotes(market) {
+  const best = {};
+  for (const q of (market && market.quotes) || []) {
+    const leg = normalizeLeg(q.side);
+    if (leg === null) continue;
+    const ts = Number(q.ts) || 0;
+    if (!best[leg] || ts >= best[leg].ts) {
+      best[leg] = {
+        ts,
+        price: (q.price === null || q.price === undefined) ? null : Number(q.price),
+        mid: (q.mid === null || q.mid === undefined) ? null : Number(q.mid),
+      };
+    }
+  }
+  return { up: best.UP || null, dn: best.DN || null };
+}
+
+/* The last mid observed on each leg. Used to mark an unhedged position: the
+ * mid is what the leg is worth, not what the bot bid for it.
+ *
+ * It is deliberately NOT the source of the pair cost on Active Markets. The
+ * two legs of a binary market are anti-correlated -- UP mid and DOWN mid sum
+ * to $1.00 by construction -- so an "edge" computed from mids reads 0.0¢ on
+ * every row. The edge lives in the gap between the mids and what the bot is
+ * willing to pay, which is the quoted price. */
+function latestLegMids(market) {
+  const q = latestLegQuotes(market);
+  return {
+    up: q.up ? q.up.mid : null,
+    dn: q.dn ? q.dn.mid : null,
+  };
+}
+
+/* Orders name their token, quotes name the leg. Joining the two is the only
+ * way to say UP or DOWN on an order row. */
+function tokenLegMap(kpi) {
+  const map = {};
+  for (const m of Object.values((kpi && kpi.by_market) || {})) {
+    for (const q of m.quotes || []) {
+      const leg = normalizeLeg(q.side);
+      if (q.token_id && leg !== null) map[q.token_id] = leg;
+    }
+  }
+  return map;
+}
+
+/* Which side of the market an order sits on. The quote log names the leg for
+ * every token it quoted, but a leg that never got a quote logged leaves its
+ * token unnamed -- and that is exactly the order most worth labelling, since a
+ * lone filled leg is the single buy the strategy exists to avoid. The market is
+ * binary, so a token that is not the named leg is the other one. */
+function legForOrder(order, legs, byMarket) {
+  const known = legs[order.token_id];
+  if (known) return known;
+  const market = (byMarket || {})[order.condition_id];
+  if (!market) return null;
+  const named = new Set();
+  for (const q of market.quotes || []) {
+    const leg = normalizeLeg(q.side);
+    if (leg === null) continue;
+    if (q.token_id === order.token_id) return leg;
+    named.add(leg);
+  }
+  if (named.size === 1) return named.has('UP') ? 'DN' : 'UP';
+  return null;
+}
+
+function queueAheadByOrder(kpi) {
+  const map = {};
+  for (const m of Object.values((kpi && kpi.by_market) || {})) {
+    for (const q of m.quotes || []) {
+      if (q.order_id && q.queue_ahead !== null && q.queue_ahead !== undefined) {
+        map[q.order_id] = Number(q.queue_ahead);
+      }
+    }
+  }
+  return map;
+}
+
+function isFinishedMarket(m) {
+  return m.resolved === true
+    || (m.days_to_resolve !== null && m.days_to_resolve !== undefined && m.days_to_resolve < 0);
+}
+
+/* Quoted means the bot is working this market right now: it has posted quotes,
+ * or it still has an order alive on it. */
+function isQuotedMarket(m, orders) {
+  if (isFinishedMarket(m)) return false;
+  return (m.quotes_count || 0) > 0 || (orders || []).some(o => isActiveOrder(o));
+}
+
+function isRestingOrder(o) {
+  const v = String(o && o.status || '').toLowerCase();
+  return v === 'open' || v === 'partial' || v === 'pending';
+}
+
+/* What the held shares are worth now. A matched UP+DOWN pair merges back into
+ * exactly $1.00, so the merged part is priced at par and only the unhedged
+ * remainder is marked to the book. Returns null when a naked leg has no
+ * observed mid -- a blank cell beats an invented one. */
+function positionMarkValue(m, mids) {
+  const up = Number(m.up_sh) || 0;
+  const dn = Number(m.dn_sh) || 0;
+  const merged = Math.min(up, dn);
+  let value = merged;
+  const nakedUp = up - merged;
+  const nakedDn = dn - merged;
+  if (nakedUp > 0) {
+    if (mids.up === null || mids.up === undefined) return null;
+    value += nakedUp * mids.up;
+  }
+  if (nakedDn > 0) {
+    if (mids.dn === null || mids.dn === undefined) return null;
+    value += nakedDn * mids.dn;
+  }
+  return value;
+}
+
+/* An order can outlive its market's entry in the KPI report -- the market
+ * leaves the graduated universe, the report stops carrying its title -- and
+ * `marketLink` has nothing to render but `--`. A truncated condition id is
+ * still something the operator can search the registry for. */
+function marketCell(market, conditionId) {
+  const named = market && (market.title || market.name || market.slug);
+  if (named) return marketLink(market);
+  const cid = String(conditionId || '');
+  if (!cid) return '--';
+  return `<span class="mono" title="${esc(cid)}">${esc(cid.slice(0, 10))}…</span>`;
+}
+
+/* ── Pair status: one vocabulary for both tables ──
+ *
+ * A pair is two legs of the same market, and it is in exactly one of three
+ * states whether you are looking at the book or at what filled:
+ *
+ *   Paired   — both legs present, same size. This is the only state that
+ *              merges cleanly back into $1.00.
+ *   Partial  — both legs present, sizes do not match. The overlap merges; the
+ *              remainder is exposed.
+ *   Unpaired — one leg only. On the book that is a single buy waiting to
+ *              happen; filled, it already is one.
+ *
+ * Tone follows the state, not the money: good, warning, alert. `Pair Cost`
+ * carries its own tag and its own tone, so no single tag is asked to mean two
+ * things at once. */
+const PAIR_STATUS = {
+  paired: { label: 'Paired', tone: 'good' },
+  partial: { label: 'Partial', tone: 'warn' },
+  unpaired: { label: 'Unpaired', tone: 'alert' },
+};
+
+function pairStatus(upSize, downSize) {
+  const up = Number(upSize) || 0;
+  const dn = Number(downSize) || 0;
+  if (up > 0 && dn > 0) return (up === dn) ? 'paired' : 'partial';
+  return 'unpaired';
+}
+
+function pairStatusTag(status) {
+  const state = PAIR_STATUS[status] || PAIR_STATUS.unpaired;
+  return otTag(state.tone, state.label, null);
+}
+
+/* Pair cost sits beside the status, not inside a second pill. A pill reads as
+ * a state the row is in; the pair cost is a measurement of that state, and two
+ * pills stacked made the cell look like two competing verdicts.
+ *
+ * It keeps its own colour because it answers its own question: not "is this
+ * pair whole" but "if it merges, does it pay". Under $1.00 it does; at exactly
+ * $1.00 it books nothing, so the capital earned nothing; over $1.00 the loss
+ * is decided the moment both legs fill. */
+function pairCostText(pairCost) {
+  if (pairCost === null || pairCost === undefined) return '';
+  const tone = pairCost < 1 ? 'good' : (pairCost > 1 ? 'alert' : 'warn');
+  return `<span class="ot-cost is-${tone}">`
+    + `<span class="ot-cost-label">Pair Cost</span> `
+    + `<span class="ot-cost-value mono">${esc(fmtPrice(pairCost))}</span></span>`;
+}
+
+/* The status and its measurement on one line, under the market name. */
+function pairSummary(status, pairCost) {
+  return `<div class="ot-pair-line">${pairStatusTag(status)}${pairCostText(pairCost)}</div>`;
+}
+
+/* A labelled status tag: a named condition, optionally with the number behind
+ * it. `tone` is one of good / warn / alert, so the same three colours mean the
+ * same three things everywhere in this table. */
+function otTag(tone, label, value) {
+  const valueHtml = (value === null || value === undefined)
+    ? '' : ` <span class="ot-tag-value mono">${esc(value)}</span>`;
+  return `<div class="ot-tag is-${esc(tone)}">${esc(label)}${valueHtml}</div>`;
+}
+
+function otEmptyRow(view, message) {
+  return `<tr><td colspan="${OT_COLUMNS[view].length}" style="text-align:center;color:var(--text-muted);padding:20px">${esc(message)}</td></tr>`;
+}
+
+function otHeadHtml(view) {
+  // The market name is the widest thing in the table and the only cell that
+  // wraps; without a floor it folds a three-word title onto three lines and
+  // squeezes every number column.
+  const cells = OT_COLUMNS[view]
+    .map((label, i) => `<th${i === 0 ? ' class="ot-market-head"' : ''}>${esc(label)}</th>`)
+    .join('');
+  return `<tr>${cells}</tr>`;
+}
+
+function fmtPrice(v) {
+  return (v === null || v === undefined) ? '--' : `$${Number(v).toFixed(3)}`;
+}
+
+function fmtShares(v) {
+  const n = Number(v) || 0;
+  return Number.isInteger(n) ? String(n) : n.toFixed(2);
+}
+
+function fmtCompactUSD(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '--';
+  if (Math.abs(n) >= 1000000) return `$${(n / 1000000).toFixed(1)}M`;
+  if (Math.abs(n) >= 1000) return `$${(n / 1000).toFixed(0)}k`;
+  return fmtUSD(n);
+}
+
+/* `fmtUSD(-6.6)` reads `$-6.60`; a money column wants the sign in front of the
+ * dollar, so the magnitude is formatted and the sign prepended. */
+function signedUSD(v) {
+  if (v === null || v === undefined || !Number.isFinite(Number(v))) return '--';
+  const n = Number(v);
+  const cls = n > 0 ? 'positive' : (n < 0 ? 'negative' : '');
+  const sign = n > 0 ? '+' : (n < 0 ? '-' : '');
+  return `<span class="${cls}">${sign}${fmtUSD(Math.abs(n))}</span>`;
+}
+
+function activeMarketsRows(kpi, state) {
+  const ordersByMarket = groupOrdersByMarket(state && state.orders);
+  const entries = Object.entries((kpi && kpi.by_market) || {})
+    .filter(([cid, m]) => isQuotedMarket(m, ordersByMarket[cid]));
+
+  if (!entries.length) return otEmptyRow('active-markets', 'No markets are being quoted.');
+
+  entries.sort((a, b) => (b[1].quotes_count || 0) - (a[1].quotes_count || 0)
+    || String(a[1].title || '').localeCompare(String(b[1].title || '')));
+
+  return entries.map(([cid, m]) => {
+    const legs = latestLegQuotes(m);
+    const upQuote = legs.up ? legs.up.price : null;
+    const dnQuote = legs.dn ? legs.dn.price : null;
+    const pairCost = (upQuote !== null && dnQuote !== null) ? (upQuote + dnQuote) : null;
+    const edge = pairCost === null ? null : 1 - pairCost;
+    const dtr = m.days_to_resolve;
+    const restingHere = (ordersByMarket[cid] || []).some(o => isRestingOrder(o));
+    return `<tr data-cid="${esc(cid)}">
+      <td class="ot-market">${marketCell(m, cid)}</td>
+      <td class="mono">${esc(m.category || '--')}</td>
+      <td class="mono">${fmtPrice(upQuote)}</td>
+      <td class="mono">${fmtPrice(dnQuote)}</td>
+      <td class="mono">${fmtPrice(pairCost)}</td>
+      <td class="mono">${edge === null ? '--' : `<span class="${edge > 0 ? 'positive' : 'negative'}">${(edge * 100).toFixed(1)}¢</span>`}</td>
+      <td class="mono">${fmtCompactUSD(m.volume_24h)}</td>
+      <td class="mono">${(dtr === null || dtr === undefined) ? '--' : `${Number(dtr).toFixed(1)}d`}</td>
+      <td><span class="pill ${restingHere ? 'quoting-breathing' : 'stopped'}">${restingHere ? 'QUOTING' : 'IDLE'}</span></td>
+    </tr>`;
+  }).join('');
+}
+
+/* Group the resting book by the pair each order belongs to.
+ *
+ * The strategy only makes money when both legs fill: a pair that cost under
+ * $1.00 merges back into exactly $1.00, and a leg that fills alone is a
+ * directional bet nobody decided to take. Listing orders one flat row after
+ * another hides which two belong together, so the book is read pair by pair,
+ * UP above DOWN, with the market named once for both.
+ *
+ * An order with no pair id is its own group -- it is still a leg with no
+ * partner, which is exactly the thing worth seeing. */
+function groupOrdersByPair(orders, kpi) {
+  const byMarket = (kpi && kpi.by_market) || {};
+  const legs = tokenLegMap(kpi);
+  const groups = new Map();
+
+  for (const o of orders) {
+    const key = o.pair_id || ('order:' + o.order_id);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(o);
+  }
+
+  const legRank = (order) => {
+    const leg = legForOrder(order, legs, byMarket);
+    if (leg === 'UP') return 0;
+    if (leg === 'DN') return 1;
+    return 2;
+  };
+
+  const out = [];
+  for (const [key, list] of groups) {
+    list.sort((a, b) => legRank(a) - legRank(b)
+      || (Number(a.posted_ts) || 0) - (Number(b.posted_ts) || 0));
+    const newest = list.reduce((max, o) => Math.max(max, Number(o.posted_ts) || 0), 0);
+    out.push({ key, orders: list, newest });
+  }
+  out.sort((a, b) => b.newest - a.newest);
+  return out;
+}
+
+/* What the pair would cost if every resting leg filled. This is the number the
+ * strategy is built around: under $1.00 the merge books a profit, over it
+ * books a loss. It is only meaningful once both legs are on the book. */
+function restingPairLegs(orders, kpi) {
+  const byMarket = (kpi && kpi.by_market) || {};
+  const legs = tokenLegMap(kpi);
+  const found = {};
+  for (const o of orders) {
+    const leg = legForOrder(o, legs, byMarket);
+    if (leg === null || found[leg] !== undefined) continue;
+    const remaining = (o.size_remaining === null || o.size_remaining === undefined)
+      ? Number(o.original_size) || 0 : Number(o.size_remaining) || 0;
+    found[leg] = { price: Number(o.price) || 0, size: remaining };
+  }
+  return found;
+}
+
+function restingPairCost(orders, kpi) {
+  const found = restingPairLegs(orders, kpi);
+  if (found.UP === undefined || found.DN === undefined) return null;
+  return found.UP.price + found.DN.price;
+}
+
+function openOrdersRows(kpi, state) {
+  const orders = ((state && state.orders) || []).filter(isRestingOrder);
+  if (!orders.length) return otEmptyRow('open-orders', 'No orders are resting on the book.');
+
+  const byMarket = (kpi && kpi.by_market) || {};
+  const legs = tokenLegMap(kpi);
+  const queues = queueAheadByOrder(kpi);
+  const groups = groupOrdersByPair(orders, kpi);
+
+  return groups.map((group, groupIndex) => {
+    const first = group.orders[0];
+    const market = byMarket[first.condition_id] || { condition_id: first.condition_id };
+    // The same two tags the Positions view carries, read against the book
+    // instead of against what filled: what state the pair is in, and what it
+    // would cost to merge if both legs filled.
+    const restingLegs = restingPairLegs(group.orders, kpi);
+    const status = pairStatus(
+      restingLegs.UP ? restingLegs.UP.size : 0,
+      restingLegs.DN ? restingLegs.DN.size : 0);
+    const pairCost = restingPairCost(group.orders, kpi);
+    const pairTags = pairSummary(status, status === 'unpaired' ? null : pairCost);
+
+    return group.orders.map((o, legIndex) => {
+      const leg = legForOrder(o, legs, byMarket) || '--';
+      const size = Number(o.original_size) || 0;
+      const price = Number(o.price) || 0;
+      const queue = queues[o.order_id];
+      const status = String(o.status || '').toUpperCase();
+      const rowClass = ['ot-pair-row'];
+      if (legIndex === 0) rowClass.push('ot-pair-start');
+      if (groupIndex % 2 === 1) rowClass.push('ot-pair-alt');
+      // One market name for both legs: the merged cell is what makes the two
+      // rows read as one pair rather than two unrelated orders.
+      const marketTd = legIndex === 0
+        ? `<td class="ot-market" rowspan="${group.orders.length}">${marketCell(market, o.condition_id)}${pairTags}</td>`
+        : '';
+      return `<tr class="${rowClass.join(' ')}" data-order-id="${esc(o.order_id)}" data-pair="${esc(group.key)}">
+      ${marketTd}
+      <td><span class="pill ${leg === 'UP' ? 'active' : (leg === 'DN' ? 'reconnecting' : 'stopped')}">${esc(leg === 'DN' ? 'DOWN' : leg)}</span></td>
+      <td class="mono">${fmtPrice(price)}</td>
+      <td class="mono">${fmtShares(size)}</td>
+      <td class="mono">${fmtShares(o.size_matched)}</td>
+      <td class="mono">${fmtShares(o.size_remaining)}</td>
+      <td class="mono">${fmtUSD(price * size)}</td>
+      <td class="mono">${(queue === null || queue === undefined) ? '--' : fmtCompactUSD(queue)}</td>
+      <td class="mono">${o.age_sec === null || o.age_sec === undefined ? '--' : fmtStopwatch(Number(o.age_sec))}</td>
+      <td><span class="pill ${status === 'OPEN' ? 'open' : 'reconnecting'}">${esc(status || '--')}</span></td>
+    </tr>`;
+    }).join('');
+  }).join('');
+}
+
+function positionsRows(kpi) {
+  const entries = Object.entries((kpi && kpi.by_market) || {})
+    .filter(([, m]) => (Number(m.total_sh) || 0) > 0);
+
+  if (!entries.length) return otEmptyRow('positions', 'No legs have filled, so nothing is held.');
+
+  entries.sort((a, b) => (Number(b[1].total_cost) || 0) - (Number(a[1].total_cost) || 0));
+
+  return entries.map(([cid, m], marketIndex) => {
+    const mids = latestLegMids(m);
+    const mark = positionMarkValue(m, mids);
+    const cost = Number(m.total_cost) || 0;
+    const unrealized = mark === null ? null : mark - cost;
+    const up = Number(m.up_sh) || 0;
+    const dn = Number(m.dn_sh) || 0;
+    const status = pairStatus(up, dn);
+
+    // One row per held leg, in the same order the book reads: UP above DOWN.
+    // A leg with no shares is not a row -- there is nothing being held on it.
+    const heldLegs = [
+      { leg: 'UP', size: up, cost: Number(m.up_cost) || 0 },
+      { leg: 'DOWN', size: dn, cost: Number(m.dn_cost) || 0 },
+    ].filter(entry => entry.size > 0);
+    if (!heldLegs.length) return '';
+
+    const pairTags = pairSummary(status, (status === 'unpaired') ? null : m.pair_cost);
+    const span = heldLegs.length;
+
+    return heldLegs.map((entry, legIndex) => {
+      const rowClass = ['ot-pair-row'];
+      if (legIndex === 0) rowClass.push('ot-pair-start');
+      if (marketIndex % 2 === 1) rowClass.push('ot-pair-alt');
+      const avgPrice = entry.size > 0 ? entry.cost / entry.size : null;
+      // The market and every pair-level number span the pair, for the same
+      // reason the market name does: they describe the pair, not one leg.
+      const pairCells = legIndex === 0
+        ? `<td class="ot-market" rowspan="${span}">${marketCell(m, cid)}${pairTags}</td>`
+        : '';
+      const pairNumbers = legIndex === 0
+        ? `<td class="mono ot-pair-value" rowspan="${span}">${mark === null ? '--' : fmtUSD(mark)}</td>
+      <td class="mono ot-pair-value" rowspan="${span}">${signedUSD(unrealized)}</td>
+      <td class="mono ot-pair-value" rowspan="${span}">${signedUSD(m.realized_pnl)}</td>`
+        : '';
+      return `<tr class="${rowClass.join(' ')}" data-cid="${esc(cid)}" data-leg="${esc(entry.leg)}">
+      ${pairCells}
+      <td><span class="pill ${entry.leg === 'UP' ? 'active' : 'reconnecting'}">${esc(entry.leg)}</span></td>
+      <td class="mono">${fmtShares(entry.size)}</td>
+      <td class="mono">${fmtPrice(avgPrice)}</td>
+      <td class="mono">${fmtUSD(entry.cost)}</td>
+      ${pairNumbers}
+    </tr>`;
+    }).join('');
+  }).join('');
+}
+
+function ordersTradesCounts(kpi, state) {
+  const ordersByMarket = groupOrdersByMarket(state && state.orders);
+  const markets = Object.entries((kpi && kpi.by_market) || {});
+  return {
+    'active-markets': markets.filter(([cid, m]) => isQuotedMarket(m, ordersByMarket[cid])).length,
+    'open-orders': ((state && state.orders) || []).filter(isRestingOrder).length,
+    'positions': markets.filter(([, m]) => (Number(m.total_sh) || 0) > 0).length,
+  };
+}
+
+function ordersTradesRows(view, kpi, state) {
+  if (view === 'open-orders') return openOrdersRows(kpi, state);
+  if (view === 'positions') return positionsRows(kpi);
+  return activeMarketsRows(kpi, state);
+}
+
+function renderOrdersTrades(kpi, state) {
+  const head = document.getElementById('orders-trades-head');
+  const body = document.getElementById('orders-trades-body');
+  if (!head || !body) return;
+
+  const view = OT_VIEWS.includes(currentOrdersTradesView)
+    ? currentOrdersTradesView : OT_VIEWS[0];
+  head.innerHTML = otHeadHtml(view);
+  body.innerHTML = ordersTradesRows(view, kpi, state);
+
+  const note = document.getElementById('orders-trades-note');
+  if (note) note.textContent = OT_NOTES[view];
+
+  const counts = ordersTradesCounts(kpi, state);
+  // `ordersTradesCounts` returns a number for every view, so an unknown key
+  // here is a typo in the markup, not an unmeasured value: show it as blank
+  // rather than dressing it up as a real count of zero.
+  document.querySelectorAll('[data-ot-count]').forEach(el => {
+    const count = counts[el.dataset.otCount];
+    el.textContent = (count === undefined) ? '--' : String(count);
+  });
+}
+
+function setOrdersTradesView(view) {
+  currentOrdersTradesView = OT_VIEWS.includes(view) ? view : OT_VIEWS[0];
+  try {
+    localStorage.setItem(OT_STORAGE_KEY, currentOrdersTradesView);
+  } catch (e) {
+    // Storage off: the view still switches, it just forgets on reload.
+  }
+  document.querySelectorAll('.ot-tab-btn').forEach(btn => {
+    const isActive = btn.dataset.otView === currentOrdersTradesView;
+    btn.classList.toggle('active', isActive);
+    btn.setAttribute('aria-selected', String(isActive));
+  });
+  renderOrdersTrades(lastKpi, lastState);
+}
+
+function initOrdersTradesTabs() {
+  let stored = null;
+  try {
+    stored = localStorage.getItem(OT_STORAGE_KEY);
+  } catch (e) {
+    stored = null;
+  }
+  // A stored value is data, not a command: an unknown view falls back to the
+  // first tab rather than rendering a table with no columns.
+  currentOrdersTradesView = OT_VIEWS.includes(stored) ? stored : OT_VIEWS[0];
+
+  document.querySelectorAll('.ot-tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => setOrdersTradesView(btn.dataset.otView));
+  });
+  setOrdersTradesView(currentOrdersTradesView);
+}
+
 function renderMarkets(kpi, state) {
   const body = document.getElementById('market-body');
   if (!kpi || !kpi.by_market || Object.keys(kpi.by_market).length === 0) {
@@ -3053,7 +3607,7 @@ function renderMarkets(kpi, state) {
   });
 }
 
-/* ── Render: Screener Kanban Board (Tab 3) ── */
+/* ── Render: Market Filter Kanban Board (Tab 3) ── */
 const BUCKET_DEFS = [
   { key: 'raw', name: '1. Ingestion / Universe', cls: 'raw' },
   { key: 'identity', name: '2. Identity Gate', cls: 'rejected' },
@@ -3284,8 +3838,8 @@ function renderScreener(kpi, scanState) {
   if (!funnel) {
     // No pipeline data — show empty state
     board.innerHTML = `<div class="kanban-empty" style="flex:1">
-      <div class="empty-state-title">No screener data yet</div>
-      <div class="empty-state-msg">The screener writes runtime/pipeline.json on each scan cycle. Data will appear here when the screener runs.</div>
+      <div class="empty-state-title">No Market Filter data yet</div>
+      <div class="empty-state-msg">The Market Filter writes runtime/pipeline.json on each scan cycle. Data appears here once it runs.</div>
     </div>`;
     headerCensus.textContent = '';
     headerGates.style.display = 'none';
@@ -3412,7 +3966,7 @@ function renderScreener(kpi, scanState) {
       </div>`;
 
       if (passCount === 0 && eligibleList.length === 0) {
-        cardsHtml = `<div class="kanban-empty">No markets graduated. The screener has not found qualifying markets this cycle.</div>`;
+        cardsHtml = `<div class="kanban-empty">No markets graduated. The Market Filter found no qualifying markets this cycle.</div>`;
       } else {
         // Track rendered IDs
         const renderedCids = new Set();
@@ -3640,7 +4194,7 @@ async function pollStatus() {
     if (status) renderDbMode(status);
 
     // Service uptime rides on the status payload, so it must not wait on
-    // /api/kpi: the SCREENER header still needs a stopwatch when the KPI read
+    // /api/kpi: the Market Filter header still needs a stopwatch when the KPI read
     // is the one that failed.
     if (status) setFilterUptime(status);
 
@@ -3662,9 +4216,10 @@ async function pollStatus() {
     if (currentKpi) {
       renderKPIs(currentKpi, status);
       renderMarkets(currentKpi, lastState);
+      renderOrdersTrades(currentKpi, lastState);
     }
 
-    // Render screener kanban (Tab 3)
+    // Render the Market Filter kanban (Tab 3)
     if (currentKpi) {
       renderScreener(currentKpi, scanState);
     }
@@ -3689,6 +4244,7 @@ async function pollStatus() {
 if (typeof module === 'undefined' || !module.exports) {
   initKanbanCarousel();
   initStatisticalSubnav();
+  initOrdersTradesTabs();
   initDistControls();
   pollStatus();
   renderParameters();
@@ -3700,5 +4256,10 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderPositionDistributionChart, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity };
+  module.exports = { renderPositionDistributionChart, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity,
+    OT_VIEWS, OT_COLUMNS, ordersTradesRows, ordersTradesCounts, otHeadHtml,
+    activeMarketsRows, openOrdersRows, positionsRows, latestLegMids, latestLegQuotes,
+    positionMarkValue, isQuotedMarket, isRestingOrder, tokenLegMap, legForOrder,
+    normalizeLeg, groupOrdersByPair, restingPairCost, restingPairLegs,
+    pairStatus, PAIR_STATUS };
 }

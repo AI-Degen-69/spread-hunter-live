@@ -48,6 +48,9 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous">
   <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
   <link rel="stylesheet" href="/static/styles.css">
+  <!-- Sidebar-pages layout. Every rule is scoped to a class `prototype.js`
+       only adds on /prototype, so this is inert on the live page. -->
+  <link rel="stylesheet" href="/static/prototype.css">
 </head>
 <body>
 <div class="container">
@@ -79,13 +82,13 @@
 
   <!-- ── Tab Switcher (DT4: text-only, no emoji) ── -->
   <div style="display:flex;justify-content:flex-end;padding:0 16px">
-    <a href="/prototype" class="mono" style="font-size:11px;color:var(--text-muted);text-decoration:none"
-       title="Sidebar-pages layout prototype — frame only, no data wired">Layout prototype →</a>
+    <a id="proto-link" href="/prototype" class="mono" style="font-size:11px;color:var(--text-muted);text-decoration:none"
+       title="Sidebar-pages layout prototype — the same live panels, re-organized into pages">Layout prototype →</a>
   </div>
   <nav class="tab-switcher" role="tablist" aria-label="Dashboard tabs">
     <button class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-1" id="tab-btn-1" type="button">LIVE OPERATIONS</button>
     <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-2" id="tab-btn-2" type="button">PERFORMANCE &amp; ANALYTICS</button>
-    <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-3" id="tab-btn-3" type="button">SCREENER</button>
+    <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-3" id="tab-btn-3" type="button">MARKET FILTER</button>
   </nav>
 
   <!-- ── Tab 1: Live Operations ── -->
@@ -152,7 +155,7 @@
     </div>
 
     <!-- Core Strategy Services Deck (Execution Pipeline Grid) -->
-    <div style="margin-bottom:16px">
+    <div id="services-deck" style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px">
         <div class="font-display" style="font-size:15px;letter-spacing:0.04em;color:var(--text-primary)">
           STRATEGY EXECUTION SERVICES &amp; BACKGROUND WORKERS
@@ -163,6 +166,37 @@
       </div>
       <div class="card-grid" id="service-cards">
         <!-- Cards rendered dynamically by JS -->
+      </div>
+    </div>
+
+    <!-- Orders & Trades: one table, three views of the same run -->
+    <div class="card" style="margin-bottom:16px" id="orders-trades-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div>
+          <div class="font-display" style="font-size:15px;letter-spacing:0.04em;color:var(--text-primary)">
+            ORDERS &amp; TRADES
+          </div>
+          <div id="orders-trades-note" style="font-size:11px;color:var(--text-muted);margin-top:2px">
+            Markets that graduated the Market Filter and are being quoted.
+          </div>
+        </div>
+        <div class="ot-tabs" role="tablist" aria-label="Orders and trades view">
+          <button class="ot-tab-btn active" type="button" role="tab" aria-selected="true"
+                  aria-controls="orders-trades-panel"
+                  data-ot-view="active-markets">ACTIVE MARKETS <span class="ot-count mono" data-ot-count="active-markets">0</span></button>
+          <button class="ot-tab-btn" type="button" role="tab" aria-selected="false"
+                  aria-controls="orders-trades-panel"
+                  data-ot-view="open-orders">OPEN ORDERS <span class="ot-count mono" data-ot-count="open-orders">0</span></button>
+          <button class="ot-tab-btn" type="button" role="tab" aria-selected="false"
+                  aria-controls="orders-trades-panel"
+                  data-ot-view="positions">POSITIONS <span class="ot-count mono" data-ot-count="positions">0</span></button>
+        </div>
+      </div>
+      <div id="orders-trades-panel" role="tabpanel" style="overflow-x:auto">
+        <table id="orders-trades-table">
+          <thead id="orders-trades-head"></thead>
+          <tbody id="orders-trades-body"></tbody>
+        </table>
       </div>
     </div>
 
@@ -206,7 +240,7 @@
     </div>
 
     <!-- Event Ticker (Live Log Stream) -->
-    <div class="card">
+    <div class="card" id="event-ticker-card">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:8px">
         <div>
           <div class="font-display" style="font-size:15px;letter-spacing:0.04em;color:var(--text-primary)">
@@ -220,7 +254,7 @@
           <div class="ticker-filters" role="group" aria-label="Ticker event filter" style="display:flex;gap:4px">
             <button class="ticker-filter-btn active" data-filter="all" type="button">ALL</button>
             <button class="ticker-filter-btn" data-filter="decide" type="button">TRADES</button>
-            <button class="ticker-filter-btn" data-filter="filter" type="button">SCREENER</button>
+            <button class="ticker-filter-btn" data-filter="filter" type="button">MARKET FILTER</button>
             <button class="ticker-filter-btn" data-filter="guardrail" type="button">ALERTS</button>
           </div>
           <button id="btn-clear-ticker" class="toggle-cancelled-btn" type="button" style="padding:4px 8px;font-size:11px">CLEAR FEED</button>
@@ -544,9 +578,9 @@
     </div>
   </section>
 
-  <!-- ── Tab 3: Screener Pipeline (kanban) ── -->
+  <!-- ── Tab 3: Market Filter Pipeline (kanban) ── -->
   <section id="tab-3" role="tabpanel" aria-labelledby="tab-btn-3" hidden>
-    <!-- Screener header: scan state, snapshot age, census, gates -->
+    <!-- Market Filter header: scan state, snapshot age, census, gates -->
     <div class="card" id="screener-header">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div style="display:flex;align-items:center;gap:10px">
@@ -568,7 +602,7 @@
         </svg>
       </button>
 
-      <div id="kanban-board" class="kanban-board" role="list" aria-label="Screener pipeline buckets" tabindex="0">
+      <div id="kanban-board" class="kanban-board" role="list" aria-label="Market Filter pipeline buckets" tabindex="0">
         <!-- Buckets rendered by JS -->
       </div>
 
@@ -621,5 +655,8 @@
   const CONTROL_TOKEN = "__LIVE_DASH_CONTROL_TOKEN__";
 </script>
 <script src="/static/app.js"></script>
+<!-- Runs after app.js has bound every panel, and only on /prototype: it moves
+     those same nodes into the sidebar pages rather than re-rendering them. -->
+<script src="/static/prototype.js"></script>
 </body>
 </html>

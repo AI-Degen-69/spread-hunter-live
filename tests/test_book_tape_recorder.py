@@ -344,3 +344,43 @@ def test_first_successful_tape_read_is_bootstrap_after_a_failed_pass(tmp_path):
         conn.close()
 
     assert rows == [(900.0, 1)]
+
+
+def test_recovery_after_a_mid_run_failure_is_bootstrap(tmp_path):
+    # One good pass, one failed book fetch, one recovery pass. `fetch_tape`
+    # runs after the books, so the failed pass read no tape while the venue
+    # kept accumulating; the recovery pass therefore returns the whole missed
+    # interval and must not be stamped against the recovery-time mid.
+    markets = tmp_path / "markets.json"
+    markets.write_text(json.dumps(
+        [{"cid": "0xabc", "slug": "mlb-a-b", "tick": 0.01}]), encoding="utf-8")
+    db = tmp_path / "booktape.db"
+    clock = iter([0.0, 0.0, 1.0, 2.0, 10.0])
+    calls = {"n": 0}
+
+    def flaky(host, token):
+        if token == "tok_up":
+            calls["n"] += 1
+            if calls["n"] == 2:                 # the second pass dies
+                raise ConnectionError("venue down")
+        return _books(host, token)
+
+    tapes = _taping(iter([
+        {"tok_up": {0.42: 100.0}},              # pass 1: bootstrap
+        {"tok_up": {0.42: 900.0}},              # pass 3: the missed interval
+    ]))
+
+    btr.run(minutes=0.1, interval=0.0, db_path=db, run_id="r",
+            markets_path=markets, clob_host="https://clob.example",
+            fetch_market=lambda cid: _Market(), fetch_book=flaky,
+            fetch_tape=tapes, now=lambda: next(clock), sleep=lambda s: None)
+
+    conn = sqlite3.connect(db)
+    try:
+        rows = conn.execute(
+            "SELECT volume, is_bootstrap FROM tape_buckets ORDER BY id"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert rows == [(100.0, 1), (900.0, 1)]

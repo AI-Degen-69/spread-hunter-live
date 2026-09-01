@@ -255,10 +255,16 @@ it is pointed at the single-buy exit rather than at the entry.
   (arm A, 01:59–02:24) — two consecutive windows. The gap is 25 minutes on a
   near-identical market list rather than #88's three hours on a partly different
   one, which is tighter, but arm and hour are still not separated.
-- **Why the late blocks went quiet is not established.** All 10 orders in each
-  stayed `open` with no re-quote and no cancel across 179 rotations, which is
-  consistent with books that stopped moving after ~02:50, but this sweep did not
-  measure book update rates and cannot say so as fact.
+- **Why the late blocks went quiet is not established, and one confound is
+  known.** `scripts.filter_loop` stopped after its 03:10:11 scan — the last
+  entry in `runtime/rerank.log`, and the last write to `runtime/markets.json`.
+  Blocks 11 and 12 therefore ran against a market list that was no longer being
+  refreshed. Why it stopped was not diagnosed. This does **not** explain block
+  10: it ran 02:50–03:12 with the loop alive and scanning (03:00:04, 03:10:11)
+  and still placed 10 orders that stayed `open` with no re-quote and no cancel
+  across 179 rotations. That pattern is consistent with books that stopped
+  moving overnight, but this sweep did not measure book update rates and cannot
+  say so as fact.
 - **Nothing about fill rates.** 3 fills against 0. Both numbers are noise, and
   the 2.7% against 0.0% in the headline table must not be read as a rate
   comparison.

@@ -6,13 +6,13 @@
  * so there is exactly one copy of every panel and no second render path to
  * keep in sync with `index.html`.
  *
- * It runs on `/prototype` only. The live control surface at `/` keeps its tab
- * row while the layout is being judged; switching it over is a one-line change
- * to `LAYOUT_PATHS` once the operator signs off.
+ * This is the dashboard now. `/` serves it. `/prototype` stays in
+ * `LAYOUT_PATHS` so the path the layout was reviewed through still lands on
+ * the layout instead of on a tab row nobody uses any more.
  *
- * Wrapped in an IIFE: on `/prototype` this file is loaded into the same global
- * scope as `app.js`, and two classic scripts sharing a top-level `const` name
- * is a load-time error that would take the whole page down.
+ * Wrapped in an IIFE: this file is loaded into the same global scope as
+ * `app.js`, and two classic scripts sharing a top-level `const` name is a
+ * load-time error that would take the whole page down.
  */
 (function () {
 'use strict';
@@ -20,7 +20,7 @@
 const PAGES =['home', 'data-markets', 'strategy', 'trades', 'reports'];
 const STORAGE_KEY = 'sh-proto-page';
 const DEFAULT_PAGE = 'home';
-const LAYOUT_PATHS = ['/prototype'];
+const LAYOUT_PATHS = ['/', '/prototype'];
 const EXPLAINER_SRC = '/static/strategy_explainer.html';
 
 /* Which live panel lands on which page. Every selector is an id `app.js`
@@ -288,21 +288,16 @@ function mountSidebarLayout(doc) {
   const tabs = scope.querySelector('.tab-switcher');
   if (tabs) tabs.hidden = true;
 
-  // The same link that got the operator here has to get them back: this page
-  // is a layout under review, not somewhere to be stranded.
-  const link = scope.getElementById('proto-link');
-  if (link) {
-    link.setAttribute('href', '/');
-    link.setAttribute('title', 'Back to the live tabbed dashboard');
-    link.textContent = '← Live dashboard';
-  }
-
   const header = scope.querySelector('header');
   if (header) header.insertBefore(buildNavToggle(scope), header.firstChild);
 
   if (scope.body && scope.body.classList) {
     scope.body.classList.add('proto-body');
   }
+
+  // The analytics sub-nav filters the page it sits on, and the panels moved a
+  // moment ago. Re-check which of its views still have something to show.
+  if (typeof pruneStatsSubnav === 'function') pruneStatsSubnav();
   return shell;
 }
 

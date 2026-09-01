@@ -80,11 +80,10 @@
     </div>
   </header>
 
-  <!-- ── Tab Switcher (DT4: text-only, no emoji) ── -->
-  <div style="display:flex;justify-content:flex-end;padding:0 16px">
-    <a id="proto-link" href="/prototype" class="mono" style="font-size:11px;color:var(--text-muted);text-decoration:none"
-       title="Sidebar-pages layout prototype — the same live panels, re-organized into pages">Layout prototype →</a>
-  </div>
+  <!-- The tab row the sidebar replaced. `prototype.js` hides it and empties the
+       three panels below into the rail's pages; the sections themselves stay,
+       because `app.js` still toggles them by id and reads `#tab-3.hidden`
+       before it will scroll the kanban. -->
   <nav class="tab-switcher" role="tablist" aria-label="Dashboard tabs">
     <button class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-1" id="tab-btn-1" type="button">LIVE OPERATIONS</button>
     <button class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-2" id="tab-btn-2" type="button">PERFORMANCE &amp; ANALYTICS</button>

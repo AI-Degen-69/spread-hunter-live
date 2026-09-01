@@ -195,7 +195,15 @@ def test_merges_are_reported_at_their_full_value(tmp_path):
     text = rpt.report(db)
 
     assert "merges : 1" in text
-    assert "$ 0.0500" in text
+    # The whole merge line, not just the gross figure. `"$ 0.0500" in text`
+    # passed on the OLD output too: that version printed the gross value and
+    # the gas-adjusted one side by side, so the assertion could not fail on the
+    # behaviour it was meant to pin. Anchor the line, then state the absence.
+    merge_line = next(l for l in text.splitlines() if "5sh" in l)
+    assert merge_line.strip().endswith("$ 0.0500")
+    # $0.05 gross minus the retired $0.01138 merge-gas figure.
+    assert "0.0386" not in text
+    assert "0.01138" not in text
 
 
 @pytest.fixture(autouse=True)

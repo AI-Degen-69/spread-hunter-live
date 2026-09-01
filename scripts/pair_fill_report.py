@@ -118,15 +118,25 @@ def report(db_path: Path) -> str:
                f"{_pct(len(both_legs), len(two_sided))}")
     out.append("")
 
+    # `fill_sizes` counts every filled leg, including legs whose companion
+    # never filled. That is the right denominator for "how big is a fill", but
+    # it is NOT a count of pairs -- a lone leg is a directional position, which
+    # is the exact thing this report exists to keep separate from a pair. The
+    # earnings line is therefore labelled per FILL of the median size, and
+    # stated as the tick a pair would earn were that fill completed.
     out.append("FILL SIZE -- a pair earns one tick per share, so size is the trade")
     if sizes:
         srt = sorted(sizes)
         med = statistics.median(srt)
-        out.append(f"  n={len(srt)}  min {min(srt):.0f}  median {med:.0f}  "
-                   f"max {max(srt):.0f}")
+        # Printed at the precision the arithmetic uses. Rounding the display to
+        # a whole share while multiplying the unrounded value left the median
+        # and the earnings beside it disagreeing, with nothing on the line to
+        # say which one had been rounded.
+        out.append(f"  n={len(srt)}  min {min(srt):g}  median {med:g}  "
+                   f"max {max(srt):g}")
         for edge, label in ((0.001, "0.1c-tick book"), (0.01, "1c-tick book")):
-            out.append(f"  {label:<16} median fill earns "
-                       f"${med * edge:>7.4f} per completed pair")
+            out.append(f"  {label:<16} median fill would earn "
+                       f"${med * edge:>7.4f} if its pair completed")
     else:
         out.append("  no fills recorded")
     out.append("")

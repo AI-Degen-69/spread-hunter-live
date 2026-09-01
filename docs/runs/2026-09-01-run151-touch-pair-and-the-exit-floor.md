@@ -176,7 +176,7 @@ Break-even is `exit / (merge + exit)` with the merge gain at the full tick, sinc
 figure shown; the 180m row uses the unrounded −0.5345c behind that −0.53c, which
 is why it lands at 34.8% rather than 34.6%.
 
-The estimate swings between **26.8% and 42.1%** and straddles the 33% observed rate
+The estimate swings between **21.9% and 35.9%** and straddles the 33% observed rate
 in both directions. It is not converging — a single 6-share exit moves it more than
 ten points. Any claim that this run shows the strategy winning or losing is reading
 noise.
@@ -190,8 +190,14 @@ markets.
 So the binding constraint is no longer the exit, and it was never the fill rate or
 the queue. **It is the size of the eligible universe.** At 0–2 markets nothing
 downstream can be measured to a useful precision, however long a rehearsal runs.
-That is the $500 depth floor in `scripts/filter_markets.py`, which out-rejects the
-spread ceiling roughly 5:1 in every scan.
+That is the **$125k/24h volume gate**, not the depth floor. `tradable()` in
+`scripts/filter_markets.py` checks `select_min_volume_24h_usd` (125,000) and
+returns on it, so a market rejected for volume is never measured for depth at
+all; `select_min_top3_depth_usd` (500) only ever sees what volume already let
+through. The scan itself says so — the pagination note at `filter_markets.py`
+records that the walk stops inside the first gamma page because "the volume
+floor stops the scan". Loosening the depth floor cannot widen a universe the
+volume floor already truncated.
 
 ## What this does and does not establish
 
@@ -234,9 +240,10 @@ An autouse fixture now scrubs every `HUNTER_*` knob.
 ## Next
 
 1. **Widen the universe first.** Every other measurement is gated on it. The trial
-   contract already exists: `--trial-depth` in `scripts/filter_markets.py`. Until a
-   rehearsal quotes tens of markets rather than two, no run can separate a 27%
-   double-maker rate from a 42% one — and that range spans the entire decision.
+   contract already exists: `--trial-volume` in `scripts/filter_markets.py` — the
+   volume gate is the binding one, so that is the flag to move, not `--trial-depth`.
+   Until a rehearsal quotes tens of markets rather than two, no run can separate a
+   22% double-maker rate from a 36% one — and that range spans the entire decision.
 2. **Then re-run this rehearsal on the fixed code,** which records the exit price
    the ladder actually gives instead of the floor.
 3. **Then sweep `single_buy_grace_sec`,** now that it is reachable. At 0.52s the

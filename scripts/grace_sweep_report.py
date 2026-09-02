@@ -8,24 +8,33 @@ shorter ones. If the companion leg fills 30s after the first, then grace=45 and
 grace=120 both caught it and grace=15 did not — that is a filter on a recorded
 distribution, not a second experiment.
 
-Two things decide the answer and this reports both:
+Two things decide the answer and this reports both, in SHARES rather than in
+legs -- an opening leg of 5 shares against a companion that only fills 1 has 4
+shares exposed, and counting the whole leg "rescued" would bury them:
 
-  * **Rescue rate.** Of the legs that filled alone, how many had their
-    companion fill within the horizon? Those are pairs a longer grace converts
-    from a loss into a merge.
-  * **The cost of waiting.** A leg held 120s exits at the 120s bid, not the
-    15s one. Holding longer rescues more pairs AND books a worse exit on the
-    ones it fails to rescue. Reporting the rescue rate alone would recommend
-    an unbounded grace.
+  * **Merged shares.** Per pair, how many opposite-side shares had arrived by
+    `open_ts + grace`. `min(open_qty, arrived)` merge; the rest of the opening
+    leg stays exposed. A longer grace can only raise this.
+  * **The cost of waiting.** The exposed shares are dumped at the bid as it
+    stood at the horizon -- a leg held 120s exits at the 120s bid, not the 15s
+    one. Reporting merged shares alone would recommend an unbounded grace.
 
 The exit side is repriced from a `book_tape_recorder` store covering the same
-window, so the bid at each horizon is measured rather than modelled. Without
-one, the cost column is reported as unmeasured rather than guessed.
+window, so the bid at each horizon is measured rather than modelled. The exit
+total is published only when EVERY exposed pair has a bid; a partial sum is
+withheld, and zero exposed shares is a measured zero. Without a book the cost
+column is unmeasured rather than guessed.
+
+The live loop exits on the first poll AFTER the grace expires, so a real exit
+lands 0 to one rotation later than the horizon shown and the priced bid is a
+best case. A companion that arrives within one rotation of the horizon is
+flagged: the poll phase is not recorded, so its split is not resolved here.
 """
 from __future__ import annotations
 
 import argparse
 import sqlite3
+import statistics
 from pathlib import Path
 from typing import Optional
 
@@ -88,12 +97,20 @@ def leg_events(conn: sqlite3.Connection) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def companion_gaps(events: list[dict]) -> list[dict]:
-    """Per pair: the first leg, and how long the second took to arrive.
+def pair_timelines(events: list[dict]) -> list[dict]:
+    """Per pair: the side that opened the position, how many shares it opened,
+    and when the OTHER side's shares arrived.
 
-    `gap` is None when only one leg of that pair ever filled -- the leg was
-    stranded for good and no grace value rescues it. Those rows are the
-    denominator that keeps the rescue rate honest.
+    A pair merges `min(up_qty, dn_qty)` shares once both sides are present, so
+    the grace question is not "did any opposite fill exist" -- it is how much of
+    the second side had arrived by `open_ts + grace`. Reported in shares per
+    pair rather than per leg: an opening leg of 5 shares against a companion
+    that only ever fills 1 leaves 4 shares exposed, and calling the whole leg
+    "rescued" because some opposite fill exists would bury them.
+
+    `companion_qty` is `[(ts, cumulative opposite-side shares), ...]` in time
+    order, so a horizon lookup walks it once. Empty when the other side never
+    filled -- those shares are exposed for good and no grace rescues them.
     """
     by_pair: dict[str, list[dict]] = {}
     for e in events:
@@ -102,13 +119,42 @@ def companion_gaps(events: list[dict]) -> list[dict]:
     out: list[dict] = []
     for pair_id, evs in by_pair.items():
         evs.sort(key=lambda e: e["ts"])
-        first = evs[0]
-        companion = next((e for e in evs[1:] if e["side"] != first["side"]), None)
-        out.append({"pair_id": pair_id, "cid": first["cid"],
-                    "side": first["side"], "ts": first["ts"],
-                    "size": first["size"], "price": first["price"],
-                    "gap": (companion["ts"] - first["ts"]) if companion else None})
+        open_side = evs[0]["side"]
+        open_ts = evs[0]["ts"]
+        opened = [e for e in evs if e["side"] == open_side]
+        other = [e for e in evs if e["side"] != open_side]
+        open_qty = sum(e["size"] for e in opened)
+        # Size-weighted price of the side that can be left exposed -- that is
+        # the leg an exit sells at the bid.
+        open_price = (sum(e["size"] * e["price"] for e in opened) / open_qty
+                      if open_qty else 0.0)
+        cum: list[tuple[float, float]] = []
+        running = 0.0
+        for e in other:
+            running += e["size"]
+            cum.append((e["ts"], running))
+        out.append({"pair_id": pair_id, "cid": evs[0]["cid"],
+                    "open_side": open_side, "open_ts": open_ts,
+                    "open_qty": open_qty, "open_price": open_price,
+                    "companion_qty": cum})
     return out
+
+
+def companion_by(timeline: dict, deadline_ts: float) -> float:
+    """Opposite-side shares that had arrived by `deadline_ts`."""
+    got = 0.0
+    for ts, running in timeline["companion_qty"]:
+        if ts > deadline_ts:
+            break
+        got = running
+    return got
+
+
+def first_companion_gap(timeline: dict) -> Optional[float]:
+    """Seconds from the opening fill to the first opposite share, or None."""
+    if not timeline["companion_qty"]:
+        return None
+    return timeline["companion_qty"][0][0] - timeline["open_ts"]
 
 
 def bid_at(book: Optional[sqlite3.Connection], cid: str, side: str,
@@ -117,7 +163,9 @@ def bid_at(book: Optional[sqlite3.Connection], cid: str, side: str,
 
     "Just after" rather than "nearest": an exit at t+15s is filled by the book
     as it stands then, and a sample taken before the horizon would price the
-    exit on information the exit did not have.
+    exit on information the exit did not have. `ts` here is the horizon lower
+    bound -- the live loop exits on the first poll after it, up to one rotation
+    later -- so the priced bid is the best case for the exit, not its mean.
     """
     if book is None:
         return None
@@ -134,48 +182,76 @@ def sweep(store: Path, book_store: Optional[Path]) -> str:
     book = _ro(book_store) if book_store else None
     try:
         events = leg_events(conn)
-        legs = companion_gaps(events)
+        pairs = pair_timelines(events)
+        opened_sh = sum(p["open_qty"] for p in pairs)
         out = [f"grace sweep -- {store}",
-               f"{len(events)} fills, {len(legs)} legs that opened a position",
+               f"{len(events)} fills across {len(pairs)} pairs, "
+               f"{opened_sh:.0f} shares opened a position",
                ""]
-        if not legs:
-            out.append("no legs recorded; nothing to sweep")
+        if not pairs:
+            out.append("no pairs recorded; nothing to sweep")
             return "\n".join(out)
 
-        rescued_ever = [l for l in legs if l["gap"] is not None]
-        out.append("COMPANION WAIT -- how long the second leg took")
-        if rescued_ever:
-            gaps = sorted(l["gap"] for l in rescued_ever)
-            out.append(f"  paired at all : {len(rescued_ever)}/{len(legs)}")
-            out.append(f"  wait seconds  : min {gaps[0]:.1f}  "
-                       f"median {gaps[len(gaps)//2]:.1f}  max {gaps[-1]:.1f}")
+        gaps = sorted(g for g in (first_companion_gap(p) for p in pairs)
+                      if g is not None)
+        out.append("COMPANION WAIT -- when the first opposite share arrived")
+        if gaps:
+            out.append(f"  pairs with any companion : {len(gaps)}/{len(pairs)}")
+            out.append(f"  first-share wait seconds : min {gaps[0]:.1f}  "
+                       f"median {statistics.median(gaps):.1f}  max {gaps[-1]:.1f}")
         else:
-            out.append(f"  paired at all : 0/{len(legs)} -- no companion ever filled")
+            out.append(f"  pairs with any companion : 0/{len(pairs)} -- "
+                       f"no opposite share ever filled")
         out.append("")
 
         out.append("EVERY GRACE VALUE, FROM THE ONE RUN")
-        out.append("  rescued = companion filled inside the horizon, so the pair merges")
-        out.append(f"  the {POLL_INTERVAL_SEC:.0f}s row is the floor: the loop cannot "
-                   f"exit sooner than its own poll")
-        out.append("  exit    = the rest, sold at the bid as it stood at the horizon")
-        out.append(f"  {'grace':>7}{'rescued':>10}{'rate':>9}"
-                   f"{'merge $':>10}{'exit $':>10}{'net $':>10}")
+        out.append("  merged  = opposite shares in within the horizon -- these pair and merge")
+        out.append("  exposed = opened shares still uncovered -- dumped at the bid")
+        out.append(f"  the {POLL_INTERVAL_SEC:.0f}s row is the floor: the loop cannot exit "
+                   f"before its own poll, and every")
+        out.append(f"  real exit lands 0-{POLL_INTERVAL_SEC:.0f}s LATER than the horizon "
+                   f"shown -- the exit $ is a best case")
+        out.append(f"  {'grace':>7}{'merged sh':>11}{'exposed sh':>12}"
+                   f"{'merge $':>10}{'exit $':>13}{'net $':>13}")
+        ambiguous = 0
         for h in HORIZONS:
-            rescued = [l for l in legs if l["gap"] is not None and l["gap"] <= h]
-            stranded = [l for l in legs if l not in rescued]
-            merge_usd = sum(l["size"] * MERGE_GAIN_PER_SHARE for l in rescued)
-            exit_usd, priced = 0.0, 0
-            for l in stranded:
-                bid = bid_at(book, l["cid"], l["side"], l["ts"] + h)
-                if bid is None:
+            merged_sh = exposed_sh = exit_usd = 0.0
+            exposed_pairs = priced_pairs = 0
+            for p in pairs:
+                got = companion_by(p, p["open_ts"] + h)
+                merged = min(p["open_qty"], got)
+                exposed = p["open_qty"] - merged
+                merged_sh += merged
+                exposed_sh += exposed
+                gap = first_companion_gap(p)
+                if gap is not None and h < gap <= h + POLL_INTERVAL_SEC:
+                    ambiguous += 1
+                if exposed <= 0:
                     continue
-                exit_usd += (bid - l["price"]) * l["size"]
-                priced += 1
-            cell = f"{exit_usd:>10.4f}" if priced else f"{'unmeasured':>10}"
-            net = f"{merge_usd + exit_usd:>10.4f}" if priced else f"{'--':>10}"
-            out.append(f"  {h:>7.0f}{len(rescued):>10}"
-                       f"{100.0*len(rescued)/len(legs):>8.1f}%"
-                       f"{merge_usd:>10.4f}{cell}{net}")
+                exposed_pairs += 1
+                bid = bid_at(book, p["cid"], p["open_side"], p["open_ts"] + h)
+                if bid is not None:
+                    exit_usd += (bid - p["open_price"]) * exposed
+                    priced_pairs += 1
+            merge_usd = merged_sh * MERGE_GAIN_PER_SHARE
+            if exposed_pairs == 0:
+                # A measured zero: nothing was left to sell.
+                exit_cell, net_cell = f"{0.0:>13.4f}", f"{merge_usd:>13.4f}"
+            elif priced_pairs == exposed_pairs:
+                exit_cell = f"{exit_usd:>13.4f}"
+                net_cell = f"{merge_usd + exit_usd:>13.4f}"
+            else:
+                # Partial pricing is not a total. Withhold both.
+                exit_cell = f"{f'{priced_pairs}of{exposed_pairs}priced':>13}"
+                net_cell = f"{'unmeasured':>13}"
+            out.append(f"  {h:>7.0f}{merged_sh:>11.0f}{exposed_sh:>12.0f}"
+                       f"{merge_usd:>10.4f}{exit_cell}{net_cell}")
+        if ambiguous:
+            out.append("")
+            out.append(f"  ~ {ambiguous} pair-horizon case(s) had a companion arrive "
+                       f"within one poll of the horizon;")
+            out.append(f"    the poll phase is not recorded, so their merged/exposed "
+                       f"split could go either way live.")
         if book is None:
             out.append("")
             out.append("  exit column unmeasured: pass --book-db with a "

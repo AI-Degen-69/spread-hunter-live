@@ -9,9 +9,10 @@ recommendation was to sweep that knob.
 This run sweeps it.
 
 **Result in one line: the second leg arrives within 1.5 seconds or it never
-arrives at all, so every grace value from 5s to 120s rescues exactly the same
-pairs — and each extra second only degrades the exit on the ones it cannot
-rescue.**
+arrives at all, so no grace value from 5s to 120s rescues a single extra
+share.** The exit cost on the legs it fails to rescue is nine data points off a
+thin book — it does not read as a trend (it improves from the 5s to the 15s
+horizon, then falls), and this run does not use it to recommend a grace.
 
 ---
 
@@ -67,9 +68,17 @@ seconds**. Nothing arrived later — the distribution has no tail at all.
 | 45s | 4 | 30.8% | +0.2200 | −0.1658 | +0.0542 |
 | 120s | 4 | 30.8% | +0.2200 | −0.1808 | +0.0392 |
 
+> Table from the first cut of `grace_sweep_report`. A later pass ([#157](https://github.com/AI-Degen-69/spread-hunter-live/pull/157))
+> made it count merged *shares* rather than whole legs, withhold a partial exit
+> total, and flag companions that land within one poll of the horizon. The
+> `data/16_shadow_grace120.db` store was wiped before that pass, so these
+> figures are not regenerated — the qualitative finding (four pairs, no extra
+> rescue at any grace) is what stands.
+
 **The rescue column does not move.** Not by one pair, across a twenty-four-fold
-range of grace. Waiting longer rescues nothing and costs 0.4c per share on the
-nine legs it fails to rescue.
+range of grace. Waiting longer rescues nothing. The exit column is nine legs
+off a thin book: it is not a curve, and this run does not read a per-second
+cost off it.
 
 The 5s row is the floor rather than zero, and that distinction matters. The
 routing exits on the first poll AFTER the grace expires, and the rotation is 5

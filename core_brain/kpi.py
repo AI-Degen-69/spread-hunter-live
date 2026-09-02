@@ -21,7 +21,13 @@ from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
 from core_brain.config import MakerConfig, load as load_cfg
 from core_brain.runtime_paths import resolve_runtime_file
 
-_CFG = load_cfg()
+# Display-only: this module computes report numbers, never places an order.
+# `for_display=True` keeps an inherited rehearsal-only trial knob
+# (HUNTER_PAIR_COST_CAP / HUNTER_WIDE_BOOK_TRIAL) from crashing the import --
+# and every dashboard endpoint that imports it -- when the operator exported
+# one to hand to a rehearsal. Only `bankroll_usd` is read from `_CFG` here,
+# which no trial knob touches.
+_CFG = load_cfg(for_display=True)
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Shown when neither the ranker feed nor its fallbacks name a category. A named

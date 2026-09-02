@@ -13,6 +13,7 @@ runtime/markets.json.
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
 from dataclasses import dataclass
@@ -991,7 +992,7 @@ def _bounded_float(name: str, raw: str, lo: float, hi: float) -> float:
     return value
 
 
-def resolve_wide_book_trial(raw: str) -> float | None:
+def resolve_wide_book_trial(raw: str, *, for_display: bool = False) -> float | None:
     """Parse `HUNTER_WIDE_BOOK_TRIAL`, refusing outside a declared rehearsal.
 
     The gate is `rehearsal.is_rehearsal()`, and the choice of question matters.
@@ -1018,10 +1019,24 @@ def resolve_wide_book_trial(raw: str) -> float | None:
 
     The bound is 0.30. A binary market whose two sides are thirty cents apart
     is not a wide book, it is an absent one, and a value past that is a typo.
+
+    `for_display` is for a read-only consumer -- the dashboard's KPI and
+    parameter views -- that never places an order. Those processes inherit the
+    operator's shell environment only because `Start-Process` copies it, so a
+    trial knob exported to hand to a rehearsal also lands in the dashboard;
+    raising there crashes the page over a knob it will never act on. With
+    `for_display=True` the override is dropped with a logged warning and the
+    shipped ceiling stands. The money path never passes it, so the refusal is
+    unchanged where it matters.
     """
     if not raw.strip():
         return None
     if not rehearsal.is_rehearsal():
+        if for_display:
+            logging.getLogger(__name__).warning(
+                "HUNTER_WIDE_BOOK_TRIAL ignored for a display-only config load "
+                "(this process is not a rehearsal); shipped max_book_spread stands.")
+            return None
         raise ValueError(
             "HUNTER_WIDE_BOOK_TRIAL widens max_book_spread, the gate that "
             "refuses a book where a fill may leave a leg that cannot be "
@@ -1032,7 +1047,7 @@ def resolve_wide_book_trial(raw: str) -> float | None:
     return _bounded_float("HUNTER_WIDE_BOOK_TRIAL", raw, 0.0, 0.30)
 
 
-def resolve_pair_cost_trial(raw: str) -> float:
+def resolve_pair_cost_trial(raw: str, *, for_display: bool = False) -> float:
     """Parse `HUNTER_PAIR_COST_CAP`, refusing outside a declared rehearsal.
 
     Same gate and same reasoning as `resolve_wide_book_trial`: whether this
@@ -1046,8 +1061,17 @@ def resolve_pair_cost_trial(raw: str) -> float:
     `HUNTER_COMPLETABLE_CAP` refuses the same value for the same reason. The
     comparison in `risk.hard_block` is `>=`, so a cap of exactly 1.00 still
     refuses a $1.0000 pair and permits everything under it.
+
+    `for_display` behaves as in `resolve_wide_book_trial`: a read-only
+    consumer that inherited the knob from the operator's shell gets the
+    shipped `max_pair_cost` back with a logged warning instead of a crash.
     """
     if not rehearsal.is_rehearsal():
+        if for_display:
+            logging.getLogger(__name__).warning(
+                "HUNTER_PAIR_COST_CAP ignored for a display-only config load "
+                "(this process is not a rehearsal); shipped max_pair_cost stands.")
+            return MakerConfig.max_pair_cost
         raise ValueError(
             "HUNTER_PAIR_COST_CAP loosens max_pair_cost, the rule that stops a "
             "pair assembling above the $1.00 the instrument pays. It applies "
@@ -1056,12 +1080,19 @@ def resolve_pair_cost_trial(raw: str) -> float:
     return _bounded_float("HUNTER_PAIR_COST_CAP", raw, 0.0, 1.0)
 
 
-def load() -> MakerConfig:
+def load(*, for_display: bool = False) -> MakerConfig:
     """Config, with the per-bot fields overridable from the environment.
 
     Four bots run the same code against different markets; each gets its own
     HUNTER_DB, port and HUNTER_MARKET. Nothing else differs, so a difference in
     results is a difference in the MARKET, not in the settings.
+
+    `for_display` is threaded to the two rehearsal-gated trial resolvers
+    (`resolve_wide_book_trial`, `resolve_pair_cost_trial`). A read-only
+    consumer -- the dashboard's `/api/kpi` and `/api/parameters` -- passes it
+    so an inherited trial knob degrades to the shipped default with a warning
+    instead of raising. Every order-placing entrypoint calls `load()` with no
+    argument, so the refusal that protects the money path is untouched.
     """
     kw: dict = {}
     cid = os.environ.get("HUNTER_MARKET", "").strip()
@@ -1083,7 +1114,8 @@ def load() -> MakerConfig:
         tk = os.environ.get("HUNTER_TICK")
         if tk:
             kw["price_tick"] = float(tk)
-    wide = resolve_wide_book_trial(os.environ.get("HUNTER_WIDE_BOOK_TRIAL") or "")
+    wide = resolve_wide_book_trial(
+        os.environ.get("HUNTER_WIDE_BOOK_TRIAL") or "", for_display=for_display)
     if wide is not None and wide > 0:
         # All three ceilings move together. The reward window is widened only
         # if the trial is wider than it already is -- a trial NARROWER than
@@ -1124,7 +1156,7 @@ def load() -> MakerConfig:
         #
         # Rehearsal-only, on the same gate as the wide-book trial: this is a
         # loss-prevention cap on the money path, not a preference.
-        kw["max_pair_cost"] = resolve_pair_cost_trial(pcap)
+        kw["max_pair_cost"] = resolve_pair_cost_trial(pcap, for_display=for_display)
     ccap = os.environ.get("HUNTER_COMPLETABLE_CAP") or ""
     if ccap.strip():
         # 0 disables the cap, the escape hatch every other limit here has.

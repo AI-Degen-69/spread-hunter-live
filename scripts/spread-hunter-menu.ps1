@@ -60,6 +60,43 @@ function Resolve-RuntimeFile {
     return $current
 }
 
+# --- rehearsal-only trial knobs ---------------------------------------------
+# core_brain/config.py's resolve_pair_cost_trial and resolve_wide_book_trial
+# RAISE unless the process declared itself a rehearsal, and only
+# core_brain.shadow_run does. Start-Process copies this menu's whole environment
+# into every child, so a knob the operator exported to steer a rehearsal
+# (HUNTER_PAIR_COST_CAP, HUNTER_WIDE_BOOK_TRIAL) also lands in the dashboard, the
+# screener and the stats observer -- and their config.load() dies, taking
+# /api/kpi and /api/parameters down with it.
+#
+# Capture and strip them from THIS process now; Invoke-WithRehearsalTrialEnv
+# re-injects them for the shadow_run launch alone.
+$script:RehearsalTrialEnv = @{}
+foreach ($k in @('HUNTER_PAIR_COST_CAP', 'HUNTER_WIDE_BOOK_TRIAL')) {
+    $v = [Environment]::GetEnvironmentVariable($k)
+    if ($null -ne $v -and $v -ne '') {
+        $script:RehearsalTrialEnv[$k] = $v
+        Remove-Item "Env:$k" -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-WithRehearsalTrialEnv {
+    <# Run $Action with the rehearsal-only trial knobs restored to the
+       environment, then strip them again so no later child inherits them.
+       Only core_brain.shadow_run, the one child that declares itself a
+       rehearsal, should run inside this. #>
+    param([Parameter(Mandatory)][scriptblock]$Action)
+    foreach ($k in $script:RehearsalTrialEnv.Keys) {
+        Set-Item "Env:$k" $script:RehearsalTrialEnv[$k]
+    }
+    try { & $Action }
+    finally {
+        foreach ($k in $script:RehearsalTrialEnv.Keys) {
+            Remove-Item "Env:$k" -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 # The dashboard PID file is menu-owned and rewritten on every start, so it is
 # not resolved: a stale pre-rename copy only ever meant "not owned by menu".
 $DashPidFile = Join-Path $RunDir "live-dash.pids.json"
@@ -1663,11 +1700,17 @@ function Reset-Environment {
                     # The rehearsal loop (the executor) - started now that the
                     # universe exists.
                     Lsh-Step "Starting the rehearsal loop (python -m core_brain.shadow_run --minutes $Minutes --db $ShadowDbPath)..."
-                    $shadowRun = Start-Process -FilePath "python" `
-                        -ArgumentList "-m", "core_brain.shadow_run", "--minutes", "$Minutes", "--db", $ShadowDbPath, "--run-id", $ShadowRunId `
-                        -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
-                        -RedirectStandardOutput (Join-Path $RunDir "shadow_run.out.log") `
-                        -RedirectStandardError (Join-Path $RunDir "shadow_run.err.log")
+                    # shadow_run is the ONLY child that declares itself a
+                    # rehearsal, so it is the only one that may see the
+                    # rehearsal-only trial knobs. Re-inject them here; the
+                    # wrapper strips them again before the observer launches.
+                    $shadowRun = Invoke-WithRehearsalTrialEnv {
+                        Start-Process -FilePath "python" `
+                            -ArgumentList "-m", "core_brain.shadow_run", "--minutes", "$Minutes", "--db", $ShadowDbPath, "--run-id", $ShadowRunId `
+                            -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
+                            -RedirectStandardOutput (Join-Path $RunDir "shadow_run.out.log") `
+                            -RedirectStandardError (Join-Path $RunDir "shadow_run.err.log")
+                    }
                     Lsh-Ok "Rehearsal loop running (PID $($shadowRun.Id), $Minutes minute(s)) - dashboard updates live from $ShadowDbPath."
                     $observer = Start-Process -FilePath "python" `
                         -ArgumentList "-m", "core_brain.statistics_observer", "--mode", "shadow", "--watch", $ShadowDbPath, "--run-id", $ShadowRunId, "--data-dir", $ProjectPath, "--interval", "5", "--max-hours", (($Minutes / 60) + 0.08) `

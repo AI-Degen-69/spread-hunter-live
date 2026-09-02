@@ -95,6 +95,9 @@ def set_guardrail_heartbeat_override(path: Path | str | None) -> None:
 def resolve_ring_path() -> Path:
     if _ACTIVE_RING_OVERRIDE is not None:
         return _ACTIVE_RING_OVERRIDE
+    shadow_ring = _resolve_shadow_ring_path()
+    if shadow_ring is not None:
+        return shadow_ring
     return resolve_runtime_file(CYCLE_RING_NAME, root=LIVE_ROOT)
 
 
@@ -532,6 +535,38 @@ def read_shadow_run(active_db_path: str | None, now: float | None = None) -> dic
         "ended": ended,
         "finished": finished,
     }
+
+
+def _resolve_shadow_ring_path() -> Path | None:
+    """The cycle ring a live shadow rehearsal is writing, or None.
+
+    A shadow run sends its per-cycle events to `runtime/shadow-<run_id>.jsonl`
+    (`core_brain.shadow_run._run_ring_name`), not to the live `cycle_events.jsonl`
+    the screener appends to. When the page is pointed at a shadow store and
+    `shadow_run.json` reports a rehearsal for THAT store still running, the ring
+    readers (`/api/scan-state`, `/api/cycle-stream`, `/api/pairs-activity`)
+    should follow the rehearsal's ring -- otherwise they read a live ring that
+    the rehearsal never touches and the panels look dead.
+
+    Returns None on any doubt: no matching run, no run id, ring not yet on disk,
+    or a store this rehearsal is not the one writing.
+    """
+    try:
+        shadow = read_shadow_run(str(resolve_db_path(_ACTIVE_DB_OVERRIDE)))
+    except Exception:
+        return None
+    if not shadow or not shadow.get("running"):
+        return None
+    run_id = shadow.get("run_id")
+    if not run_id:
+        return None
+    try:
+        from core_brain.shadow_run import _run_ring_name
+        ring = resolve_runtime_file(_run_ring_name(str(run_id)), root=LIVE_ROOT)
+    except Exception:
+        return None
+    return ring if ring.exists() else None
+
 
 def _service_started_at(pid: int | None, info: dict, running: bool) -> float | None:
     """Unix start time for a running service, or None.
@@ -1656,6 +1691,18 @@ def get_scan_state():
 
     hb = _read_engine_heartbeat()
     hb_ts = (hb.get("ts") or 0) / 1000.0 if hb.get("ts") else None
+    if hb_ts is None:
+        # A shadow rehearsal runs no live poll loop and writes no
+        # live_poll_heartbeat.json, so the engine heartbeat is absent and
+        # compute_scan_state would call it STALLED. The rehearsal publishes its
+        # own liveness in shadow_run.json; use that so the pill reflects the
+        # rehearsal instead of a false alarm.
+        try:
+            shadow = read_shadow_run(str(resolve_db_path(_ACTIVE_DB_OVERRIDE)))
+        except Exception:
+            shadow = None
+        if shadow and shadow.get("running"):
+            hb_ts = now - float(shadow.get("heartbeat_age_sec") or 0.0)
 
     window = now - 60.0
     active_phases: set[str] = set()
@@ -1673,6 +1720,22 @@ def get_scan_state():
             last_scan_ts is None or ts > last_scan_ts
         ):
             last_scan_ts = ts
+
+    # The screener always appends to the live ring, never to a rehearsal's
+    # per-run ring. When `events` above came from the shadow ring it carries no
+    # filter events, so read the screener timestamp straight from the live ring.
+    if last_scan_ts is None and _ACTIVE_RING_OVERRIDE is None:
+        try:
+            from core_brain.cycle_stream import read_ring as _read_ring
+            live_ring = resolve_runtime_file(CYCLE_RING_NAME, root=LIVE_ROOT)
+            for ev in _read_ring(live_ring, tail=400):
+                if str(ev.get("service") or "") not in ("filter", "screener"):
+                    continue
+                ts = _parse_event_ts(ev.get("ts"))
+                if ts is not None and (last_scan_ts is None or ts > last_scan_ts):
+                    last_scan_ts = ts
+        except Exception:
+            pass
 
     state, hb_age = compute_scan_state(last_event_ts, hb_ts, now, active_phases)
 
@@ -1890,7 +1953,10 @@ def get_parameters(registry=None):
     interval from the dashboard's own config. One config object, not two.
     """
     from core_brain.config import load as load_cfg, derive_dynamic_caps
-    cfg = load_cfg()
+    # Display-only endpoint: never places an order. `for_display=True` keeps an
+    # inherited rehearsal-only trial knob from 500-ing this panel (see
+    # core_brain.config.load).
+    cfg = load_cfg(for_display=True)
     portfolio_usd = None
     try:
         reg = registry

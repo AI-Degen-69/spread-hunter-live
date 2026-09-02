@@ -60,6 +60,44 @@ function Resolve-RuntimeFile {
     return $current
 }
 
+# --- rehearsal-only trial knobs ---------------------------------------------
+# core_brain/config.py's resolve_pair_cost_trial RAISES unless the process
+# declared itself a rehearsal, and only core_brain.shadow_run does.
+# Start-Process copies this menu's whole environment into every child, so
+# HUNTER_PAIR_COST_CAP -- exported to steer a rehearsal -- also lands in the
+# stats observer, whose config.load() then dies at import.
+#
+# Capture and strip it from THIS process now; Invoke-WithRehearsalTrialEnv
+# re-injects it for the shadow_run launch alone. (HUNTER_WIDE_BOOK_TRIAL is
+# NOT handled here: it reaches the screener through the ranker's own
+# --trial-spread flag, not this menu, and the dashboard tolerates it via
+# config.load(for_display=True).)
+$script:RehearsalTrialEnv = @{}
+foreach ($k in @('HUNTER_PAIR_COST_CAP')) {
+    $v = [Environment]::GetEnvironmentVariable($k)
+    if ($null -ne $v -and $v -ne '') {
+        $script:RehearsalTrialEnv[$k] = $v
+        Remove-Item "Env:$k" -ErrorAction SilentlyContinue
+    }
+}
+
+function Invoke-WithRehearsalTrialEnv {
+    <# Run $Action with the rehearsal-only trial knobs restored to the
+       environment, then strip them again so no later child inherits them.
+       Only core_brain.shadow_run, the one child that declares itself a
+       rehearsal, should run inside this. #>
+    param([Parameter(Mandatory)][scriptblock]$Action)
+    foreach ($k in $script:RehearsalTrialEnv.Keys) {
+        Set-Item "Env:$k" $script:RehearsalTrialEnv[$k]
+    }
+    try { & $Action }
+    finally {
+        foreach ($k in $script:RehearsalTrialEnv.Keys) {
+            Remove-Item "Env:$k" -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 # The dashboard PID file is menu-owned and rewritten on every start, so it is
 # not resolved: a stale pre-rename copy only ever meant "not owned by menu".
 $DashPidFile = Join-Path $RunDir "live-dash.pids.json"
@@ -1663,11 +1701,17 @@ function Reset-Environment {
                     # The rehearsal loop (the executor) - started now that the
                     # universe exists.
                     Lsh-Step "Starting the rehearsal loop (python -m core_brain.shadow_run --minutes $Minutes --db $ShadowDbPath)..."
-                    $shadowRun = Start-Process -FilePath "python" `
-                        -ArgumentList "-m", "core_brain.shadow_run", "--minutes", "$Minutes", "--db", $ShadowDbPath, "--run-id", $ShadowRunId `
-                        -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
-                        -RedirectStandardOutput (Join-Path $RunDir "shadow_run.out.log") `
-                        -RedirectStandardError (Join-Path $RunDir "shadow_run.err.log")
+                    # shadow_run is the ONLY child that declares itself a
+                    # rehearsal, so it is the only one that may see
+                    # HUNTER_PAIR_COST_CAP. Re-inject it here; the wrapper
+                    # strips it again before the observer launches.
+                    $shadowRun = Invoke-WithRehearsalTrialEnv {
+                        Start-Process -FilePath "python" `
+                            -ArgumentList "-m", "core_brain.shadow_run", "--minutes", "$Minutes", "--db", $ShadowDbPath, "--run-id", $ShadowRunId `
+                            -WorkingDirectory $ProjectPath -WindowStyle Hidden -PassThru `
+                            -RedirectStandardOutput (Join-Path $RunDir "shadow_run.out.log") `
+                            -RedirectStandardError (Join-Path $RunDir "shadow_run.err.log")
+                    }
                     Lsh-Ok "Rehearsal loop running (PID $($shadowRun.Id), $Minutes minute(s)) - dashboard updates live from $ShadowDbPath."
                     $observer = Start-Process -FilePath "python" `
                         -ArgumentList "-m", "core_brain.statistics_observer", "--mode", "shadow", "--watch", $ShadowDbPath, "--run-id", $ShadowRunId, "--data-dir", $ProjectPath, "--interval", "5", "--max-hours", (($Minutes / 60) + 0.08) `

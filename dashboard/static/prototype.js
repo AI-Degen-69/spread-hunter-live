@@ -32,9 +32,7 @@ const PAGE_LAYOUT = [
     page: 'home',
     label: 'Dashboard',
     icon: '◆',
-    note: 'Where the account stands and what the run is doing right now: ' +
-          'account value, the bankroll split, and the three stages of every ' +
-          'trade — quoted market, resting order, held position.',
+    note: 'Where the account stands right now.',
     // The bankroll strip is part of the portfolio card and travels with it.
     selectors: ['#live-ops-master-card', '#broker-portfolio-overview',
                 '#orders-trades-card'],
@@ -43,32 +41,28 @@ const PAGE_LAYOUT = [
     page: 'data-markets',
     label: 'Data & Markets',
     icon: '▤',
-    note: 'What the Market Filter saw: the pipeline buckets, its own state, ' +
-          'and the market inspection table.',
+    note: 'What the Market Filter saw on its last scan.',
     selectors: ['#screener-header', '#kanban-carousel-container', '#market-inspection-card'],
   },
   {
     page: 'strategy',
     label: 'Strategy',
     icon: '✦',
-    note: 'How the strategy is configured and what it has to clear: risk limits, ' +
-          'decision gates, and the explainer.',
+    note: 'How the strategy is configured and what it has to clear.',
     selectors: ['#params-panel', '#analytics-gates'],
   },
   {
     page: 'trades',
     label: 'Trades & Positions',
     icon: '⇄',
-    note: 'The execution surface: the services running the loop and the live ' +
-          'cycle event stream.',
+    note: 'The services running the loop, and what they are doing.',
     selectors: ['#services-deck', '#event-ticker-card'],
   },
   {
     page: 'reports',
     label: 'Reports & Analytics',
     icon: '▩',
-    note: 'The statistical decks and the performance charts behind the ' +
-          'numbers on the Dashboard.',
+    note: 'The evidence behind the numbers on the Dashboard.',
     selectors: ['.stats-subnav-container', '#analytics-surface'],
   },
 ];
@@ -288,8 +282,11 @@ function mountSidebarLayout(doc) {
   const tabs = scope.querySelector('.tab-switcher');
   if (tabs) tabs.hidden = true;
 
-  const header = scope.querySelector('header');
-  if (header) header.insertBefore(buildNavToggle(scope), header.firstChild);
+  // Inside `.brand`, not as a third child of the header: the header is a
+  // space-between flex, and a third child pushed the wordmark into the middle
+  // of the bar at the widths where the toggle actually appears.
+  const brand = scope.querySelector('header .brand');
+  if (brand) brand.insertBefore(buildNavToggle(scope), brand.firstChild);
 
   if (scope.body && scope.body.classList) {
     scope.body.classList.add('proto-body');

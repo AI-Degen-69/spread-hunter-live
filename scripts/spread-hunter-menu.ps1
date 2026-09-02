@@ -61,18 +61,19 @@ function Resolve-RuntimeFile {
 }
 
 # --- rehearsal-only trial knobs ---------------------------------------------
-# core_brain/config.py's resolve_pair_cost_trial and resolve_wide_book_trial
-# RAISE unless the process declared itself a rehearsal, and only
-# core_brain.shadow_run does. Start-Process copies this menu's whole environment
-# into every child, so a knob the operator exported to steer a rehearsal
-# (HUNTER_PAIR_COST_CAP, HUNTER_WIDE_BOOK_TRIAL) also lands in the dashboard, the
-# screener and the stats observer -- and their config.load() dies, taking
-# /api/kpi and /api/parameters down with it.
+# core_brain/config.py's resolve_pair_cost_trial RAISES unless the process
+# declared itself a rehearsal, and only core_brain.shadow_run does.
+# Start-Process copies this menu's whole environment into every child, so
+# HUNTER_PAIR_COST_CAP -- exported to steer a rehearsal -- also lands in the
+# stats observer, whose config.load() then dies at import.
 #
-# Capture and strip them from THIS process now; Invoke-WithRehearsalTrialEnv
-# re-injects them for the shadow_run launch alone.
+# Capture and strip it from THIS process now; Invoke-WithRehearsalTrialEnv
+# re-injects it for the shadow_run launch alone. (HUNTER_WIDE_BOOK_TRIAL is
+# NOT handled here: it reaches the screener through the ranker's own
+# --trial-spread flag, not this menu, and the dashboard tolerates it via
+# config.load(for_display=True).)
 $script:RehearsalTrialEnv = @{}
-foreach ($k in @('HUNTER_PAIR_COST_CAP', 'HUNTER_WIDE_BOOK_TRIAL')) {
+foreach ($k in @('HUNTER_PAIR_COST_CAP')) {
     $v = [Environment]::GetEnvironmentVariable($k)
     if ($null -ne $v -and $v -ne '') {
         $script:RehearsalTrialEnv[$k] = $v
@@ -1701,9 +1702,9 @@ function Reset-Environment {
                     # universe exists.
                     Lsh-Step "Starting the rehearsal loop (python -m core_brain.shadow_run --minutes $Minutes --db $ShadowDbPath)..."
                     # shadow_run is the ONLY child that declares itself a
-                    # rehearsal, so it is the only one that may see the
-                    # rehearsal-only trial knobs. Re-inject them here; the
-                    # wrapper strips them again before the observer launches.
+                    # rehearsal, so it is the only one that may see
+                    # HUNTER_PAIR_COST_CAP. Re-inject it here; the wrapper
+                    # strips it again before the observer launches.
                     $shadowRun = Invoke-WithRehearsalTrialEnv {
                         Start-Process -FilePath "python" `
                             -ArgumentList "-m", "core_brain.shadow_run", "--minutes", "$Minutes", "--db", $ShadowDbPath, "--run-id", $ShadowRunId `

@@ -14,6 +14,7 @@ from __future__ import annotations
 import datetime
 import json
 import sqlite3
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -83,6 +84,55 @@ def test_scan_state_falls_back_to_the_shadow_heartbeat(client, tmp_path, monkeyp
     assert data["scan_state"] == "SCANNING"
     assert data["seconds_since_heartbeat"] is not None
     assert data["seconds_since_heartbeat"] == pytest.approx(4.0, abs=2.0)
+
+
+def test_scan_state_prefers_shadow_over_a_stale_live_heartbeat(client, tmp_path, monkeypatch):
+    # A live_poll_heartbeat.json left by an earlier live run is stale but not
+    # absent, so `hb_ts` is set. Without preferring the matched shadow run the
+    # pill would flip to STALLED after 90s while the rehearsal is healthy.
+    ring = _fresh_quoting_ring(tmp_path)
+    stale_hb = tmp_path / "heartbeat.json"
+    stale_hb.write_text(
+        json.dumps([{"ts": int((time.time() - 3600) * 1000), "cycle": 1, "errors": 0}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        srv, "read_shadow_run",
+        lambda *a, **k: {"running": True, "heartbeat_age_sec": 3.0, "run_id": "shadow-01"},
+    )
+    set_ring_override(ring)
+    set_heartbeat_override(stale_hb)
+    try:
+        res = client.get("/api/scan-state")
+    finally:
+        set_ring_override(None)
+        set_heartbeat_override(None)
+
+    data = res.json()
+    assert data["scan_state"] == "SCANNING"
+    assert data["seconds_since_heartbeat"] == pytest.approx(3.0, abs=2.0)
+
+
+def test_scan_state_keeps_the_live_heartbeat_when_no_shadow_matches(client, tmp_path, monkeypatch):
+    # No rehearsal for this store -> the live heartbeat still drives the pill.
+    ring = _fresh_quoting_ring(tmp_path)
+    fresh_hb = tmp_path / "heartbeat.json"
+    fresh_hb.write_text(
+        json.dumps([{"ts": int(time.time() * 1000), "cycle": 9, "errors": 0}]),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(srv, "read_shadow_run", lambda *a, **k: None)
+    set_ring_override(ring)
+    set_heartbeat_override(fresh_hb)
+    try:
+        res = client.get("/api/scan-state")
+    finally:
+        set_ring_override(None)
+        set_heartbeat_override(None)
+
+    data = res.json()
+    assert data["scan_state"] == "SCANNING"
+    assert data["seconds_since_heartbeat"] is not None
 
 
 def test_scan_state_stays_stalled_with_no_heartbeat_and_no_shadow(client, tmp_path, monkeypatch):

@@ -1691,18 +1691,18 @@ def get_scan_state():
 
     hb = _read_engine_heartbeat()
     hb_ts = (hb.get("ts") or 0) / 1000.0 if hb.get("ts") else None
-    if hb_ts is None:
-        # A shadow rehearsal runs no live poll loop and writes no
-        # live_poll_heartbeat.json, so the engine heartbeat is absent and
-        # compute_scan_state would call it STALLED. The rehearsal publishes its
-        # own liveness in shadow_run.json; use that so the pill reflects the
-        # rehearsal instead of a false alarm.
-        try:
-            shadow = read_shadow_run(str(resolve_db_path(_ACTIVE_DB_OVERRIDE)))
-        except Exception:
-            shadow = None
-        if shadow and shadow.get("running"):
-            hb_ts = now - float(shadow.get("heartbeat_age_sec") or 0.0)
+    # A running shadow rehearsal is the authority for its own store: it runs no
+    # live poll loop, so the engine heartbeat is either absent or a stale one
+    # left by an earlier live run -- and a stale live heartbeat would still make
+    # compute_scan_state call a healthy rehearsal STALLED after 90s. Whenever
+    # read_shadow_run() matches the active store and reports the run running,
+    # take its heartbeat over the live one.
+    try:
+        shadow = read_shadow_run(str(resolve_db_path(_ACTIVE_DB_OVERRIDE)))
+    except Exception:
+        shadow = None
+    if shadow and shadow.get("running"):
+        hb_ts = now - float(shadow.get("heartbeat_age_sec") or 0.0)
 
     window = now - 60.0
     active_phases: set[str] = set()

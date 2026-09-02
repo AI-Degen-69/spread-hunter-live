@@ -247,6 +247,44 @@ def test_choosing_a_page_closes_the_narrow_screen_drawer():
     assert rendered["nav_open"] is False
 
 
+def test_the_nav_toggle_sits_with_the_wordmark():
+    # Arrange — the header is a space-between flex. A third top-level child
+    # pushed the wordmark into the middle of the bar at exactly the widths
+    # where the toggle appears.
+    js = (_STATIC / "prototype.js").read_text(encoding="utf-8")
+
+    # Act / Assert
+    assert "header .brand" in js
+    assert "brand.insertBefore(buildNavToggle(scope), brand.firstChild)" in js
+
+
+def test_the_rail_spans_its_column():
+    # Arrange — five items sized to their content left a 237px card beside a
+    # 1300px page, which reads as an unfinished panel rather than as the rail.
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+
+    # Act
+    rail = css.split(".proto-sidebar {")[1].split("}")[0]
+
+    # Assert
+    assert "height: calc(100vh - 24px)" in rail
+    assert "max-height" not in rail
+
+
+def test_the_page_notes_orient_rather_than_narrate():
+    # Arrange — a tool used every day should not list its own panels back at
+    # the operator; the panels are right there and carry their own headings.
+    js = (_STATIC / "prototype.js").read_text(encoding="utf-8")
+
+    # Act
+    notes = re.findall(r"note: '([^']+)'", js)
+
+    # Assert
+    assert len(notes) == len(PAGES)
+    for note in notes:
+        assert len(note.split()) <= 12, f"note narrates instead of orienting: {note}"
+
+
 def test_the_drawer_has_a_narrow_screen_rule():
     # Arrange / Act
     css = (_STATIC / "prototype.css").read_text(encoding="utf-8")

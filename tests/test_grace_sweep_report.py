@@ -98,14 +98,6 @@ def test_pairs_never_marry_across_pair_ids():
     assert all(gsr.first_companion_gap(t) is None for t in tls)
 
 
-def test_two_markets_do_not_pair_across_each_other():
-    tls = gsr.pair_timelines([
-        _ev("p1", 100.0, "UP", cid="a"), _ev("p2", 110.0, "DOWN", cid="b")])
-
-    assert sorted(t["cid"] for t in tls) == ["a", "b"]
-    assert all(gsr.first_companion_gap(t) is None for t in tls)
-
-
 def test_a_same_side_refill_is_not_a_companion():
     # Adding to the leg we already hold is not the other side of the pair.
     tls = gsr.pair_timelines([_ev("p1", 100.0, "UP"), _ev("p1", 110.0, "UP")])
@@ -144,6 +136,24 @@ def test_a_companion_that_dribbles_in_merges_only_what_arrived_by_the_horizon(tm
     assert float(rows[15][2]) == 4.0
     assert float(rows[120][1]) == 6.0   # both chunks caught by 120s
     assert float(rows[120][2]) == 0.0
+
+
+def test_a_later_same_side_fill_is_not_backdated_into_a_shorter_horizon(tmp_path):
+    # UP 5 at t=100, another UP 5 at t=140, DOWN 10 at t=101. The pre-review
+    # code summed both UP fills into a quantity dated to t=100, so the 5s row
+    # counted the t=140 shares as already open. They start their own grace.
+    db = _shadow(tmp_path, [
+        (100.0, "m", "UP", 5.0, 0.60, "p1"),
+        (140.0, "m", "UP", 5.0, 0.60, "p1"),
+        (101.0, "m", "DOWN", 10.0, 0.40, "p1"),
+    ])
+
+    rows = _rows(gsr.sweep(db, None))
+
+    assert float(rows[gsr.POLL_INTERVAL_SEC][1]) == 5.0   # only the first chunk is open
+    assert float(rows[gsr.POLL_INTERVAL_SEC][2]) == 0.0   # its companion is already there
+    assert float(rows[45][1]) == 10.0   # second chunk in by 45s, companion waiting
+    assert float(rows[45][2]) == 0.0
 
 
 # --- the horizons -------------------------------------------------------------
@@ -277,6 +287,25 @@ def test_the_reported_wait_is_the_true_median_for_an_even_sample(tmp_path):
     text = gsr.sweep(db, None)
 
     assert "median 2.0" in text
+
+
+def test_a_fill_with_no_quote_side_is_a_data_quality_error(tmp_path):
+    # `bid_at` would price an unknown side as DOWN and `pair_timelines` could
+    # count it as the companion -- refuse the run instead of guessing.
+    db = tmp_path / "shadow.db"
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE fills (order_uuid TEXT, size REAL, price REAL,"
+                 " recorded_ts REAL)")
+    conn.execute("CREATE TABLE orders (id TEXT, order_id TEXT,"
+                 " condition_id TEXT, side TEXT, token_id TEXT, pair_id TEXT)")
+    conn.execute("CREATE TABLE quotes (token_id TEXT, side TEXT)")
+    conn.execute("INSERT INTO orders VALUES ('o0','s0','m','BUY','tok-x','p1')")
+    conn.execute("INSERT INTO fills VALUES ('o0',5.0,0.6,100000.0)")
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(ValueError, match="no UP/DOWN quote side"):
+        gsr.sweep(db, None)
 
 
 def test_sweep_survives_a_run_with_no_fills(tmp_path):

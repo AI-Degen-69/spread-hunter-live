@@ -94,7 +94,16 @@ def leg_events(conn: sqlite3.Connection) -> list[dict]:
         " ORDER BY f.recorded_ts",
         (MS_PER_SEC,)
     ).fetchall()
-    return [dict(r) for r in rows]
+    out = [dict(r) for r in rows]
+    bad = sorted({r["pair_id"] for r in out if r["side"] not in ("UP", "DOWN")})
+    if bad:
+        raise ValueError(
+            f"{len(bad)} paired pair(s) carry a fill with no UP/DOWN quote side "
+            f"({', '.join(bad)}): the quotes ledger has no row for that token. "
+            f"Refusing to guess the leg -- `bid_at` would price it as DOWN and "
+            f"`pair_timelines` could count it as the companion."
+        )
+    return out
 
 
 def pair_timelines(events: list[dict]) -> list[dict]:
@@ -128,6 +137,15 @@ def pair_timelines(events: list[dict]) -> list[dict]:
         # the leg an exit sells at the bid.
         open_price = (sum(e["size"] * e["price"] for e in opened) / open_qty
                       if open_qty else 0.0)
+        # A later add on the opening side starts its OWN grace clock at its own
+        # fill time. Tracked cumulatively so a shorter reconstructed horizon
+        # only counts the shares whose fill had landed by then -- otherwise a
+        # t+110 add reads as opened at t and inflates both columns at grace=5.
+        open_cum: list[tuple[float, float]] = []
+        running_open = 0.0
+        for e in opened:
+            running_open += e["size"]
+            open_cum.append((e["ts"], running_open))
         cum: list[tuple[float, float]] = []
         running = 0.0
         for e in other:
@@ -136,8 +154,18 @@ def pair_timelines(events: list[dict]) -> list[dict]:
         out.append({"pair_id": pair_id, "cid": evs[0]["cid"],
                     "open_side": open_side, "open_ts": open_ts,
                     "open_qty": open_qty, "open_price": open_price,
-                    "companion_qty": cum})
+                    "open_qty_ts": open_cum, "companion_qty": cum})
     return out
+
+
+def opened_by(timeline: dict, deadline_ts: float) -> float:
+    """Opening-side shares whose own fill had landed by `deadline_ts`."""
+    got = 0.0
+    for ts, running in timeline["open_qty_ts"]:
+        if ts > deadline_ts:
+            break
+        got = running
+    return got
 
 
 def companion_by(timeline: dict, deadline_ts: float) -> float:
@@ -201,16 +229,16 @@ def sweep(store: Path, book_store: Optional[Path]) -> str:
                        f"median {statistics.median(gaps):.1f}  max {gaps[-1]:.1f}")
         else:
             out.append(f"  pairs with any companion : 0/{len(pairs)} -- "
-                       f"no opposite share ever filled")
+                       "no opposite share ever filled")
         out.append("")
 
         out.append("EVERY GRACE VALUE, FROM THE ONE RUN")
         out.append("  merged  = opposite shares in within the horizon -- these pair and merge")
         out.append("  exposed = opened shares still uncovered -- dumped at the bid")
         out.append(f"  the {POLL_INTERVAL_SEC:.0f}s row is the floor: the loop cannot exit "
-                   f"before its own poll, and every")
+                   "before its own poll, and every")
         out.append(f"  real exit lands 0-{POLL_INTERVAL_SEC:.0f}s LATER than the horizon "
-                   f"shown -- the exit $ is a best case")
+                   "shown -- the exit $ is a best case")
         out.append(f"  {'grace':>7}{'merged sh':>11}{'exposed sh':>12}"
                    f"{'merge $':>10}{'exit $':>13}{'net $':>13}")
         ambiguous = 0
@@ -218,9 +246,10 @@ def sweep(store: Path, book_store: Optional[Path]) -> str:
             merged_sh = exposed_sh = exit_usd = 0.0
             exposed_pairs = priced_pairs = 0
             for p in pairs:
+                opened_h = opened_by(p, p["open_ts"] + h)
                 got = companion_by(p, p["open_ts"] + h)
-                merged = min(p["open_qty"], got)
-                exposed = p["open_qty"] - merged
+                merged = min(opened_h, got)
+                exposed = opened_h - merged
                 merged_sh += merged
                 exposed_sh += exposed
                 gap = first_companion_gap(p)
@@ -249,9 +278,9 @@ def sweep(store: Path, book_store: Optional[Path]) -> str:
         if ambiguous:
             out.append("")
             out.append(f"  ~ {ambiguous} pair-horizon case(s) had a companion arrive "
-                       f"within one poll of the horizon;")
-            out.append(f"    the poll phase is not recorded, so their merged/exposed "
-                       f"split could go either way live.")
+                       "within one poll of the horizon;")
+            out.append("    the poll phase is not recorded, so their merged/exposed "
+                       "split could go either way live.")
         if book is None:
             out.append("")
             out.append("  exit column unmeasured: pass --book-db with a "

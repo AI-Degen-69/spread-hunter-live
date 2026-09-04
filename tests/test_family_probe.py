@@ -239,7 +239,8 @@ def test_touch_refuses_non_finite_and_empty_levels():
     """A NaN price would poison `max`, and the crossed-book guard with it."""
     book = {"bids": [{"price": "nan", "size": "10"},
                      {"price": "0.39", "size": "10"}],
-            "asks": [{"price": "0.43", "size": "inf"},
+            "asks": [{"price": "-0.10", "size": "10"},
+                     {"price": "0.43", "size": "inf"},
                      {"price": "0.44", "size": "0"},
                      {"price": "0.45", "size": "8"}]}
     assert touch(book) == (0.39, 0.45, 10.0, 8.0)

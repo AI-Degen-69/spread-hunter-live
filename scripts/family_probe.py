@@ -247,8 +247,8 @@ def gate_verdict(meta: dict, min_volume_usd: float,
 def _levels(side: object) -> dict[float, float]:
     """Price to size for one side, skipping levels the venue sent malformed.
 
-    A level with no `size`, or a `price`/`size` that is not a finite positive
-    number, is dropped rather than raised. The alternative loses the whole
+    A level with no `size`, or a `price`/`size` that is not a finite number
+    above zero, is dropped rather than raised. The alternative loses the whole
     cycle: the error would travel up through `measure` and `build_rows` into
     `run_cycle`, which logs "cycle failed" and discards every other market
     measured in it.
@@ -267,7 +267,8 @@ def _levels(side: object) -> dict[float, float]:
             size = float(level["size"])
         except (TypeError, ValueError, KeyError):
             continue
-        if not (math.isfinite(price) and math.isfinite(size)) or size <= 0.0:
+        if (not (math.isfinite(price) and math.isfinite(size))
+                or price <= 0.0 or size <= 0.0):
             continue
         out[price] = size
     return out

@@ -972,10 +972,30 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         # keeps showing shares the venue no longer holds -- the phantom
         # position this subtraction exists to retire. Same encoding as
         # inventory_from_registry: up_price set => the UP leg was sold.
+        #
+        # A `merge` / `shadow_merge` close retires BOTH legs: the pair went
+        # back to the venue and came out as $1.00 a share of USDC, and those
+        # proceeds are already booked in `m_pnl` below. Left in, the same
+        # shares are counted twice -- once realized, once again as a position
+        # still marked at par -- so a market whose every pair has merged reads
+        # as an open position worth its whole merged value. `merge` is the
+        # venue's spelling and `shadow_merge` the rehearsal's; the row labels
+        # differ on purpose but the arithmetic they record is the same.
+        #
+        # `inventory_from_registry` (core_brain/order_registry.py) has always
+        # subtracted both. This is the reader that did not, which left the
+        # engine and the board disagreeing about the same store.
         for c in m_closes:
-            if c.get("method") not in ("single_buy_exit", "naked_exit"):
-                continue
+            method = c.get("method")
             sh = float(c.get("shares") or 0.0)
+            if method in ("merge", "shadow_merge"):
+                up_sh = max(0.0, up_sh - sh)
+                dn_sh = max(0.0, dn_sh - sh)
+                up_cost = max(0.0, up_cost - float(c.get("up_cost_removed") or 0.0))
+                dn_cost = max(0.0, dn_cost - float(c.get("dn_cost_removed") or 0.0))
+                continue
+            if method not in ("single_buy_exit", "naked_exit"):
+                continue
             if c.get("up_price") is not None:
                 up_sh = max(0.0, up_sh - sh)
                 up_cost = max(0.0, up_cost - float(c.get("up_cost_removed") or 0.0))

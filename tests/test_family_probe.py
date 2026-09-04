@@ -1,12 +1,16 @@
 """The family probe measures families over a day, not markets in a snapshot."""
 from __future__ import annotations
 
+import calendar
 import sqlite3
+import time
 from pathlib import Path
 
 import pytest
 
+from scripts import family_probe
 from scripts.family_probe import (
+    _one_meta,
     build_rows,
     family_key,
     gate_verdict,
@@ -218,6 +222,45 @@ def test_an_open_market_with_no_book_is_recorded_not_dropped():
 
 def test_measure_refuses_a_crossed_or_empty_book():
     assert measure(_book([(0.40, 10)], []), None, []) is None
+    # Ask at or below bid: a crossed book, refused too.
+    assert measure(_book([(0.45, 10)], [(0.44, 10)]), None, []) is None
+    assert measure(_book([(0.44, 10)], [(0.44, 10)]), None, []) is None
+
+
+def test_touch_skips_a_level_the_venue_sent_without_a_size():
+    """One malformed level must not cost the cycle every other market."""
+    book = {"bids": [{"price": "0.40"}, {"price": "0.39", "size": "10"}],
+            "asks": [{"price": "0.42", "size": "not-a-number"},
+                     {"price": "0.43", "size": "8"}]}
+    assert touch(book) == (0.39, 0.43, 10.0, 8.0)
+
+
+def test_one_meta_reads_end_date_as_utc(monkeypatch):
+    """The venue stamps `endDate` in UTC, so the machine offset must not shift it.
+
+    The stub stands in for a machine whose local time is five hours off UTC,
+    which is the whole defect: reading the parsed tuple as local time moves
+    `days_to_resolve` by the offset and decides whether short-dated markets
+    clear the horizon gate.
+    """
+    now = 1767312000.0  # 2026-01-02T00:00:00Z
+
+    class _LocalTime:
+        strptime = staticmethod(time.strptime)
+
+        @staticmethod
+        def mktime(parsed):
+            return calendar.timegm(parsed) + 5 * 3600
+
+        @staticmethod
+        def time():
+            return now
+
+    monkeypatch.setattr(family_probe, "time", _LocalTime)
+    meta = _one_meta({"conditionId": "0xabc", "clobTokenIds": '["up","down"]',
+                      "endDate": "2026-01-05T00:00:00Z"})
+    assert meta is not None
+    assert meta["days_to_resolve"] == pytest.approx(3.0, abs=1e-6)
 
 
 # --- one cycle ----------------------------------------------------------------
@@ -288,7 +331,10 @@ def test_a_resumed_run_continues_the_cycle_count(tmp_path):
             return [{"conditionId": "0xabc", "clobTokenIds": '["up","down"]',
                      "question": "A vs B Game 2 Winner",
                      "slug": "dota-2-a-vs-b-game-2-winner",
-                     "volume24hr": 200000, "orderPriceMinTickSize": 0.01}]
+                     "volume24hr": 200000, "orderPriceMinTickSize": 0.01,
+                     "endDate": time.strftime(
+                         "%Y-%m-%dT%H:%M:%S",
+                         time.gmtime(time.time() + 86400))}]
         if url.endswith("/book"):
             return (_book([(0.40, 100)], [(0.42, 100)])
                     if params["token_id"] == "up"
@@ -343,6 +389,15 @@ def test_summarise_separates_markets_from_samples():
             _sample(condition_id="0x2")]
     stat = summarise(rows, 15.0, 0.99)[0]
     assert (stat.samples, stat.markets) == (3, 2)
+
+
+def test_summarise_counts_clock_hours_not_epoch_buckets():
+    """HRS and the --by-hour row must count the same thing, out of 24."""
+    day = 24 * 3600
+    rows = [_sample(ts=1_767_312_000.0), _sample(ts=1_767_312_000.0 + day)]
+    stat = summarise(rows, 15.0, 0.99)[0]
+    assert stat.hours == 1
+    assert len(hour_coverage(rows)[stat.family]) == stat.hours
 
 
 def test_summarise_reports_the_p90_not_only_the_median():

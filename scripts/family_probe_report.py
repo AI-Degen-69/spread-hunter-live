@@ -41,6 +41,7 @@ import argparse
 import math
 import sqlite3
 import statistics as st
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -124,7 +125,8 @@ def summarise(rows: list[dict], queue_bar: float,
         out.append(FamilyStat(
             family=family, samples=len(samples),
             markets=len({r["condition_id"] for r in samples}),
-            hours=len({int(float(r["ts"]) // 3600) for r in samples}),
+            hours=len({time.localtime(float(r["ts"])).tm_hour
+                       for r in samples}),
             book_pct=100.0 * sum(1 for r in samples
                                  if r.get("book_ok")) / len(samples),
             spread_med=_percentile(spreads, 0.5),
@@ -153,11 +155,9 @@ def _passes(row: dict, queue_bar: float, pair_bar: float) -> bool:
 
 def hour_coverage(rows: list[dict]) -> dict[str, dict[int, int]]:
     """Per family, how many markets it had open in each clock hour."""
-    import time as _time
-
     out: dict[str, dict[int, int]] = {}
     for row in rows:
-        hour = _time.localtime(float(row["ts"])).tm_hour
+        hour = time.localtime(float(row["ts"])).tm_hour
         bucket = out.setdefault(str(row["family"]), {})
         bucket[hour] = bucket.get(hour, 0) + 1
     return out
@@ -171,7 +171,7 @@ def report(db_path: Path, hours: Optional[float], queue_bar: float,
            pair_bar: float, top: int, by_hour: bool) -> int:
     rows = load_rows(db_path, hours)
     if not rows:
-        print(f"no non-bootstrap samples in {db_path}")
+        print(f"no samples in {db_path} for the requested window")
         return 1
     stats = summarise(rows, queue_bar, pair_bar)
     span_h = (max(float(r["ts"]) for r in rows)

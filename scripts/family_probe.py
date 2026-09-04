@@ -34,6 +34,7 @@ resumes by being started again against the same `--db`.
 from __future__ import annotations
 
 import argparse
+import calendar
 import json
 import logging
 import re
@@ -242,15 +243,32 @@ def gate_verdict(meta: dict, min_volume_usd: float,
 # --- pure measurement ---------------------------------------------------------
 
 
+def _levels(side: object) -> dict[float, float]:
+    """Price to size for one side, skipping levels the venue sent malformed.
+
+    A level with no `size`, or a `price`/`size` that is not a number, is
+    dropped rather than raised. The alternative loses the whole cycle: the
+    error would travel up through `measure` and `build_rows` into `run_cycle`,
+    which logs "cycle failed" and discards every other market measured in it.
+    """
+    out: dict[float, float] = {}
+    for level in (side or []):
+        if not isinstance(level, dict) or not level.get("price"):
+            continue
+        try:
+            out[float(level["price"])] = float(level["size"])
+        except (TypeError, ValueError, KeyError):
+            continue
+    return out
+
+
 def touch(book: object) -> tuple[Optional[float], Optional[float],
                                  float, float]:
     """Best bid, best ask, and the size resting at each."""
     if not isinstance(book, dict):
         return None, None, 0.0, 0.0
-    bids = {float(x["price"]): float(x["size"])
-            for x in (book.get("bids") or []) if x.get("price")}
-    asks = {float(x["price"]): float(x["size"])
-            for x in (book.get("asks") or []) if x.get("price")}
+    bids = _levels(book.get("bids"))
+    asks = _levels(book.get("asks"))
     if not bids or not asks:
         return None, None, 0.0, 0.0
     bb, ba = max(bids), min(asks)
@@ -518,7 +536,8 @@ def _one_meta(market: dict) -> Optional[dict]:
     days = None
     if end:
         try:
-            stamp = time.mktime(time.strptime(str(end)[:19], "%Y-%m-%dT%H:%M:%S"))
+            stamp = calendar.timegm(
+                time.strptime(str(end)[:19], "%Y-%m-%dT%H:%M:%S"))
             days = (stamp - time.time()) / 86400.0
         except (TypeError, ValueError):
             days = None

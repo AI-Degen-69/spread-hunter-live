@@ -1280,6 +1280,21 @@ td { font-size: 13px; }
   letter-spacing: 0;
 }
 
+/* The settled outcome on the RESOLVED view. It is the winning side's own
+   label, so it is set in the mono face every other venue-supplied string
+   uses. A market that finished without a recorded winner says so in muted
+   text rather than inventing a name. */
+.ot-outcome {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+.ot-outcome-pending {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 /* The status pill and its measurement share one line. The pair cost is plain
    text, not a second pill: a pill reads as a state the row is in, and two of
    them stacked looked like two competing verdicts on the same pair. */

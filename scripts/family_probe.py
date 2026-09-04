@@ -37,6 +37,7 @@ import argparse
 import calendar
 import json
 import logging
+import math
 import re
 import sqlite3
 import sys
@@ -246,19 +247,29 @@ def gate_verdict(meta: dict, min_volume_usd: float,
 def _levels(side: object) -> dict[float, float]:
     """Price to size for one side, skipping levels the venue sent malformed.
 
-    A level with no `size`, or a `price`/`size` that is not a number, is
-    dropped rather than raised. The alternative loses the whole cycle: the
-    error would travel up through `measure` and `build_rows` into `run_cycle`,
-    which logs "cycle failed" and discards every other market measured in it.
+    A level with no `size`, or a `price`/`size` that is not a finite positive
+    number, is dropped rather than raised. The alternative loses the whole
+    cycle: the error would travel up through `measure` and `build_rows` into
+    `run_cycle`, which logs "cycle failed" and discards every other market
+    measured in it.
+
+    `float()` accepts `"nan"` and `"inf"`, and a NaN price silently poisons
+    every comparison downstream: `max(bids)` can return NaN, the crossed-book
+    guard in `measure` compares false against it, and the sample is stored as
+    if the book were sound. Non-finite values are refused here, at the edge.
     """
     out: dict[float, float] = {}
     for level in (side or []):
         if not isinstance(level, dict) or not level.get("price"):
             continue
         try:
-            out[float(level["price"])] = float(level["size"])
+            price = float(level["price"])
+            size = float(level["size"])
         except (TypeError, ValueError, KeyError):
             continue
+        if not (math.isfinite(price) and math.isfinite(size)) or size <= 0.0:
+            continue
+        out[price] = size
     return out
 
 

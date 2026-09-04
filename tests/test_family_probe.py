@@ -235,6 +235,16 @@ def test_touch_skips_a_level_the_venue_sent_without_a_size():
     assert touch(book) == (0.39, 0.43, 10.0, 8.0)
 
 
+def test_touch_refuses_non_finite_and_empty_levels():
+    """A NaN price would poison `max`, and the crossed-book guard with it."""
+    book = {"bids": [{"price": "nan", "size": "10"},
+                     {"price": "0.39", "size": "10"}],
+            "asks": [{"price": "0.43", "size": "inf"},
+                     {"price": "0.44", "size": "0"},
+                     {"price": "0.45", "size": "8"}]}
+    assert touch(book) == (0.39, 0.45, 10.0, 8.0)
+
+
 def test_one_meta_reads_end_date_as_utc(monkeypatch):
     """The venue stamps `endDate` in UTC, so the machine offset must not shift it.
 

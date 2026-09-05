@@ -153,6 +153,25 @@ def test_float_mark_older_than_the_newest_account_mark_is_not_current(live_db):
     assert p["open_committed_usd"] is None
 
 
+def test_a_float_mark_stamped_at_the_account_mark_is_not_current(live_db):
+    """An equal stamp does not prove the float was written second.
+
+    `time.time()` gives the two writes distinct stamps in any real sweep, so a
+    tie means the ordering is unknown -- and unknown reads as unmeasured, not
+    as a float the venue may already have replaced.
+    """
+    reg = OrderRegistry(live_db)
+    t0 = time.time() - 3600
+    _seed(reg, t0)
+    _mark(reg, t0 + 120, 81.28)
+    reg.log_float_mark(unrealized_usd=-0.54, committed_open_usd=2.76,
+                       naked_usd=0.0, ts=t0 + 120, run_id=RUN)
+
+    p = report(db_path=live_db, run_id="all")["portfolio"]
+    assert p["unrealized_measured"] is False
+    assert p["unrealized_usd"] is None
+
+
 def test_a_float_mark_from_the_current_sweep_still_counts(live_db):
     """Each live sweep writes the account mark first, the float mark second.
 

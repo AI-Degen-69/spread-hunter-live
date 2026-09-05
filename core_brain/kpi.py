@@ -1360,6 +1360,9 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # printing its $2.76 committed nine days later, because no close had been
     # written in between. Every live sweep writes the account mark first and
     # the float mark a fraction of a second after, so a healthy cycle passes.
+    # Strictly newer, not equal: an equal stamp does not prove the float was
+    # written after the account read, and the safe reading of an unprovable
+    # order is "not measured" rather than a float the venue may have replaced.
     latest_account_ts = max(
         (float(am["ts"]) for am in all_account_marks if am.get("ts") is not None),
         default=None,
@@ -1367,7 +1370,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     mark_is_current = (
         latest_mark is not None
         and (latest_close_ts is None or float(latest_mark["ts"]) >= latest_close_ts)
-        and (latest_account_ts is None or float(latest_mark["ts"]) >= latest_account_ts)
+        and (latest_account_ts is None or float(latest_mark["ts"]) > latest_account_ts)
     )
     unrealized_usd = float(latest_mark.get("unrealized_usd") or 0.0) if mark_is_current else None
     open_committed_usd = (

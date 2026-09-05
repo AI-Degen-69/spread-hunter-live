@@ -243,6 +243,38 @@ def test_main_reports_on_a_real_store(tmp_path, capsys):
     assert "=== today's gate ===" in out
 
 
+def test_hours_counts_back_from_the_chosen_runs_newest_sample(tmp_path):
+    """Measured globally, `--run-id old --hours 1` returns nothing at all.
+
+    The floor would be an hour before the NEWER run's last sample, which is
+    after everything the old run ever wrote -- an empty report that reads as
+    "this run found nothing" rather than "you asked about an hour it was not
+    running".
+    """
+    path = tmp_path / "probe.db"
+    _store(path, [_sample(run_id="old", ts=BASE_TS),
+                  _sample(run_id="new", ts=BASE_TS + 90_000.0, cycle=2)])
+    assert len(load_rows(path, hours=1.0, run_id="old")) == 1
+    assert len(load_rows(path, hours=1.0, run_id="new")) == 1
+    assert len(load_rows(path, hours=1.0, run_id=ALL_RUNS)) == 1
+
+
+def test_main_refuses_a_simulation_it_cannot_run(tmp_path, capsys):
+    """A size or bar that cannot describe a trade is refused, not simulated.
+
+    A negative size buys negative shares: it lowers the queue a moment must
+    clear and books the pair at an inverted price, so the nonsense run reports
+    MORE fills and more profit.
+    """
+    path = tmp_path / "probe.db"
+    _store(path, [_sample()] + _forward())
+    for bad in (["--size-usd", "-15"], ["--horizon-min", "0"],
+                ["--hours", "-1"], ["--pair-bar", "1.5"],
+                ["--max-gap-min", "-5"]):
+        assert main(["--db", str(path)] + bad) == 2
+        assert bad[0] in capsys.readouterr().out
+
+
 def test_main_refuses_a_store_that_is_not_there(tmp_path, capsys):
     assert main(["--db", str(tmp_path / "missing.db")]) == 1
     assert "run scripts/family_probe.py first" in capsys.readouterr().out

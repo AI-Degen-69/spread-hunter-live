@@ -157,20 +157,33 @@ def load_rows(db_path: Path | str, hours: Optional[float],
     machine was idle. Pooling them divides real pairs by hours nobody was
     watching, and reports the strategy as worse than it is. Pass
     `--run-id all` to pool them anyway, or a run id to pick one.
+
+    `--hours` counts back from the newest sample IN THE CHOSEN RUN, not in the
+    store. Measured globally, `--run-id <old> --hours 1` walks back one hour
+    from a newer run's last sample and returns nothing at all -- an empty
+    report that reads as "this run found nothing" rather than "you asked about
+    an hour this run was not running".
     """
     uri = f"file:{Path(db_path).as_posix()}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        newest = conn.execute("SELECT MAX(ts) FROM probe_samples").fetchone()[0]
-        if newest is None:
-            return []
-        floor = 0.0 if hours is None else float(newest) - hours * 3600.0
         if run_id == ALL_RUNS:
+            newest = conn.execute(
+                "SELECT MAX(ts) FROM probe_samples").fetchone()[0]
+            if newest is None:
+                return []
+            floor = 0.0 if hours is None else float(newest) - hours * 3600.0
             return [dict(row) for row in conn.execute(
                 "SELECT * FROM probe_samples WHERE ts >= ? "
                 "ORDER BY condition_id, ts", (floor,)).fetchall()]
         chosen = run_id or newest_run_id(conn)
+        newest = conn.execute(
+            "SELECT MAX(ts) FROM probe_samples WHERE run_id = ?",
+            (chosen,)).fetchone()[0]
+        if newest is None:
+            return []
+        floor = 0.0 if hours is None else float(newest) - hours * 3600.0
         return [dict(row) for row in conn.execute(
             "SELECT * FROM probe_samples WHERE ts >= ? AND run_id = ? "
             "ORDER BY condition_id, ts", (floor, chosen)).fetchall()]
@@ -436,6 +449,32 @@ def _print_totals(moments: list[Moment], stats: list[FamilyFill],
               f"{len(pairs) / days:>6.2f} pairs/day  {net:>8.2f} net $/day")
 
 
+def _invalid_argument(args) -> Optional[str]:
+    """The first parameter that cannot describe a simulation, or None.
+
+    A negative `--size-usd` buys negative shares: it LOWERS the queue depth a
+    moment has to clear and then books the pair at an inverted price, so the
+    run reports more fills and more profit the more nonsense it is given. A
+    `--pair-bar` above 1.0 admits pairs that cost more than the dollar they
+    merge into -- the one thing this whole strategy exists to refuse.
+    """
+    for name, value in (("--size-usd", args.size_usd),
+                        ("--horizon-min", args.horizon_min),
+                        ("--queue-bar", args.queue_bar),
+                        ("--top", args.top)):
+        if value is not None and value <= 0:
+            return f"{name} must be greater than 0 (got {value})"
+    for name, value in (("--hours", args.hours),
+                        ("--cooldown-min", args.cooldown_min),
+                        ("--max-gap-min", args.max_gap_min)):
+        if value is not None and value < 0:
+            return f"{name} cannot be negative (got {value})"
+    if not 0.0 < args.pair_bar <= 1.0:
+        return (f"--pair-bar must be in (0, 1]: a pair costing more than "
+                f"$1.00 cannot profit on merge (got {args.pair_bar})")
+    return None
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=DEFAULT_DB)
@@ -460,6 +499,10 @@ def main(argv=None) -> int:
                              f"'{ALL_RUNS}' pools every run in the store)")
     parser.add_argument("--top", type=int, default=30)
     args = parser.parse_args(argv)
+    invalid = _invalid_argument(args)
+    if invalid:
+        print(invalid)
+        return 2
     path = Path(args.db)
     if not path.exists():
         print(f"no store at {path} -- run scripts/family_probe.py first")

@@ -140,6 +140,14 @@ def _resolve_run_id() -> str:
 
 _CURRENT_RUN_ID = _resolve_run_id()
 
+# Rows the dashboard's Sync wrote from the venue's own account history. They
+# describe the WALLET -- every position it ever closed and everything it holds
+# open, whoever opened them and whenever -- so no run may count them as its own
+# trading record. `venue_sync` stamps both the closes and the float mark it
+# writes with this sentinel, and run analytics drop it under every filter,
+# including "all".
+VENUE_SYNC_RUN_ID = "venue_sync"
+
 
 def get_run_id() -> str:
     """Return the current process/session run_id."""

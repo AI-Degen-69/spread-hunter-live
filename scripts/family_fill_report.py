@@ -3,8 +3,16 @@
     python scripts/family_fill_report.py                     # whole store
     python scripts/family_fill_report.py --hours 6           # last 6 hours
     python scripts/family_fill_report.py --count-adverse     # upper bound
+    python scripts/family_fill_report.py --run-id all        # pool every run
 
 Read-only. Opens the store with `mode=ro` and never writes to it.
+
+ONE RUN, AND ONLY THE HOURS IT WATCHED. The store is resumable, so it holds
+every probe that ever wrote to it; the newest run is read unless `--run-id`
+says otherwise. Within that run, the per-day denominator counts only intervals
+the probe was actually sampling -- a missed cycle or a machine asleep is time
+no moment could have been found in, and dividing by it reports the strategy as
+worse than it is.
 
 `family_probe_report.py` answers "how often does a family LOOK quotable" --
 `pair < max_pair_cost` and both queues inside the bar, counted on snapshots.
@@ -130,8 +138,26 @@ class FamilyFill:
         return self.gross_per_day - self.cost_per_day
 
 
-def load_rows(db_path: Path | str, hours: Optional[float]) -> list[dict]:
-    """Every sample in the window, ordered so each market is a timeline."""
+ALL_RUNS = "all"
+
+
+def newest_run_id(conn: sqlite3.Connection) -> Optional[str]:
+    """The run that wrote the most recent sample."""
+    row = conn.execute(
+        "SELECT run_id FROM probe_samples ORDER BY ts DESC LIMIT 1").fetchone()
+    return None if row is None else str(row[0])
+
+
+def load_rows(db_path: Path | str, hours: Optional[float],
+              run_id: Optional[str] = None) -> list[dict]:
+    """Every sample in the window, ordered so each market is a timeline.
+
+    ONE RUN BY DEFAULT. The store is resumable, so it holds every probe that
+    ever wrote to it, and consecutive runs are separated by however long the
+    machine was idle. Pooling them divides real pairs by hours nobody was
+    watching, and reports the strategy as worse than it is. Pass
+    `--run-id all` to pool them anyway, or a run id to pick one.
+    """
     uri = f"file:{Path(db_path).as_posix()}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
     conn.row_factory = sqlite3.Row
@@ -140,10 +166,14 @@ def load_rows(db_path: Path | str, hours: Optional[float]) -> list[dict]:
         if newest is None:
             return []
         floor = 0.0 if hours is None else float(newest) - hours * 3600.0
-        cursor = conn.execute(
-            "SELECT * FROM probe_samples WHERE ts >= ? "
-            "ORDER BY condition_id, ts", (floor,))
-        return [dict(row) for row in cursor.fetchall()]
+        if run_id == ALL_RUNS:
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM probe_samples WHERE ts >= ? "
+                "ORDER BY condition_id, ts", (floor,)).fetchall()]
+        chosen = run_id or newest_run_id(conn)
+        return [dict(row) for row in conn.execute(
+            "SELECT * FROM probe_samples WHERE ts >= ? AND run_id = ? "
+            "ORDER BY condition_id, ts", (floor, chosen)).fetchall()]
     finally:
         conn.close()
 
@@ -319,20 +349,34 @@ def summarise(moments: list[Moment], rows: list[dict],
     return out
 
 
-def _span_days(rows: list[dict]) -> float:
-    stamps = [float(r["ts"]) for r in rows]
-    return (max(stamps) - min(stamps)) / 86400.0 if len(stamps) > 1 else 0.0
+def _span_days(rows: list[dict],
+               max_gap_min: float = DEFAULT_MAX_GAP_MIN) -> float:
+    """Days the probe was WATCHING, which is not the clock between the ends.
+
+    Every per-day figure here is a count divided by this. A hole in the
+    sampling -- a missed cycle, a machine asleep between runs -- is time no
+    moment could have been found in, and counting it as denominator reports
+    the strategy as worse than it is. Holes longer than `max_gap_min` are
+    dropped, the same cut `simulate_moment` makes when it refuses to credit
+    drain across a gap nobody watched.
+    """
+    stamps = sorted({float(r["ts"]) for r in rows})
+    if len(stamps) < 2:
+        return 0.0
+    cap = max_gap_min * 60.0
+    watched = sum(b - a for a, b in zip(stamps, stamps[1:]) if b - a <= cap)
+    return watched / 86400.0
 
 
 def report(db_path: Path, hours: Optional[float], queue_bar: float,
            pair_bar: float, horizon_min: float, cooldown_min: float,
            size_usd: float, count_adverse: bool, max_gap_min: float,
-           top: int) -> int:
-    rows = load_rows(db_path, hours)
+           run_id: Optional[str], top: int) -> int:
+    rows = load_rows(db_path, hours, run_id)
     if not rows:
         print(f"no samples in {db_path} for the requested window")
         return 1
-    days = _span_days(rows)
+    days = _span_days(rows, max_gap_min)
     moments = simulate(rows, queue_bar, pair_bar, horizon_min, cooldown_min,
                        size_usd, count_adverse, max_gap_min)
     if not moments:
@@ -343,8 +387,11 @@ def report(db_path: Path, hours: Optional[float], queue_bar: float,
     stats = summarise(moments, rows, days)
     mode = ("upper bound (adverse moves count as fills)" if count_adverse
             else "strict (a level that stops being the touch is dead)")
-    print(f"{len(rows)} samples over {days * 24:.1f}h, "
-          f"{len(moments)} quotable moments, {len(stats)} families")
+    runs = sorted({str(r["run_id"]) for r in rows})
+    label = runs[0] if len(runs) == 1 else f"{len(runs)} runs pooled"
+    print(f"{len(rows)} samples, {days * 24:.1f}h watched, "
+          f"{len(moments)} quotable moments, {len(stats)} families "
+          f"[{label}]")
     print(f"entry: queue <= {queue_bar:.0f}min AND pair < {pair_bar:.2f}; "
           f"${size_usd:.0f}/pair, {horizon_min:.0f}min horizon")
     print(f"fills: {mode}\n")
@@ -408,6 +455,9 @@ def main(argv=None) -> int:
     parser.add_argument("--count-adverse", action="store_true",
                         help="count a level the market traded through as a "
                              "fill: the upper bound, not the estimate")
+    parser.add_argument("--run-id", default=None,
+                        help=f"which probe run to read (default: the newest; "
+                             f"'{ALL_RUNS}' pools every run in the store)")
     parser.add_argument("--top", type=int, default=30)
     args = parser.parse_args(argv)
     path = Path(args.db)
@@ -418,7 +468,8 @@ def main(argv=None) -> int:
                 else args.cooldown_min)
     return report(path, args.hours, args.queue_bar, args.pair_bar,
                   args.horizon_min, cooldown, args.size_usd,
-                  args.count_adverse, args.max_gap_min, args.top)
+                  args.count_adverse, args.max_gap_min, args.run_id,
+                  args.top)
 
 
 if __name__ == "__main__":

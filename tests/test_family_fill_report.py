@@ -5,9 +5,11 @@ import sqlite3
 from pathlib import Path
 
 from scripts.family_fill_report import (
+    ALL_RUNS,
     DEFAULT_HORIZON_MIN,
     _level_state,
     _rate,
+    _span_days,
     load_rows,
     main,
     qualifies,
@@ -209,6 +211,27 @@ def test_load_rows_windows_on_the_newest_sample(tmp_path):
     _store(path, [_sample(), _sample(ts=BASE_TS + 7200.0, cycle=2)])
     assert len(load_rows(path, hours=None)) == 2
     assert len(load_rows(path, hours=1.0)) == 1
+
+
+def test_load_rows_reads_one_run_unless_told_to_pool(tmp_path):
+    # A resumable store holds every probe that ever wrote to it. Pooling two
+    # runs across the hours between them divides real pairs by hours nobody
+    # watched, so the newest run is the default.
+    path = tmp_path / "probe.db"
+    _store(path, [_sample(run_id="old", ts=BASE_TS),
+                  _sample(run_id="new", ts=BASE_TS + 90_000.0, cycle=2)])
+    assert {r["run_id"] for r in load_rows(path, None)} == {"new"}
+    assert {r["run_id"] for r in load_rows(path, None, "old")} == {"old"}
+    assert len(load_rows(path, None, ALL_RUNS)) == 2
+
+
+def test_span_counts_hours_watched_not_the_clock_between_the_ends():
+    # Two 6-minute cycles, then a 90-minute hole, then one more. The probe
+    # watched 12 minutes, not 102, and every per-day figure divides by this.
+    rows = [_sample(ts=BASE_TS + minutes * 60.0)
+            for minutes in (0.0, 6.0, 12.0, 102.0)]
+    assert round(_span_days(rows) * 24 * 60) == 12
+    assert round(_span_days(rows, max_gap_min=120.0) * 24 * 60) == 102
 
 
 def test_main_reports_on_a_real_store(tmp_path, capsys):

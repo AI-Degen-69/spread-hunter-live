@@ -601,6 +601,24 @@ def _funnel_from_pipeline(
     }
 
 
+def _is_live_registry(db_path: Path | str | None) -> bool:
+    """Whether this report is reading the production registry.
+
+    `None` means the caller took `OrderRegistry`'s default, which is that
+    registry. Same rule as `dashboard.server.resolve_db_identity`, kept here
+    rather than imported so `core_brain` does not depend on the dashboard: a
+    path the platform refuses to resolve is NOT live, because every use of this
+    flag prefers the modelled number when it cannot prove it is reading the
+    real account.
+    """
+    if db_path is None:
+        return True
+    try:
+        return Path(db_path).resolve() == Path(DEFAULT_DB_PATH).resolve()
+    except (OSError, ValueError, RuntimeError):
+        return False
+
+
 def _is_pipeline_shadow_db(db_path: Path | str) -> bool:
     # A per-run shadow registry (vs the live orders.db). The menu mints run dbs
     # as NN_shadow_DD-MM_HH-mm.db (run-id naming), and older flows used
@@ -1336,9 +1354,20 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # exists: its float has since been realised and is already in realized_pnl.
     # Counting both would bill the same money twice on the headline tile.
     latest_close_ts = float(sorted_closes[-1]["ts"]) if sorted_closes else None
+    # ...and a mark older than the newest ACCOUNT mark describes a book the
+    # venue has since re-measured in full. Being newer than the last close is
+    # not enough: on the production registry a float mark from 28-08 was still
+    # printing its $2.76 committed nine days later, because no close had been
+    # written in between. Every live sweep writes the account mark first and
+    # the float mark a fraction of a second after, so a healthy cycle passes.
+    latest_account_ts = max(
+        (float(am["ts"]) for am in all_account_marks if am.get("ts") is not None),
+        default=None,
+    )
     mark_is_current = (
         latest_mark is not None
         and (latest_close_ts is None or float(latest_mark["ts"]) >= latest_close_ts)
+        and (latest_account_ts is None or float(latest_mark["ts"]) >= latest_account_ts)
     )
     unrealized_usd = float(latest_mark.get("unrealized_usd") or 0.0) if mark_is_current else None
     open_committed_usd = (
@@ -1446,13 +1475,30 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # footnote. The registry records no deposits, so it has nothing real to
     # reconcile the venue's balance against.
 
+    # WHICH EQUITY THE HEADLINE MEANS, decided by which store is open.
+    #
+    # #97 put the card on registry equity because a shadow run's simulated gain
+    # never reaches the wallet, so a wallet headline over a registry chart gave
+    # three numbers nobody could reconcile. That argument is about the shadow
+    # case. On the production registry the wallet IS the answer to the question
+    # the card asks, and registry equity cannot see venue-side activity it never
+    # recorded -- which is how the page came to print $78.43 while Polymarket
+    # showed $81.28 in the next tab.
+    venue_value = account.get("account_value_usd")
+    on_live_registry = _is_live_registry(db_path)
+    use_venue = on_live_registry and venue_value is not None
+    total_value = float(venue_value) if use_venue else starting_capital + total_pnl
+
     portfolio = {
         "starting_capital": starting_capital,
         "realized_pnl": realized_pnl,
         "unrealized_usd": unrealized_usd,
         "unrealized_measured": mark_is_current,
         "total_pnl": total_pnl,
-        "total_value": starting_capital + total_pnl,
+        "total_value": total_value,
+        # Which of the two the headline above is, so the page never has to
+        # guess and a reader can tell a wallet number from a modelled one.
+        "total_value_basis": "venue" if use_venue else "registry",
         # The wallet's account-wide realised total, kept out of every figure
         # above it. Named so the Sync button's number is still readable as what
         # it is: history this bot did not make.

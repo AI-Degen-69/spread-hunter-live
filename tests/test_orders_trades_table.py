@@ -1,14 +1,18 @@
-"""The Orders & Trades table: three views of the same run.
+"""The Orders & Trades table: four views of the same run.
 
-A market the Market Filter graduated, an order resting on the book, and a
-filled leg the account is holding are three stages of one object, and the
-operator reads them in that order. They are three views of one table rather
-than three panels because only the last stage has PnL: an order on the book
-is not a position, and a PnL column beside it invites the reading that it is.
+A market the Market Filter graduated, an order resting on the book, a filled
+leg the account is holding and a market that has settled are four stages of
+one object, and the operator reads them in that order. They are four views of
+one table rather than four panels because only the middle stages have live
+PnL: an order on the book is not a position, and a PnL column beside it
+invites the reading that it is.
 
 The column sets encode that. ACTIVE MARKETS carries no share count -- nothing
 is owned yet. OPEN ORDERS carries no PnL -- nothing is exposed yet. POSITIONS
-carries both.
+carries both. RESOLVED drops Unrealized and names the outcome instead: the
+market settled, so there is no mark left for the position to move against,
+and a market sitting under POSITIONS with a known winner reads as live
+exposure that no longer exists.
 """
 from __future__ import annotations
 
@@ -29,6 +33,7 @@ requires_node = pytest.mark.skipif(shutil.which("node") is None,
 CID_QUOTED = "0xquoted"
 CID_HELD = "0xheld"
 CID_DONE = "0xresolved"
+CID_SETTLED = "0xsettled"
 
 
 def _render(view: str, kpi: dict | None = None, state: dict | None = None) -> dict:
@@ -79,6 +84,18 @@ def _kpi() -> dict:
                 "total_cost": 0, "pair_cost": None, "realized_pnl": 1.5,
                 "quotes": [],
             },
+            # The case the RESOLVED view exists for: the market settled and the
+            # winner is known, but the legs are still on the books because
+            # nothing has merged or redeemed them yet.
+            CID_SETTLED: {
+                "condition_id": CID_SETTLED, "title": "Settled Market", "category": "LOL",
+                "days_to_resolve": None, "volume_24h": 51000.0, "resolved": True,
+                "resolution": {"winner": "Dplus KIA", "resolved_ts": 1788526463.068991},
+                "quotes_count": 4, "up_sh": 23, "dn_sh": 23, "total_sh": 46,
+                "up_cost": 15.62, "dn_cost": 6.52, "total_cost": 22.14,
+                "pair_cost": 0.963, "realized_pnl": 1.21,
+                "quotes": [],
+            },
         }
     }
 
@@ -109,12 +126,13 @@ def _state() -> dict:
 # ── The shape of the three views ────────────────────────────────────────────
 
 @requires_node
-def test_the_three_views_are_the_three_stages_of_a_trade():
+def test_the_four_views_are_the_four_stages_of_a_trade():
     # Arrange / Act
     rendered = _render("active-markets")
 
     # Assert
-    assert rendered["views"] == ["active-markets", "open-orders", "positions"]
+    assert rendered["views"] == ["active-markets", "open-orders", "positions",
+                                 "resolved"]
 
 
 @requires_node
@@ -507,7 +525,8 @@ def test_the_width_floor_does_not_target_the_first_cell_by_position():
 
 
 @requires_node
-@pytest.mark.parametrize("view", ["active-markets", "open-orders", "positions"])
+@pytest.mark.parametrize("view", ["active-markets", "open-orders", "positions",
+                                  "resolved"])
 def test_every_view_tags_its_market_cell(view):
     # Arrange — the width floor is keyed off the class now, so a view that
     # forgets it loses the floor and folds the title onto three lines.
@@ -596,6 +615,92 @@ def test_positions_says_so_when_nothing_is_held():
     assert "No legs have filled, so nothing is held." in rendered["html"]
 
 
+# ── Resolved ────────────────────────────────────────────────────────────────
+
+@requires_node
+def test_a_settled_market_leaves_positions():
+    # Arrange — the market resolved, so the legs are no longer live exposure.
+    # Leaving them on POSITIONS reads as a position that can still move.
+    rendered = _render("positions", _kpi(), _state())
+
+    # Act / Assert
+    assert "Settled Market" not in rendered["html"]
+    assert "Held Market" in rendered["html"]
+
+
+@requires_node
+def test_resolved_lists_the_settled_market_and_names_the_outcome():
+    # Arrange — the operator's question on a settled market is which side won,
+    # not what the pair is marked at.
+    rendered = _render("resolved", _kpi(), _state())
+
+    # Act / Assert — one row per held leg, the market named once across both.
+    assert rendered["rows"] == 2
+    assert rendered["html"].count("Settled Market") == 1
+    assert "Dplus KIA" in rendered["html"]
+
+
+@requires_node
+def test_resolved_excludes_a_market_with_no_legs_held():
+    # Arrange — CID_DONE settled but nothing was ever filled on it. A row with
+    # no shares is a market the account never took a position in.
+    rendered = _render("resolved", _kpi(), _state())
+
+    # Act / Assert
+    assert "Resolved Market" not in rendered["html"]
+
+
+@requires_node
+def test_resolved_drops_unrealized_and_carries_the_outcome():
+    # Arrange — a settled market has no mark left to move against, so an
+    # Unrealized column there is a number that can never change again.
+    rendered = _render("resolved", _kpi(), _state())
+
+    # Act / Assert
+    assert rendered["columns"] == ["Market", "Outcome", "Leg", "Size",
+                                   "Avg Price", "Cost", "Settled Value",
+                                   "Realized"]
+    assert "Unrealized" not in rendered["columns"]
+
+
+@requires_node
+def test_resolved_marks_a_settled_pair_at_par():
+    # Arrange — 23 UP and 23 DOWN merge back into $1.00 each whichever side
+    # won. That is the whole strategy, and it does not depend on the outcome.
+    rendered = _render("resolved", _kpi(), _state())
+
+    # Act / Assert
+    assert "$23.00" in rendered["html"]
+
+
+@requires_node
+def test_resolved_says_resolved_when_no_winner_was_recorded():
+    # Arrange — the ranker's days_to_resolve can go negative before the
+    # resolution sweeper writes a winner. Naming one anyway would be inventing
+    # a venue fact the registry does not hold.
+    kpi = _kpi()
+    market = kpi["by_market"][CID_SETTLED]
+    market.pop("resolution")
+    market["resolved"] = False
+    market["days_to_resolve"] = -0.5
+
+    # Act
+    rendered = _render("resolved", kpi, _state())
+
+    # Assert
+    assert "Settled Market" in rendered["html"]
+    assert "ot-outcome-pending" in rendered["html"]
+
+
+@requires_node
+def test_resolved_says_so_when_nothing_has_settled():
+    # Arrange / Act
+    rendered = _render("resolved", {"by_market": {}}, {"orders": []})
+
+    # Assert
+    assert "No market this run holds legs on has settled yet." in rendered["html"]
+
+
 # ── Tab counts ──────────────────────────────────────────────────────────────
 
 @requires_node
@@ -609,6 +714,7 @@ def test_each_tab_counts_its_own_rows():
         "active-markets": 2,
         "open-orders": 2,
         "positions": 1,
+        "resolved": 1,
     }
 
 
@@ -622,7 +728,7 @@ def test_the_panel_is_on_the_served_page():
     assert 'id="orders-trades-card"' in index
     assert 'id="orders-trades-head"' in index
     assert 'id="orders-trades-body"' in index
-    for view in ("active-markets", "open-orders", "positions"):
+    for view in ("active-markets", "open-orders", "positions", "resolved"):
         assert f'data-ot-view="{view}"' in index
 
 

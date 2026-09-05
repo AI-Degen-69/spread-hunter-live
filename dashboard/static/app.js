@@ -2924,18 +2924,25 @@ function renderExpandedOrders(orders, fills, showCancelled) {
  *                    is looking at. No share counts here: nothing is owned yet.
  *   OPEN ORDERS    — resting in the book. Size, price, what it would cost.
  *                    No PnL here: an order in the book is not a position.
- *   POSITIONS      — filled legs. This is where PnL exists, because this is
- *                    the only stage where the account is actually exposed.
+ *   POSITIONS      — filled legs on a market that has NOT resolved. This is
+ *                    where PnL exists, because this is the only stage where
+ *                    the account is still exposed.
+ *   RESOLVED        — the market settled and the outcome is known. The legs
+ *                    are still on the books until they are merged or redeemed,
+ *                    but nothing about them can move any more, so leaving them
+ *                    under POSITIONS reads as live exposure that no longer
+ *                    exists.
  */
 
-const OT_VIEWS = ['active-markets', 'open-orders', 'positions'];
+const OT_VIEWS = ['active-markets', 'open-orders', 'positions', 'resolved'];
 const OT_STORAGE_KEY = 'sh-orders-trades-view';
 let currentOrdersTradesView = 'active-markets';
 
 const OT_NOTES = {
   'active-markets': 'Markets that graduated the Market Filter and are being quoted.',
   'open-orders': 'Orders resting on the book. Nothing is held yet, so there is no PnL.',
-  'positions': 'Filled legs the account is holding.',
+  'positions': 'Filled legs the account is holding on markets that have not settled.',
+  'resolved': 'Markets that settled. The outcome is known, so nothing here can move.',
 };
 
 const OT_COLUMNS = {
@@ -2949,6 +2956,11 @@ const OT_COLUMNS = {
   // without inventing a per-leg figure that does not exist.
   'positions': ['Market', 'Leg', 'Size', 'Avg Price', 'Cost',
                 'Mark Value', 'Unrealized', 'Realized'],
+  // No Unrealized column: the market settled, so there is no mark left to
+  // move against. What is held is worth what it settles at, and the only
+  // open question is whether it has been merged or redeemed yet.
+  'resolved': ['Market', 'Outcome', 'Leg', 'Size', 'Avg Price', 'Cost',
+               'Settled Value', 'Realized'],
 };
 
 /* The quote log writes the down leg as `DOWN`; orders and the pair summary
@@ -3343,13 +3355,87 @@ function openOrdersRows(kpi, state) {
   }).join('');
 }
 
+/* Markets with at least one filled leg, split by whether the market has
+ * settled. `finished` picks the side of the split: false is live exposure
+ * (POSITIONS), true is settled (RESOLVED). One selector, because a market
+ * that appears in both tables -- or in neither -- is the bug this split
+ * exists to prevent. */
+function heldMarketEntries(kpi, finished) {
+  return Object.entries((kpi && kpi.by_market) || {})
+    .filter(([, m]) => (Number(m.total_sh) || 0) > 0
+                       && isFinishedMarket(m) === finished)
+    .sort((a, b) => (Number(b[1].total_cost) || 0) - (Number(a[1].total_cost) || 0));
+}
+
+/* One row per held leg, in the same order the book reads: UP above DOWN.
+ * A leg with no shares is not a row -- there is nothing being held on it. */
+function heldLegs(m) {
+  return [
+    { leg: 'UP', size: Number(m.up_sh) || 0, cost: Number(m.up_cost) || 0 },
+    { leg: 'DOWN', size: Number(m.dn_sh) || 0, cost: Number(m.dn_cost) || 0 },
+  ].filter(entry => entry.size > 0);
+}
+
+/* The settled outcome as the operator reads it on the venue: the winning
+ * side's label. A market can be finished without the resolution sweeper
+ * having recorded a winner yet (the ranker's days_to_resolve went negative
+ * first), and that is `Resolved` with no name rather than a fabricated one. */
+function outcomeCell(m) {
+  const res = m && m.resolution;
+  if (!res) return '<span class="ot-outcome-pending">Resolved</span>';
+  const when = (res.resolved_ts === null || res.resolved_ts === undefined)
+    ? '' : `<div class="caption-muted">${fmtAgo(res.resolved_ts)}</div>`;
+  if (!res.winner) return `<span class="ot-outcome-pending">Resolved</span>${when}`;
+  return `<div class="ot-outcome mono">${esc(res.winner)}</div>${when}`;
+}
+
+function resolvedMarketsRows(kpi) {
+  const entries = heldMarketEntries(kpi, true);
+
+  if (!entries.length) {
+    return otEmptyRow('resolved', 'No market this run holds legs on has settled yet.');
+  }
+
+  return entries.map(([cid, m], marketIndex) => {
+    // A settled pair is worth exactly $1.00 a pair whichever side won -- that
+    // is the whole strategy -- so the mark is the pair count, not a mid.
+    const mark = positionMarkValue(m, latestLegMids(m));
+    const status = pairStatus(Number(m.up_sh) || 0, Number(m.dn_sh) || 0);
+    const legs = heldLegs(m);
+    if (!legs.length) return '';
+
+    const pairTags = pairSummary(status, (status === 'unpaired') ? null : m.pair_cost);
+    const span = legs.length;
+
+    return legs.map((entry, legIndex) => {
+      const rowClass = ['ot-pair-row'];
+      if (legIndex === 0) rowClass.push('ot-pair-start');
+      if (marketIndex % 2 === 1) rowClass.push('ot-pair-alt');
+      const avgPrice = entry.size > 0 ? entry.cost / entry.size : null;
+      const pairCells = legIndex === 0
+        ? `<td class="ot-market" rowspan="${span}">${marketCell(m, cid)}${pairTags}</td>
+      <td rowspan="${span}">${outcomeCell(m)}</td>`
+        : '';
+      const pairNumbers = legIndex === 0
+        ? `<td class="mono ot-pair-value" rowspan="${span}">${mark === null ? '--' : fmtUSD(mark)}</td>
+      <td class="mono ot-pair-value" rowspan="${span}">${signedUSD(m.realized_pnl)}</td>`
+        : '';
+      return `<tr class="${rowClass.join(' ')}" data-cid="${esc(cid)}" data-leg="${esc(entry.leg)}">
+      ${pairCells}
+      <td><span class="pill ${entry.leg === 'UP' ? 'active' : 'reconnecting'}">${esc(entry.leg)}</span></td>
+      <td class="mono">${fmtShares(entry.size)}</td>
+      <td class="mono">${fmtPrice(avgPrice)}</td>
+      <td class="mono">${fmtUSD(entry.cost)}</td>
+      ${pairNumbers}
+    </tr>`;
+    }).join('');
+  }).join('');
+}
+
 function positionsRows(kpi) {
-  const entries = Object.entries((kpi && kpi.by_market) || {})
-    .filter(([, m]) => (Number(m.total_sh) || 0) > 0);
+  const entries = heldMarketEntries(kpi, false);
 
   if (!entries.length) return otEmptyRow('positions', 'No legs have filled, so nothing is held.');
-
-  entries.sort((a, b) => (Number(b[1].total_cost) || 0) - (Number(a[1].total_cost) || 0));
 
   return entries.map(([cid, m], marketIndex) => {
     const mids = latestLegMids(m);
@@ -3360,18 +3446,13 @@ function positionsRows(kpi) {
     const dn = Number(m.dn_sh) || 0;
     const status = pairStatus(up, dn);
 
-    // One row per held leg, in the same order the book reads: UP above DOWN.
-    // A leg with no shares is not a row -- there is nothing being held on it.
-    const heldLegs = [
-      { leg: 'UP', size: up, cost: Number(m.up_cost) || 0 },
-      { leg: 'DOWN', size: dn, cost: Number(m.dn_cost) || 0 },
-    ].filter(entry => entry.size > 0);
-    if (!heldLegs.length) return '';
+    const legs = heldLegs(m);
+    if (!legs.length) return '';
 
     const pairTags = pairSummary(status, (status === 'unpaired') ? null : m.pair_cost);
-    const span = heldLegs.length;
+    const span = legs.length;
 
-    return heldLegs.map((entry, legIndex) => {
+    return legs.map((entry, legIndex) => {
       const rowClass = ['ot-pair-row'];
       if (legIndex === 0) rowClass.push('ot-pair-start');
       if (marketIndex % 2 === 1) rowClass.push('ot-pair-alt');
@@ -3404,13 +3485,17 @@ function ordersTradesCounts(kpi, state) {
   return {
     'active-markets': markets.filter(([cid, m]) => isQuotedMarket(m, ordersByMarket[cid])).length,
     'open-orders': ((state && state.orders) || []).filter(isRestingOrder).length,
-    'positions': markets.filter(([, m]) => (Number(m.total_sh) || 0) > 0).length,
+    'positions': markets.filter(([, m]) => (Number(m.total_sh) || 0) > 0
+                                            && !isFinishedMarket(m)).length,
+    'resolved': markets.filter(([, m]) => (Number(m.total_sh) || 0) > 0
+                                          && isFinishedMarket(m)).length,
   };
 }
 
 function ordersTradesRows(view, kpi, state) {
   if (view === 'open-orders') return openOrdersRows(kpi, state);
   if (view === 'positions') return positionsRows(kpi);
+  if (view === 'resolved') return resolvedMarketsRows(kpi);
   return activeMarketsRows(kpi, state);
 }
 
@@ -4296,7 +4381,8 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = { renderPositionDistributionChart, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity,
     statsFilterScope, pruneStatsSubnav, STATS_VIEW_TARGETS,
     OT_VIEWS, OT_COLUMNS, ordersTradesRows, ordersTradesCounts, otHeadHtml,
-    activeMarketsRows, openOrdersRows, positionsRows, latestLegMids, latestLegQuotes,
+    activeMarketsRows, openOrdersRows, positionsRows, resolvedMarketsRows,
+    heldMarketEntries, heldLegs, isFinishedMarket, latestLegMids, latestLegQuotes,
     positionMarkValue, isQuotedMarket, isRestingOrder, tokenLegMap, legForOrder,
     normalizeLeg, groupOrdersByPair, restingPairCost, restingPairLegs,
     pairStatus, PAIR_STATUS };

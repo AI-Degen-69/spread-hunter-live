@@ -2785,7 +2785,7 @@ def venue_sync(funder=None, db_path=None, quiet=False):
     """
     from core_brain.account import read_account, fetch_closed_positions, fetch_open_positions
     from core_brain.order_registry import (
-        OrderRegistry, CloseRecord, get_run_id,
+        OrderRegistry, CloseRecord, VENUE_SYNC_RUN_ID, get_run_id,
     )
 
     who = funder or os.environ.get("POLY_FUNDER")
@@ -2848,7 +2848,7 @@ def venue_sync(funder=None, db_path=None, quiet=False):
             proceeds=None,
             realized_pnl=realized_pnl,
             tx_hash=asset,
-            run_id="venue_sync",  # Sentinel: not attributed to current run
+            run_id=VENUE_SYNC_RUN_ID,  # Sentinel: not attributed to current run
         )
         r_id = close_rec.run_id
         with registry._conn() as conn:
@@ -2949,12 +2949,16 @@ def venue_sync(funder=None, db_path=None, quiet=False):
             unrealized = 0.0
             naked = 0.0
 
+        # Same sentinel as the closes above, for the same reason: these are the
+        # WALLET's open positions, not capital this run committed. Stamped with
+        # the active run id they became the newest mark in its window and the
+        # card reported the whole account's exposure as the bot's.
         registry.log_float_mark(
             unrealized_usd=unrealized,
             committed_open_usd=committed,
             naked_usd=naked,
             ts=time.time(),
-            run_id=get_run_id(),
+            run_id=VENUE_SYNC_RUN_ID,
         )
 
     summary = {

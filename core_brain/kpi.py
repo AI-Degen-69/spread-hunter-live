@@ -17,7 +17,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 from core_brain.statistical_analytics import build as build_statistical_analytics
-from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
+from core_brain.order_registry import (
+    OrderRegistry, DEFAULT_DB_PATH, VENUE_SYNC_RUN_ID,
+)
 from core_brain.config import MakerConfig, load as load_cfg
 from core_brain.runtime_paths import resolve_runtime_file
 
@@ -869,6 +871,27 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         float_marks = all_float_marks
         orders = all_orders
 
+    # The wallet's own history is not a run's trading record. `venue_sync`
+    # writes the venue's account-wide closes and open positions into the same
+    # tables the bot writes to, under a sentinel run id, and the slice above
+    # drops them only when a specific run is asked for. The card's default is
+    # "all", which slices nothing -- so on the live registry 72 account rows
+    # became +$112.93 realized and a 67.1% win rate beside the bot's own seven
+    # closes, which summed to -$2.40. Dropped under every filter, and reported
+    # below as `venue_realized_pnl` so the number is named, not lost.
+    # From ALL closes: `closes` is already sliced to the chosen run, which
+    # never contains the sentinel, so summing it would report $0.00 synced
+    # under every filter but "all" -- losing the number this line exists to
+    # keep. The account-wide total does not depend on which run is on screen.
+    venue_realized_pnl = sum(
+        float(c.get("realized_pnl") or 0.0) for c in all_closes
+        if c.get("run_id") == VENUE_SYNC_RUN_ID
+    )
+    closes = [c for c in closes if c.get("run_id") != VENUE_SYNC_RUN_ID]
+    float_marks = [
+        fm for fm in float_marks if fm.get("run_id") != VENUE_SYNC_RUN_ID
+    ]
+
     posted_sh = sum(float(q.get("size") or 0.0) for q in quotes)
     filled_sh = sum(float(f.get("size") or 0.0) for f in fills)
     # Taker crossed fills
@@ -1050,6 +1073,9 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # here are KEPT: they were touched by the bot this run and belong in the
     # drill-down. `days_to_resolve` of None is kept (unknown rank freshness
     # must never silently drop a market).
+    # From the run-filtered list, which no longer holds the sync's own rows: a
+    # market the venue closed stays in the drill-down with its inventory zeroed
+    # by the fill retirement above, rather than disappearing off the board.
     resolved_cids = {
         c.get("condition_id") for c in closes
         if c.get("condition_id") and c.get("method") == "venue_sync"
@@ -1427,6 +1453,10 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         "unrealized_measured": mark_is_current,
         "total_pnl": total_pnl,
         "total_value": starting_capital + total_pnl,
+        # The wallet's account-wide realised total, kept out of every figure
+        # above it. Named so the Sync button's number is still readable as what
+        # it is: history this bot did not make.
+        "venue_realized_pnl": venue_realized_pnl,
         # NULL, not 0.0: a zero bankroll makes the percentage undefined, and a
         # printed 0.00% would read as "flat" rather than "unmeasurable".
         "pnl_pct": (100.0 * total_pnl / starting_capital) if starting_capital else None,

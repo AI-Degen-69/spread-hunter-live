@@ -101,9 +101,15 @@ def test_equity_curve_steps_only_on_the_runs_own_closes(mixed_db):
 # Journey 2: the account-wide figure is kept, and named
 # --------------------------------------------------------------------------
 
-def test_the_account_wide_total_is_reported_separately(mixed_db):
-    """Syncing must not lose the number, only stop misattributing it."""
-    p = report(db_path=mixed_db, run_id="all")["portfolio"]
+@pytest.mark.parametrize("run_filter", [RUN, "all"])
+def test_the_account_wide_total_is_reported_separately(mixed_db, run_filter):
+    """Syncing must not lose the number, only stop misattributing it.
+
+    Under a run filter the sentinel rows are already sliced away, so this has
+    to be summed from ALL closes -- otherwise picking a run reports $0.00
+    synced and the number is lost exactly where it was meant to be kept.
+    """
+    p = report(db_path=mixed_db, run_id=run_filter)["portfolio"]
     assert p["venue_realized_pnl"] == pytest.approx(28.37)
 
 

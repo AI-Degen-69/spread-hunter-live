@@ -879,8 +879,12 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
     # became +$112.93 realized and a 67.1% win rate beside the bot's own seven
     # closes, which summed to -$2.40. Dropped under every filter, and reported
     # below as `venue_realized_pnl` so the number is named, not lost.
+    # From ALL closes: `closes` is already sliced to the chosen run, which
+    # never contains the sentinel, so summing it would report $0.00 synced
+    # under every filter but "all" -- losing the number this line exists to
+    # keep. The account-wide total does not depend on which run is on screen.
     venue_realized_pnl = sum(
-        float(c.get("realized_pnl") or 0.0) for c in closes
+        float(c.get("realized_pnl") or 0.0) for c in all_closes
         if c.get("run_id") == VENUE_SYNC_RUN_ID
     )
     closes = [c for c in closes if c.get("run_id") != VENUE_SYNC_RUN_ID]

@@ -17,19 +17,39 @@ reachable. Two measurements decide it, and they are not the same thing:
   here, which is why `taker_pair_is_profitable` exists: to keep that fact in the
   output rather than in a comment.
 
-`queue_ahead_usd` is a COST, not available size. It is the money already resting
-at the touch that has to be consumed before our own order trades, and a pair
-needs BOTH legs, so the constraint is the leg with MORE queue in front of it,
-not less. Ranking on `edge * depth` gets this exactly backwards -- it rewards
-the markets that are hardest to get filled in. `turnover_score` divides instead:
+A live measurement on 2026-09-06 settled what `edge_per_pair` actually is. The
+two books of a binary market mirror each other -- `ask_UP == 1 - bid_DOWN` --
+so the arithmetic collapses:
 
-    turnover_score = edge_per_pair * (volume_24h / max(queue_ahead_usd, 1))
+    bid_pair = bid_UP + bid_DOWN = bid_UP + (1 - ask_UP) = 1 - spread_UP
+    edge_per_pair = 1 - bid_pair = spread_UP
 
-which reads as "cents per pair, times how many times a day the queue in front of
-us clears". A 1c edge behind $45,000 of queue on $333k of daily flow scores below
-a 2c edge behind $600 of queue on $172k. Daily volume is a coarse proxy for the
-flow that actually reaches the touch; it is the best figure the public API
-exposes per market, and it is why the score ranks rather than predicts.
+The pair "edge" IS the bid-ask spread, renamed. Across 32 live markets the
+difference between `edge_per_pair` and the tighter leg's own spread was
+0.000c in 32 of 32. A 13c pair edge is a 13c spread: a market nobody is
+quoting, not money nobody has noticed.
+
+That makes `dislocation` the only figure here that can name a genuine
+mispricing -- the amount by which the pair edge EXCEEDS what either leg's own
+spread already offers. It is zero almost always, and when it is not, the two
+books have come apart and a pair is cheap for a reason other than illiquidity.
+
+Everything else in this module ranks MARKET-MAKING value, not arbitrage:
+capturing `edge_per_pair` requires BOTH legs to fill at the bid, which is the
+same trade as quoting two-sided and being hit on both. `queue_ahead_usd` is
+therefore a COST -- money already resting at the touch that must be consumed
+before our own order trades -- and a pair needs both legs, so the constraint is
+the leg with MORE queue in front of it. Ranking on `edge * depth` inverts this,
+rewarding exactly the markets that are hardest to get filled in.
+`spread_capture_score` divides instead:
+
+    spread_capture_score = edge_per_pair * (volume_24h / max(queue_ahead_usd, 1))
+
+read as "cents per pair, times how many times a day the queue in front of us
+clears". `volume_24h` is a coarse, backward-looking proxy for flow reaching the
+touch -- the best per-market figure the public API exposes -- and it is why the
+score ranks rather than predicts. It says nothing about whether both legs fill
+in the same moment, which is the strategy's actual binding risk.
 
 Read-only. This module places no orders and holds no signer; running it cannot
 reach the venue's trading surface.
@@ -53,6 +73,11 @@ CLOB_HOST = os.environ.get("CLOB_HOST", "https://clob.polymarket.com")
 # (connect, read). A scan walks up to `limit` markets and issues two book calls
 # per market, so a single hung host must not hold the whole sweep.
 SCAN_TIMEOUT = (3.05, 5.0)
+
+# Half the venue's smallest tick. Float subtraction of two book prices leaves
+# residue at 1e-17, and without a floor that residue reads as a dislocation and
+# shuffles the ranking. Anything under half a tick is not a price difference.
+DISLOCATION_EPS = 0.005
 
 # Slugs and questions come from the venue and are later printed to a terminal
 # and embedded in reports. Restrict them at the boundary so a hostile value
@@ -92,6 +117,8 @@ class PairQuote:
     bid_pair: float
     ask_pair: float
     queue_ahead_usd: float
+    leg_spread_up: float = 0.0
+    leg_spread_down: float = 0.0
 
     @property
     def edge_per_pair(self) -> float:
@@ -109,8 +136,24 @@ class PairQuote:
         return self.volume_24h / max(self.queue_ahead_usd, 1.0)
 
     @property
-    def turnover_score(self) -> float:
-        """Edge weighted by how reachable it is. Ranking only, not a forecast."""
+    def dislocation(self) -> float:
+        """How far the pair edge exceeds either leg's own spread.
+
+        Zero means the pair is only as cheap as the book is wide -- no
+        mispricing, just illiquidity. Positive means the two books have come
+        apart and the pair is genuinely cheap. This is the only figure here
+        that can name an arbitrage.
+        """
+        raw = self.edge_per_pair - min(self.leg_spread_up, self.leg_spread_down)
+        return raw if raw >= DISLOCATION_EPS else 0.0
+
+    @property
+    def spread_capture_score(self) -> float:
+        """Market-making value: spread weighted by how reachable it is.
+
+        Ranking only. Assumes nothing about both legs filling in one moment,
+        which is the strategy's real binding risk.
+        """
         return self.edge_per_pair * self.queue_turns_per_day
 
 
@@ -223,12 +266,23 @@ def build_quote(
         bid_pair=bid_pair,
         ask_pair=up_ask[0] + down_ask[0],
         queue_ahead_usd=queue_ahead,
+        leg_spread_up=up_ask[0] - up_bid[0],
+        leg_spread_down=down_ask[0] - down_bid[0],
     )
 
 
 def rank(quotes: Iterable[PairQuote]) -> list[PairQuote]:
-    """Best-first by `turnover_score`, tie-broken by the wider edge."""
-    return sorted(quotes, key=lambda q: (q.turnover_score, q.edge_per_pair), reverse=True)
+    """Genuine dislocations first, then market-making value.
+
+    A dislocated pair is cheap for a reason other than a wide book, so it
+    outranks any amount of spread-capture value. Below that, ranking falls back
+    to `spread_capture_score`.
+    """
+    return sorted(
+        quotes,
+        key=lambda q: (q.dislocation, q.spread_capture_score),
+        reverse=True,
+    )
 
 
 def _fetch_book(token_id: str, clob_host: str, session: Any) -> Any:
@@ -295,16 +349,22 @@ def _main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     quotes = scan(min_volume_24h=args.min_volume, limit=args.limit)
 
-    print(f"{'edge/pair':>10}{'queue$':>12}{'turns/day':>11}{'score':>9}"
-          f"{'pair':>8}{'vol24h':>13}  market")
+    print(f"{'spread':>8}{'disloc':>8}{'queue$':>11}{'turns/day':>11}"
+          f"{'score':>9}{'pair':>8}{'vol24h':>13}  market")
     for q in quotes[:args.top]:
-        print(f"{q.edge_per_pair * 100:>9.2f}c{q.queue_ahead_usd:>12,.0f}"
-              f"{q.queue_turns_per_day:>11,.1f}{q.turnover_score:>9.2f}"
-              f"{q.bid_pair:>8.3f}{q.volume_24h:>13,.0f}  {q.question[:46]}")
+        print(f"{q.edge_per_pair * 100:>7.2f}c{q.dislocation * 100:>7.2f}c"
+              f"{q.queue_ahead_usd:>11,.0f}{q.queue_turns_per_day:>11,.1f}"
+              f"{q.spread_capture_score:>9.2f}{q.bid_pair:>8.3f}"
+              f"{q.volume_24h:>13,.0f}  {q.question[:42]}")
 
+    real = [q for q in quotes if q.dislocation > 0]
     takeable = [q for q in quotes if q.taker_pair_is_profitable]
     print(f"\n{len(quotes)} markets with a pair under $1.00 at the bid; "
           f"{len(takeable)} of them are also under $1.00 at the ask.")
+    print(f"{len(real)} genuinely dislocated -- a pair cheaper than either "
+          f"leg's own spread.")
+    print("The 'spread' column is the bid-ask spread by identity, not free "
+          "money: capturing it needs BOTH legs filled at the bid.")
 
 
 if __name__ == "__main__":

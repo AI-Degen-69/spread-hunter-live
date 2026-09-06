@@ -7,11 +7,15 @@ Journeys under test:
    dropped, because assembling a pair there is a booked loss.
 3. As the Owner, the queue resting ahead of me is reported as a cost, not as
    available size: a deep touch is money I have to wait behind, not money I get.
-4. As the Owner, the ranking prefers the market whose queue actually turns over,
-   so a 1c edge behind $45,000 of queue does not outrank 2c behind $600.
-5. As the Owner, a market the venue returned malformed is skipped rather than
+4. As the Owner, a pair is only called dislocated when it is cheaper than either
+   leg's own spread already makes it -- because `edge_per_pair` and the leg
+   spread are the same number whenever the two books mirror, and a wide pair is
+   then a market nobody quotes, not money nobody noticed.
+5. As the Owner, a genuine dislocation outranks any amount of spread-capture
+   value, and below that the ranking prefers the queue that actually turns over.
+6. As the Owner, a market the venue returned malformed is skipped rather than
    taking the whole scan down with it.
-6. As the Owner, the scan records what taking both legs would have cost, so the
+7. As the Owner, the scan records what taking both legs would have cost, so the
    maker-only nature of the strategy is visible in the output.
 """
 from __future__ import annotations
@@ -163,7 +167,8 @@ def test_unparseable_book_levels_do_not_take_the_scan_down():
 # ---------------------------------------------------------------- rank
 
 
-def _quote(cid, edge, queue, volume):
+def _quote(cid, edge, queue, volume, leg_spread=None):
+    spread = edge if leg_spread is None else leg_spread
     return PairQuote(
         condition_id=cid,
         slug=cid,
@@ -174,29 +179,93 @@ def _quote(cid, edge, queue, volume):
         bid_pair=1.0 - edge,
         ask_pair=1.0 + edge,
         queue_ahead_usd=queue,
+        leg_spread_up=spread,
+        leg_spread_down=spread,
     )
 
 
-def test_turnover_score_prefers_the_queue_that_actually_clears():
+def test_edge_equals_the_leg_spread_when_the_two_books_mirror():
+    # ask_UP == 1 - bid_DOWN is how a binary market's two books relate, so
+    # bid_pair collapses to 1 - spread_UP and the "edge" is just the spread.
+    cand = parse_candidate(_row())
+
+    q = build_quote(
+        cand,
+        _book(bids=[(0.38, 100)], asks=[(0.64, 100)]),
+        _book(bids=[(0.36, 100)], asks=[(0.62, 100)]),
+    )
+
+    assert q is not None
+    assert q.edge_per_pair == pytest.approx(0.26)
+    assert q.leg_spread_up == pytest.approx(0.26)
+    assert q.dislocation == pytest.approx(0.0)
+
+
+def test_a_pair_cheaper_than_either_leg_spread_is_a_dislocation():
+    cand = parse_candidate(_row())
+
+    # The DOWN book has come apart: its bid sits far under the UP book's mirror.
+    q = build_quote(
+        cand,
+        _book(bids=[(0.60, 100)], asks=[(0.61, 100)]),
+        _book(bids=[(0.30, 100)], asks=[(0.31, 100)]),
+    )
+
+    assert q is not None
+    assert q.edge_per_pair == pytest.approx(0.10)
+    assert q.leg_spread_up == pytest.approx(0.01)
+    assert q.dislocation == pytest.approx(0.09)
+
+
+def test_float_residue_under_half_a_tick_is_not_a_dislocation():
+    # Subtracting two book prices leaves residue at 1e-17. Without a floor that
+    # residue reads as a dislocation and shuffles the whole ranking.
+    cand = parse_candidate(_row())
+
+    q = build_quote(
+        cand,
+        _book(bids=[(0.07, 100)], asks=[(0.08, 100)]),
+        _book(bids=[(0.92, 100)], asks=[(0.93, 100)]),
+    )
+
+    assert q is not None
+    # 1 - (0.07 + 0.92) = 0.01 in exact arithmetic; the leg spreads are 0.01 too.
+    assert q.edge_per_pair - min(q.leg_spread_up, q.leg_spread_down) != 0.0
+    assert q.dislocation == 0.0
+
+
+def test_a_dislocation_outranks_any_spread_capture_value():
+    wide_but_mirrored = _quote("wide", edge=0.13, queue=31.0, volume=510_760.0)
+    thin_but_dislocated = _quote("real", edge=0.02, queue=5_000.0, volume=1_000.0,
+                                 leg_spread=0.01)
+
+    assert wide_but_mirrored.dislocation == pytest.approx(0.0)
+    assert thin_but_dislocated.dislocation == pytest.approx(0.01)
+    assert wide_but_mirrored.spread_capture_score > thin_but_dislocated.spread_capture_score
+    assert [q.condition_id for q in rank([wide_but_mirrored, thin_but_dislocated])] == [
+        "real", "wide"]
+
+
+def test_spread_capture_score_prefers_the_queue_that_actually_clears():
     # 1c behind $45,000 of queue on $333k of daily flow: the queue clears ~7x.
     deep = _quote("fed", edge=0.01, queue=45_000.0, volume=333_761.0)
     # 2c behind $600 of queue on $172k of daily flow: the queue clears ~287x.
     shallow = _quote("alcaraz", edge=0.02, queue=600.0, volume=172_436.0)
 
-    assert shallow.turnover_score > deep.turnover_score
+    assert shallow.spread_capture_score > deep.spread_capture_score
     assert [q.condition_id for q in rank([deep, shallow])] == ["alcaraz", "fed"]
 
 
 def test_a_market_with_no_flow_scores_zero_however_wide_the_edge():
     dead = _quote("dead", edge=0.04, queue=28.0, volume=0.0)
 
-    assert dead.turnover_score == 0.0
+    assert dead.spread_capture_score == 0.0
 
 
 def test_an_empty_queue_does_not_divide_by_zero():
     empty = _quote("empty", edge=0.01, queue=0.0, volume=1000.0)
 
-    assert empty.turnover_score > 0.0
+    assert empty.spread_capture_score > 0.0
 
 
 # ---------------------------------------------------------------- scan

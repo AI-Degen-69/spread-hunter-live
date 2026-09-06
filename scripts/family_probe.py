@@ -318,6 +318,28 @@ def new_trades(rows: Iterable[dict], since_ts: float) -> list[dict]:
     return out
 
 
+def _finite_window(window_min: float) -> float:
+    """The tape window as a positive, finite float, or a refusal.
+
+    `float()` happily accepts zero, a negative, `nan` and `inf`.
+    `queue_minutes_at` turns a zero or negative window into `math.inf`, and a
+    `nan` slips past every comparison it makes and comes out the other side as
+    a `nan` queue estimate that `_finite` does not catch. A bad window is
+    therefore not a bad number downstream -- it is a measurement that looks
+    valid and is not, so it is refused here.
+    """
+    try:
+        window = float(window_min)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"tape window must be a number, got {window_min!r}") from None
+    if not math.isfinite(window) or window <= 0.0:
+        raise ValueError(
+            f"tape window must be finite and greater than zero, "
+            f"got {window_min!r}")
+    return window
+
+
 def tape_at_touch(rows: list[dict], best_bid: float, best_ask: float,
                   window_min: float = DEFAULT_TAPE_WINDOW_MIN,
                   now_ts: Optional[float] = None
@@ -342,7 +364,8 @@ def tape_at_touch(rows: list[dict], best_bid: float, best_ask: float,
     are willing to claim the other 57 minutes did not happen; they did, and
     nothing traded in them.
     """
-    horizon = float(window_min) * 60.0
+    window = _finite_window(window_min)
+    horizon = window * 60.0
     now = time.time() if now_ts is None else float(now_ts)
     floor = now - horizon
     recent = []
@@ -357,8 +380,8 @@ def tape_at_touch(rows: list[dict], best_bid: float, best_ask: float,
         if stamp >= floor:
             recent.append(row)
     if not recent:
-        return 0.0, 0.0, float(window_min), 0
-    span_min = float(window_min)
+        return 0.0, 0.0, window, 0
+    span_min = window
     vol_bid = vol_ask = 0.0
     for row in recent:
         try:
@@ -885,7 +908,12 @@ def _parse_args(argv: Optional[list[str]] = None):
                         help="volume gate to score against (default: config)")
     parser.add_argument("--max-days", type=float, default=None,
                         help="horizon gate to score against (default: config)")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    try:
+        _finite_window(args.tape_window_min)
+    except ValueError as exc:
+        parser.error(f"--tape-window-min: {exc}")
+    return args
 
 
 def main(argv: Optional[list[str]] = None) -> int:

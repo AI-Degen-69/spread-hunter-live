@@ -229,6 +229,27 @@ def test_a_window_with_no_prints_reports_the_window_and_no_volume():
     assert span_min == pytest.approx(60.0)
 
 
+def test_a_window_that_is_not_a_positive_number_is_refused():
+    """A bad window does not read as a bad number downstream -- it reads valid.
+
+    `queue_minutes_at` turns zero or a negative into `math.inf`, and a `nan`
+    passes every comparison it makes, so the queue estimate comes out `nan`
+    and `_finite` lets it through to the write path. Refuse it at the source.
+    """
+    for bad in (0.0, -30.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            tape_at_touch([_trade(0, 0.40, 5)], 0.40, 0.42,
+                          window_min=bad, now_ts=7_200)
+
+
+def test_the_cli_refuses_a_window_it_cannot_measure_over(capsys):
+    for bad in ("0", "-30", "nan", "inf"):
+        with pytest.raises(SystemExit) as exc:
+            family_probe._parse_args(["--tape-window-min", bad])
+        assert exc.value.code == 2
+        assert "--tape-window-min" in capsys.readouterr().err
+
+
 def test_measure_records_the_window_its_rate_was_measured_over():
     row = measure(_book([(0.40, 100)], [(0.42, 100)]),
                   _book([(0.57, 80)], [(0.59, 80)]),

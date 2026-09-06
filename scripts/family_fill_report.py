@@ -416,6 +416,9 @@ def report(db_path: Path, hours: Optional[float], queue_bar: float,
         print(f"{len(rows)} samples over {days * 24:.1f}h, "
               f"0 moments clear queue <= {queue_bar:.0f}min "
               f"AND pair < {pair_bar:.2f}")
+        # A store on the legacy basis reports zero moments for a reason -- the
+        # basis is the finding, so it has to survive the early return.
+        print(f"rate basis: {_rate_basis(rows)}")
         return 1
     stats = summarise(moments, rows, days)
     mode = ("upper bound (adverse moves count as fills)" if count_adverse

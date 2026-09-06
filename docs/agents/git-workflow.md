@@ -146,6 +146,13 @@ Then **wait ~30 seconds and read the reply**, which is one of three things:
 **Trigger before merging.** A merged PR refuses the trigger outright. The order is: open
 the PR → see the skip notice → post the trigger → wait 30 s → read the reply → merge.
 
+**Every push needs its own trigger.** Measured on PR #173: after pushing the round-1 fix
+commit, the CodeRabbit check went straight back to `Review skipped: manual review required
+for this OSS repository`. The incremental review a push would normally start does not fire
+here either, so each round is *push, then trigger*. The hourly allowance is the limit on
+how many rounds a PR can actually get — a trigger fired inside the same hour answers
+`Review rate limited`, and that is the point where the agent review takes over.
+
 A green CodeRabbit status check proves nothing on its own: both `Review skipped: manual
 review required for this OSS repository` and `Review rate limited` report `pass`. Read the
 check's description, never its colour.

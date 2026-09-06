@@ -57,6 +57,9 @@ once the review has been triggered. Before this push, from {DOC}:
     "fewer than 10 stars / Trigger review" notice, post `@coderabbitai review`
     as its own comment, wait 30 seconds, and read the reply. Trigger BEFORE
     merging -- a closed pull request refuses it.
+  * This push will NOT start a review by itself. Fire the trigger again after
+    it, and if the reply is `Review rate limited`, do the agent review instead
+    of waiting.
   * Never post `@coderabbitai full review`. That is the expensive one.
 """
 

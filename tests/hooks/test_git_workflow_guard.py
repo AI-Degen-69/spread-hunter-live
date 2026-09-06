@@ -144,3 +144,4 @@ def test_round_rules_tell_the_agent_to_fire_the_manual_trigger():
     assert "Reviews do NOT fire on their own here" in rules
     assert "`@coderabbitai review`" in rules
     assert "Trigger BEFORE" in rules
+    assert "This push will NOT start a review by itself" in rules

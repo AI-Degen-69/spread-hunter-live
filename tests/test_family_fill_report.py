@@ -275,6 +275,20 @@ def test_main_refuses_a_simulation_it_cannot_run(tmp_path, capsys):
         assert bad[0] in capsys.readouterr().out
 
 
+def test_the_rate_basis_is_printed_even_when_nothing_qualifies(tmp_path, capsys):
+    """A legacy store reports zero moments BECAUSE of its basis.
+
+    Printing the basis only alongside a table hides it in exactly the run that
+    needs it most.
+    """
+    path = tmp_path / "probe.db"
+    _store(path, [_sample()] + _forward())
+    assert main(["--db", str(path), "--pair-bar", "0.01"]) == 1
+    out = capsys.readouterr().out
+    assert "0 moments" in out
+    assert "rate basis:" in out
+
+
 def test_main_refuses_a_store_that_is_not_there(tmp_path, capsys):
     assert main(["--db", str(tmp_path / "missing.db")]) == 1
     assert "run scripts/family_probe.py first" in capsys.readouterr().out

@@ -218,6 +218,15 @@ def queue_minutes_at(level_size: float, traded_at_level: float,
     strongest form of the finding this exists to catch -- reading it as
     missing data would invert the rule exactly where it matters most.
 
+    `window_minutes` MUST BE A RECENT, BOUNDED WINDOW -- comparable to how long
+    an order actually rests, not however much history a caller happens to hold.
+    Nothing here can check that, and the failure is silent: `family_probe`
+    passed the span of the venue's entire returned tape, up to 46,000 minutes
+    on live markets, and this function dutifully divided a month of volume by a
+    month of minutes. The resulting rate admitted 173 moments as clearing
+    inside 10 minutes, of which 97% of legs then drained under 1% of what they
+    needed in 15. The arithmetic was right and the answer was fiction.
+
     UPPER BOUND, NOT AN ESTIMATE. The shadow model drains queue only on
     trades; a real book also advances an order when those ahead of it cancel,
     and at these depths that is likely the dominant mechanism. The true wait is

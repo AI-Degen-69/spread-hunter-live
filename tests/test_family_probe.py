@@ -186,9 +186,95 @@ def test_tape_at_touch_attributes_a_no_print_to_the_mirrored_level():
     # A NO buy at 0.58 is a YES sell at 0.42, which hits a 0.42 bid.
     rows = [_trade(0, 0.58, 25, side="BUY", outcome="No"),
             _trade(120, 0.58, 25, side="BUY", outcome="No")]
-    vol_bid, vol_ask, span_min, prints = tape_at_touch(rows, 0.42, 0.44)
+    vol_bid, vol_ask, span_min, prints = tape_at_touch(
+        rows, 0.42, 0.44, window_min=60.0, now_ts=120)
     assert (vol_bid, vol_ask, prints) == (50.0, 0.0, 2)
-    assert span_min == pytest.approx(2.0)
+
+
+def test_tape_older_than_the_window_is_not_counted():
+    """The venue returns whatever history it holds; the rate is about now.
+
+    Measured on live markets, that history ran to 46,000 minutes -- a month.
+    A month of volume over a month of minutes is an average no resting order
+    ever sees, and it was admitting moments whose queues never moved.
+    """
+    inside = _trade(7_000, 0.40, 40, side="SELL")
+    outside = _trade(100, 0.40, 4_000, side="SELL")
+    vol_bid, _, _, prints = tape_at_touch(
+        [outside, inside], 0.40, 0.42, window_min=60.0, now_ts=7_200)
+    assert vol_bid == pytest.approx(40.0)
+    assert prints == 1
+
+
+def test_the_rate_denominator_is_the_window_not_the_gap_between_prints():
+    """Two prints a minute apart inside an hour are one hour of tape.
+
+    Reading them as one minute claims the other 59 did not happen. They did,
+    and nothing traded in them -- which is the whole finding.
+    """
+    rows = [_trade(7_140, 0.40, 10, side="SELL"),
+            _trade(7_200, 0.40, 10, side="SELL")]
+    _, _, span_min, _ = tape_at_touch(
+        rows, 0.40, 0.42, window_min=60.0, now_ts=7_200)
+    assert span_min == pytest.approx(60.0)
+
+
+def test_a_window_with_no_prints_reports_the_window_and_no_volume():
+    # Not a zero-length span: "nothing traded for an hour" is a measurement,
+    # and collapsing it to 0.0 reads downstream as "no data".
+    vol_bid, vol_ask, span_min, prints = tape_at_touch(
+        [_trade(0, 0.40, 999, side="SELL")], 0.40, 0.42,
+        window_min=60.0, now_ts=100_000)
+    assert (vol_bid, vol_ask, prints) == (0.0, 0.0, 0)
+    assert span_min == pytest.approx(60.0)
+
+
+def test_a_window_that_is_not_a_positive_number_is_refused():
+    """A bad window does not read as a bad number downstream -- it reads valid.
+
+    `queue_minutes_at` turns zero or a negative into `math.inf`, and a `nan`
+    passes every comparison it makes, so the queue estimate comes out `nan`
+    and `_finite` lets it through to the write path. Refuse it at the source.
+    """
+    for bad in (0.0, -30.0, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            tape_at_touch([_trade(0, 0.40, 5)], 0.40, 0.42,
+                          window_min=bad, now_ts=7_200)
+
+
+def test_the_cli_refuses_a_window_it_cannot_measure_over(capsys):
+    for bad in ("0", "-30", "nan", "inf"):
+        with pytest.raises(SystemExit) as exc:
+            family_probe._parse_args(["--tape-window-min", bad])
+        assert exc.value.code == 2
+        assert "--tape-window-min" in capsys.readouterr().err
+
+
+def test_measure_records_the_window_its_rate_was_measured_over():
+    row = measure(_book([(0.40, 100)], [(0.42, 100)]),
+                  _book([(0.57, 80)], [(0.59, 80)]),
+                  [_trade(7_200, 0.40, 50, side="SELL")],
+                  window_min=30.0, now_ts=7_200)
+    assert row["tape_window_min"] == pytest.approx(30.0)
+    assert row["tape_span_min"] == pytest.approx(30.0)
+
+
+def test_open_store_adds_the_window_column_to_an_older_store(tmp_path):
+    """The store is resumable, so last week's file must still open."""
+    db = tmp_path / "old.db"
+    legacy = family_probe.SCHEMA.replace("tape_span_min REAL, tape_window_min REAL,",
+                            "tape_span_min REAL,")
+    con = sqlite3.connect(str(db))
+    con.executescript(legacy)
+    con.commit()
+    con.close()
+
+    conn = open_store(db)
+    try:
+        columns = {r[1] for r in conn.execute("PRAGMA table_info(probe_samples)")}
+    finally:
+        conn.close()
+    assert "tape_window_min" in columns
 
 
 def test_measure_reports_the_touch_pair_both_makers_could_assemble():

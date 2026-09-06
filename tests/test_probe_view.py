@@ -290,6 +290,7 @@ def test_the_verdict_refuses_to_widen_the_universe_on_zero_pairs(tmp_path):
     verdict = probe_report(path)["verdict"]
     assert verdict["answer"] == "NO"
     assert "125" in verdict["recommendation"]
+    assert "select_min_volume_24h_usd" in verdict["recommendation"]
 
 
 def test_the_verdict_names_the_family_when_one_actually_drains(tmp_path):
@@ -297,7 +298,8 @@ def test_the_verdict_names_the_family_when_one_actually_drains(tmp_path):
     verdict = probe_report(path)["verdict"]
     assert verdict["answer"] == "MAYBE"
     assert "sports-x" in verdict["headline"]
-    assert "second" in verdict["recommendation"].lower()
+    # One run is noise: the recommendation must say so, next to the number.
+    assert "שני" in verdict["recommendation"]
 
 
 # --- what the page is served ------------------------------------------------
@@ -351,7 +353,8 @@ def test_no_requested_store_falls_back_to_the_configured_one(monkeypatch, tmp_pa
 def test_the_probe_page_is_served_on_its_own_path(client):
     response = client.get("/probe")
     assert response.status_code == 200
-    assert "Family Probe" in response.text
+    assert 'lang="he"' in response.text and 'dir="rtl"' in response.text
+    assert "פרוב משפחות" in response.text
     # It is a research surface: nothing on it can start, stop or price
     # anything, so it carries no control token to leak.
     assert "__LIVE_DASH_CONTROL_TOKEN__" not in response.text

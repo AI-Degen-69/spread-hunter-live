@@ -1,13 +1,13 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="he" dir="rtl">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Family Probe — Spread Hunter Live</title>
-  <meta name="description" content="Live view of the family probe: does any market family drain its queue at our price?">
+  <title>פרוב משפחות — Spread Hunter Live</title>
+  <meta name="description" content="מבט חי על פרוב המשפחות: האם משפחת שווקים כלשהי מנקזת את התור שלה במחיר שלנו?">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;800&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     :root {
       --bg-base: #080c14;
@@ -24,13 +24,14 @@
       --warn: #f59e0b;
       --gold: #fbbf24;
       --mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+      --sans: 'Heebo', system-ui, -apple-system, 'Segoe UI', sans-serif;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
       background: linear-gradient(180deg, var(--bg-base) 0%, #0b111e 100%) fixed;
       color: var(--text-primary);
-      font-family: 'Inter', system-ui, -apple-system, sans-serif;
-      font-size: 14px; line-height: 1.5;
+      font-family: var(--sans);
+      font-size: 14px; line-height: 1.6;
       padding: 20px; min-height: 100vh;
     }
     a { color: var(--open); }
@@ -47,15 +48,15 @@
       align-items: flex-start; justify-content: space-between;
     }
     .eyebrow {
-      font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+      font-family: var(--mono); font-size: 11px; letter-spacing: .08em;
       text-transform: uppercase; color: var(--text-muted);
     }
-    h1 {
-      font-family: 'Big Shoulders Display', 'Inter', sans-serif;
-      font-size: 30px; line-height: 1.1; letter-spacing: .01em; margin: 4px 0 6px;
-    }
-    .question { color: var(--text-secondary); max-width: 64ch; }
+    h1 { font-size: 27px; font-weight: 800; line-height: 1.25; margin: 4px 0 6px; }
+    .question { color: var(--text-secondary); max-width: 66ch; }
     .question strong { color: var(--gold); }
+    /* Latin identifiers, paths and numbers inside Hebrew prose: pin them LTR
+       so a slug or a dollar figure is not reordered around its neighbours. */
+    .ltr { direction: ltr; unicode-bidi: isolate; display: inline-block; }
 
     .pill {
       display: inline-flex; align-items: center; gap: 8px;
@@ -70,21 +71,19 @@
     .state-STALE { border-color: var(--warn); color: var(--warn); }
     .state-DONE .dot { background: var(--open); }
     .state-DONE { border-color: var(--open); color: var(--open); }
-    .state-MISSING .dot, .state-EMPTY .dot { background: var(--text-muted); }
+    .state-MISSING .dot, .state-EMPTY .dot, .state-OFFLINE .dot { background: var(--text-muted); }
 
     section.card {
       border: 1px solid var(--border-subtle); border-radius: 12px;
       background: var(--bg-surface); padding: 16px 18px;
     }
-    h2 {
-      font-family: 'Big Shoulders Display', 'Inter', sans-serif;
-      font-size: 19px; letter-spacing: .02em; margin-bottom: 4px;
-    }
+    h2 { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
     .sub { color: var(--text-muted); font-size: 12px; margin-bottom: 14px; }
 
     .bar {
       height: 10px; border-radius: 999px; background: var(--bg-surface-raised);
       overflow: hidden; border: 1px solid var(--border-subtle);
+      display: flex; flex-direction: row-reverse;
     }
     .bar > i { display: block; height: 100%; background: var(--signal); width: 0; }
 
@@ -94,12 +93,13 @@
       background: var(--bg-surface-raised); padding: 12px 14px;
     }
     .tile .label {
-      font-family: var(--mono); font-size: 10px; letter-spacing: .1em;
+      font-family: var(--mono); font-size: 10px; letter-spacing: .08em;
       text-transform: uppercase; color: var(--text-muted);
     }
     .tile .value {
       font-family: var(--mono); font-size: 24px; font-weight: 700;
       margin-top: 4px; word-break: break-word;
+      direction: ltr; unicode-bidi: isolate; text-align: right;
     }
     .tile .note { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
     .pos { color: var(--signal); } .neg { color: var(--loss); }
@@ -107,7 +107,10 @@
 
     .split { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); }
 
-    .scroll { overflow-x: auto; }
+    /* The tables carry Latin data end to end -- family slugs, the selector's
+       own refusal strings, numbers -- so they read left to right inside an
+       otherwise right-to-left page. Only the headers are Hebrew. */
+    .scroll { overflow-x: auto; direction: ltr; }
     table { border-collapse: collapse; width: 100%; font-size: 12px; min-width: 640px; }
     th, td {
       text-align: right; padding: 7px 9px;
@@ -115,8 +118,8 @@
       white-space: nowrap;
     }
     th {
-      color: var(--text-muted); font-size: 10px; letter-spacing: .08em;
-      text-transform: uppercase; font-weight: 600;
+      color: var(--text-muted); font-size: 10px; letter-spacing: .04em;
+      font-weight: 700; font-family: var(--sans);
     }
     td.left, th.left { text-align: left; }
     /* Family slugs and refusal strings are both unbounded, and a wide cell
@@ -125,11 +128,11 @@
     td.name .muted { white-space: normal; }
     /* Half-width panels: the same 640px floor would put every one of these
        tables behind a horizontal scrollbar on a laptop. */
-    .split table { min-width: 380px; }
+    .split table { min-width: 340px; }
     .split td.name, .split th.left { max-width: 190px; }
     tbody tr:hover { background: rgba(255,255,255,.03); }
     .tag {
-      font-size: 10px; padding: 2px 7px; border-radius: 999px;
+      font-size: 10px; padding: 2px 7px; border-radius: 999px; font-family: var(--sans);
       border: 1px solid var(--border-strong); color: var(--text-secondary);
     }
     .tag.admitted { color: var(--signal); border-color: var(--signal); }
@@ -143,19 +146,24 @@
     .verdict.NO { border-color: var(--loss); background: rgba(127, 29, 29, .22); }
     .verdict.MAYBE { border-color: var(--gold); background: rgba(120, 53, 15, .22); }
     .verdict.PENDING { border-color: var(--border-strong); background: var(--bg-surface-raised); }
-    .verdict .answer {
-      font-family: 'Big Shoulders Display', 'Inter', sans-serif; font-size: 34px; line-height: 1;
-    }
+    .verdict .answer { font-size: 32px; font-weight: 800; line-height: 1.2; }
     .verdict .headline { margin: 6px 0 8px; font-weight: 600; }
     .verdict .rec { color: var(--text-secondary); }
 
-    .baseline { display: flex; flex-wrap: wrap; gap: 18px; font-family: var(--mono); font-size: 12px; }
-    .baseline b { color: var(--text-primary); }
+    .baseline { display: flex; flex-wrap: wrap; gap: 12px; align-items: baseline; font-size: 12px; }
+    .baseline .figures { font-family: var(--mono); direction: ltr; unicode-bidi: isolate; }
     .muted { color: var(--text-muted); }
-    footer { color: var(--text-muted); font-size: 11px; padding: 4px 2px 24px; }
+    footer { color: var(--text-muted); font-size: 11px; padding: 4px 2px 24px; line-height: 1.8; }
+    footer code { font-family: var(--mono); direction: ltr; unicode-bidi: isolate; display: inline-block; }
     .err {
       border: 1px solid var(--warn); background: rgba(120, 53, 15, .25);
-      border-radius: 10px; padding: 10px 14px; font-family: var(--mono); font-size: 12px;
+      border-radius: 10px; padding: 12px 16px; font-size: 13px; line-height: 1.7;
+    }
+    .err b { color: var(--warn); }
+    .err pre {
+      font-family: var(--mono); font-size: 12px; direction: ltr; text-align: left;
+      background: var(--bg-base); border-radius: 6px; padding: 8px 10px; margin-top: 8px;
+      overflow-x: auto;
     }
   </style>
 </head>
@@ -164,118 +172,117 @@
 
   <header class="hero">
     <div>
-      <div class="eyebrow">family probe · read-only research surface</div>
-      <h1>Does any family drain its queue at our price?</h1>
+      <div class="eyebrow">פרוב משפחות · משטח מחקר לקריאה בלבד</div>
+      <h1>האם משפחה כלשהי מנקזת את התור שלה במחיר שלנו?</h1>
       <p class="question">
-        The live selector refuses every market under <strong id="q-live-bar">$125,000</strong> of 24h volume.
-        This run scores down to <strong id="q-probe-bar">$25,000</strong> to find out whether that refusal costs
-        anything. Nothing here changes a bar — it measures one.
+        הסלקטור החי מסרב לכל שוק מתחת ל־<strong class="ltr">$125,000</strong> נפח 24 שעות.
+        הריצה הזאת יורדת עד <strong class="ltr">$25,000</strong> כדי לבדוק אם הסירוב הזה עולה לנו משהו.
+        שום דבר כאן לא משנה רף — הוא רק מודד אחד.
       </p>
     </div>
-    <div style="display:grid;gap:8px;justify-items:end">
-      <span class="pill state-MISSING" id="state-pill"><span class="dot"></span><span id="state-text">loading</span></span>
-      <span class="muted" style="font-family:var(--mono);font-size:11px" id="run-id">—</span>
-      <span class="muted" style="font-family:var(--mono);font-size:11px" id="refreshed">—</span>
+    <div style="display:grid;gap:8px;justify-items:start">
+      <span class="pill state-MISSING" id="state-pill"><span class="dot"></span><span id="state-text">טוען</span></span>
+      <span class="muted ltr" style="font-family:var(--mono);font-size:11px" id="run-id">—</span>
+      <span class="muted" style="font-size:11px" id="refreshed">—</span>
     </div>
   </header>
 
   <div id="error-box" hidden class="err"></div>
 
   <section class="card">
-    <h2>Run pulse</h2>
-    <div class="sub" id="pulse-sub">every ~6 minutes the probe sweeps the open universe and writes what it saw</div>
+    <h2>דופק הריצה</h2>
+    <div class="sub" id="pulse-sub">כל ~6 דקות הפרוב סורק את היקום הפתוח ורושם את מה שראה</div>
     <div class="bar" style="margin-bottom:14px"><i id="progress-bar"></i></div>
     <div class="grid">
-      <div class="tile"><div class="label">elapsed</div><div class="value" id="k-elapsed">—</div><div class="note" id="k-target">of — h target</div></div>
-      <div class="tile"><div class="label">cycles</div><div class="value" id="k-cycles">—</div><div class="note" id="k-age">last cycle —</div></div>
-      <div class="tile"><div class="label">samples</div><div class="value" id="k-samples">—</div><div class="note" id="k-markets">— markets</div></div>
-      <div class="tile"><div class="label">watched</div><div class="value" id="k-watched">—</div><div class="note">holes excluded — every $/day divides by this</div></div>
-      <div class="tile"><div class="label">last sweep</div><div class="value" id="k-sweep">—</div><div class="note" id="k-sweep-note">markets traded on the tape</div></div>
+      <div class="tile"><div class="label">שעות שחלפו</div><div class="value" id="k-elapsed">—</div><div class="note" id="k-target">מתוך יעד של — ש׳</div></div>
+      <div class="tile"><div class="label">מחזורים</div><div class="value" id="k-cycles">—</div><div class="note" id="k-age">מחזור אחרון —</div></div>
+      <div class="tile"><div class="label">דגימות</div><div class="value" id="k-samples">—</div><div class="note" id="k-markets">— שווקים</div></div>
+      <div class="tile"><div class="label">זמן צפייה</div><div class="value" id="k-watched">—</div><div class="note">בלי חורים — כל $ ליום מתחלק בזה</div></div>
+      <div class="tile"><div class="label">סריקה אחרונה</div><div class="value" id="k-sweep">—</div><div class="note" id="k-sweep-note">שווקים שנסחרו על הטייפ</div></div>
     </div>
   </section>
 
   <section class="card">
-    <h2>What it has found</h2>
-    <div class="sub" id="findings-sub">computed by scripts/family_fill_report.py — the same simulator the terminal report prints</div>
+    <h2>מה הוא מצא עד עכשיו</h2>
+    <div class="sub" id="findings-sub">מחושב על ידי scripts/family_fill_report.py — אותו סימולטור בדיוק שהדוח בטרמינל מדפיס</div>
     <div class="split">
       <div>
-        <div class="eyebrow" style="margin-bottom:8px">strict — a level that stops being the touch is dead</div>
+        <div class="eyebrow" style="margin-bottom:8px">strict — רמה שמפסיקה להיות ה־touch נחשבת מתה</div>
         <div class="grid" id="strict-tiles"></div>
       </div>
       <div>
-        <div class="eyebrow" style="margin-bottom:8px">upper bound — adverse moves counted as fills</div>
+        <div class="eyebrow" style="margin-bottom:8px">גבול עליון — תנועות נגדיות נספרות כמילוי</div>
         <div class="grid" id="adverse-tiles"></div>
       </div>
     </div>
     <div style="margin-top:14px" class="baseline">
-      <span class="muted">baseline</span>
-      <span id="baseline-line">—</span>
+      <span class="muted">בסיס השוואה</span>
+      <span class="figures" id="baseline-line">—</span>
     </div>
   </section>
 
   <section class="card">
-    <h2>Volume bands — the v3 question in one table</h2>
-    <div class="sub">the highlighted row is the population the live bar refuses. Its <b>pairs</b> column is whether refusing it costs anything.</div>
+    <h2>רצועות נפח — שאלת v3 בטבלה אחת</h2>
+    <div class="sub">השורה המודגשת היא האוכלוסייה שהרף החי מסרב. עמודת <b>זוגות</b> שלה היא התשובה לשאלה אם הסירוב עולה לנו משהו.</div>
     <div class="scroll">
       <table>
         <thead><tr>
-          <th class="left">24h volume</th><th>markets</th><th>moments</th>
-          <th>pairs</th><th>singles</th><th class="left">vs live gate</th>
+          <th class="left">נפח 24 שעות</th><th>שווקים</th><th>רגעים</th>
+          <th>זוגות</th><th>בודדים</th><th class="left">מול הסלקטור החי</th>
         </tr></thead>
-        <tbody id="bands-body"><tr><td class="left muted" colspan="6">loading…</td></tr></tbody>
+        <tbody id="bands-body"><tr><td class="left muted" colspan="6">טוען…</td></tr></tbody>
       </table>
     </div>
   </section>
 
-  <div class="split">
-    <section class="card">
-      <h2>Families</h2>
-      <div class="sub">sorted by the dollars they would have made, with the refusal each one most often recorded</div>
-      <div class="scroll">
-        <table>
-          <thead><tr>
-            <th class="left">family</th><th>pairs/d</th><th>sngl/d</th><th>pair%</th>
-            <th>moments</th><th>mkts</th><th>net $/d</th><th class="left">gate</th>
-          </tr></thead>
-          <tbody id="families-body"><tr><td class="left muted" colspan="8">loading…</td></tr></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section class="card">
-      <h2>Why the gate said no</h2>
-      <div class="sub">ranked by markets, not samples — a long-lived market re-sampled for hours is one market</div>
-      <div class="scroll">
-        <table>
-          <thead><tr><th class="left">refusal</th><th>markets</th><th>samples</th><th style="width:22%"></th></tr></thead>
-          <tbody id="refusals-body"><tr><td class="left muted" colspan="4">loading…</td></tr></tbody>
-        </table>
-      </div>
-    </section>
-  </div>
-
   <section class="card">
-    <h2>Today's gate, on this run's moments</h2>
-    <div class="sub">moments the live gate ADMITS that still pay nothing are evidence the bar is not what is stopping us</div>
+    <h2>משפחות</h2>
+    <div class="sub">ממוין לפי הדולרים שהיו מרוויחות, עם הסירוב שכל אחת רשמה הכי הרבה פעמים</div>
     <div class="scroll">
       <table>
-        <thead><tr><th class="left">gate</th><th>moments</th><th>pairs</th><th>singles</th><th>pairs/d</th><th>net $/d</th></tr></thead>
-        <tbody id="gate-body"><tr><td class="left muted" colspan="6">loading…</td></tr></tbody>
+        <thead><tr>
+          <th class="left">משפחה</th><th>זוגות/יום</th><th>בודדים/יום</th><th>% זוג</th>
+          <th>רגעים</th><th>שווקים</th><th>נטו $/יום</th><th class="left">סירוב</th>
+        </tr></thead>
+        <tbody id="families-body"><tr><td class="left muted" colspan="8">טוען…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>למה הסלקטור אמר לא</h2>
+    <div class="sub">מדורג לפי שווקים, לא לפי דגימות — שוק ארוך־חיים שנדגם שעות הוא שוק אחד</div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th class="left">סירוב</th><th>שווקים</th><th>דגימות</th><th style="width:30%"></th></tr></thead>
+        <tbody id="refusals-body"><tr><td class="left muted" colspan="4">טוען…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>הסלקטור של היום, על הרגעים של הריצה הזאת</h2>
+    <div class="sub">רגעים שהסלקטור החי מאשר ובכל זאת לא משלמים כלום הם ראיה שהרף אינו מה שעוצר אותנו</div>
+    <div class="scroll">
+      <table>
+        <thead><tr><th class="left">סלקטור</th><th>רגעים</th><th>זוגות</th><th>בודדים</th><th>זוגות/יום</th><th>נטו $/יום</th></tr></thead>
+        <tbody id="gate-body"><tr><td class="left muted" colspan="6">טוען…</td></tr></tbody>
       </table>
     </div>
   </section>
 
   <section class="verdict PENDING" id="verdict">
-    <div class="eyebrow">the answer</div>
+    <div class="eyebrow">התשובה</div>
     <div class="answer" id="verdict-answer">—</div>
     <div class="headline" id="verdict-headline">—</div>
     <div class="rec" id="verdict-rec">—</div>
   </section>
 
   <footer>
-    Read-only. Opens the probe store <code id="db-path">—</code> with <code>mode=ro</code>, refuses
-    <code>orders.db</code> by name, and places no orders. One run is noise — a single probe never licenses a
-    config change. · <a href="/">back to the live dashboard</a>
+    קריאה בלבד. פותח את מאגר הפרוב <code id="db-path">—</code> במצב <code>mode=ro</code>,
+    מסרב ל־<code>orders.db</code> לפי שם, ולא שולח שום פקודה.
+    ריצה אחת היא רעש — פרוב בודד לעולם לא מצדיק שינוי קונפיג.
+    · <a href="/">חזרה לדשבורד החי</a>
   </footer>
 </div>
 
@@ -319,44 +326,88 @@
   function duration(seconds) {
     if (seconds === null || seconds === undefined) { return "—"; }
     var s = Math.max(0, Math.round(seconds));
-    if (s < 90) { return s + "s ago"; }
+    if (s < 90) { return "לפני " + s + " שנ׳"; }
     var m = Math.round(s / 60);
-    if (m < 90) { return m + "m ago"; }
-    return (m / 60).toFixed(1) + "h ago";
+    if (m < 90) { return "לפני " + m + " דק׳"; }
+    return "לפני " + (m / 60).toFixed(1) + " ש׳";
   }
 
   function text(id, value) { $(id).textContent = value; }
 
-  function fail(message) {
+  function escapeHtml(value) {
+    return String(value).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+
+  function fail(html) {
     var box = $("error-box");
     box.hidden = false;
-    box.textContent = message;
+    box.innerHTML = html;
   }
 
   function clearFail() { $("error-box").hidden = true; }
 
+  // The one failure this page is actually likely to hit: the dashboard process
+  // was started before /probe existed, so every new route 404s while the page
+  // itself was opened from somewhere else. Say that, rather than repeating the
+  // browser's "Failed to fetch".
+  function StaleServer(target) {
+    this.name = "StaleServer";
+    this.target = target;
+  }
+
   function getJSON(target) {
     return fetch(target, { headers: { "Accept": "application/json" } })
       .then(function (response) {
-        if (!response.ok) { throw new Error(target + " -> HTTP " + response.status); }
+        if (response.status === 404) { throw new StaleServer(target); }
+        if (!response.ok) { throw new Error(target + " החזיר HTTP " + response.status); }
         return response.json();
       });
   }
 
+  function reportFailure(error) {
+    if (error instanceof StaleServer) {
+      $("state-pill").className = "pill state-OFFLINE";
+      text("state-text", "שרת ישן");
+      fail("<b>הדשבורד הזה רץ מגרסה ישנה.</b> המסלול <code>"
+        + escapeHtml(error.target) + "</code> מחזיר 404, כלומר תהליך השרת עלה "
+        + "לפני שהעמוד הזה נוסף. סגור אותו והפעל מחדש:"
+        + "<pre>python -m dashboard.server</pre>"
+        + "ואז פתח שוב את <code>http://127.0.0.1:8799/probe</code>.");
+      return;
+    }
+    if (String(error && error.message).indexOf("Failed to fetch") !== -1) {
+      $("state-pill").className = "pill state-OFFLINE";
+      text("state-text", "אין חיבור");
+      fail("<b>העמוד לא הצליח להגיע ל‑API של הדשבורד.</b> זה קורה כשפותחים את "
+        + "קובץ ה‑HTML ישירות מהדיסק, או כששרת הדשבורד לא רץ. הפעל אותו:"
+        + "<pre>python -m dashboard.server</pre>"
+        + "ופתח את <code>http://127.0.0.1:8799/probe</code> — לא את הקובץ עצמו.");
+      return;
+    }
+    fail("<b>שגיאה:</b> " + escapeHtml(String((error && error.message) || error)));
+  }
+
   // --- run pulse -------------------------------------------------------------
+
+  var STATE_LABELS = {
+    RUNNING: "רץ", STALE: "תקוע", DONE: "הסתיים",
+    MISSING: "אין מאגר", EMPTY: "ריק"
+  };
 
   function renderStatus(status) {
     var pill = $("state-pill");
     pill.className = "pill state-" + status.state;
-    text("state-text", status.state);
-    text("run-id", status.run_id || "no run yet");
+    text("state-text", STATE_LABELS[status.state] || status.state);
+    text("run-id", status.run_id || "אין עדיין ריצה");
     text("db-path", status.db || "—");
     text("k-elapsed", num(status.elapsed_hours, 2) + "h");
-    text("k-target", "of " + num(status.target_hours, 1) + "h target");
+    text("k-target", "מתוך יעד של " + num(status.target_hours, 1) + " ש׳");
     text("k-cycles", status.cycles);
-    text("k-age", "last cycle " + duration(status.age_sec));
+    text("k-age", "מחזור אחרון " + duration(status.age_sec));
     text("k-samples", status.samples);
-    text("k-markets", status.markets + " markets · " + status.families + " families");
+    text("k-markets", status.markets + " שווקים · " + status.families + " משפחות");
     text("k-watched", num(status.watched_hours, 2) + "h");
     $("progress-bar").style.width = Math.max(0, Math.min(100, status.progress_pct)) + "%";
     $("progress-bar").style.background = status.state === "STALE"
@@ -365,13 +416,14 @@
     var cycle = status.last_cycle;
     text("k-sweep", cycle ? String(cycle.markets_traded) : "—");
     text("k-sweep-note", cycle
-      ? ("cycle " + cycle.cycle + " · " + cycle.sampled + " sampled · " + num(cycle.seconds, 0) + "s")
-      : "markets traded on the tape");
+      ? ("מחזור " + cycle.cycle + " · " + cycle.sampled + " נדגמו · " + num(cycle.seconds, 0) + "s")
+      : "שווקים שנסחרו על הטייפ");
 
     if (status.state === "MISSING") {
-      fail("no probe store at " + status.db + " — start a run, or point this page at one with ?db=<path>");
+      fail("<b>אין מאגר פרוב ב‑</b><code>" + escapeHtml(status.db) + "</code>. "
+        + "הפעל ריצה, או הפנה את העמוד למאגר אחר עם <code>?db=&lt;path&gt;</code>.");
     } else if (status.state === "STALE") {
-      fail("no new cycle in " + duration(status.age_sec) + " — the probe may have died before its target");
+      fail("<b>לא נכתב מחזור חדש " + duration(status.age_sec) + ".</b> ייתכן שהפרוב מת לפני שהגיע ליעד שלו.");
     }
   }
 
@@ -385,19 +437,21 @@
 
   function renderTiles(id, report) {
     if (!report.ok) {
-      $(id).innerHTML = '<div class="tile"><div class="label">no data</div>'
-        + '<div class="value">—</div><div class="note">' + (report.reason || "") + '</div></div>';
+      $(id).innerHTML = '<div class="tile"><div class="label">אין נתונים</div>'
+        + '<div class="value">—</div><div class="note">'
+        + escapeHtml(report.reason || "") + '</div></div>';
       return;
     }
     var totals = report.totals;
     $(id).innerHTML = [
-      tile("pairs / day", num(totals.pairs_per_day), signClass(totals.pairs_per_day),
-           report.moments + " quotable moments"),
-      tile("singles / day", num(totals.singles_per_day),
-           totals.singles_per_day > 0 ? "neg" : "zero", "one leg filled — a bet nobody took"),
-      tile("net $ / day", money(totals.net_per_day), signClass(totals.net_per_day),
-           "gross " + money(totals.gross_per_day) + " · cost " + money(totals.cost_per_day)),
-      tile("families", report.families, "", report.adverse_moments + " moments saw an adverse move")
+      tile("זוגות / יום", num(totals.pairs_per_day), signClass(totals.pairs_per_day),
+           report.moments + " רגעים ניתנים לציטוט"),
+      tile("בודדים / יום", num(totals.singles_per_day),
+           totals.singles_per_day > 0 ? "neg" : "zero", "רגל אחת התמלאה — הימור שאף אחד לא בחר"),
+      tile("נטו $ / יום", money(totals.net_per_day), signClass(totals.net_per_day),
+           "ברוטו " + money(totals.gross_per_day) + " · עלות " + money(totals.cost_per_day)),
+      tile("משפחות", report.families, "",
+           report.adverse_moments + " רגעים ראו תנועה נגדית")
     ].join("");
   }
 
@@ -411,13 +465,13 @@
 
   function renderBands(bands) {
     var body = $("bands-body");
-    if (!bands || !bands.length) { body.innerHTML = '<tr><td class="left muted" colspan="6">no samples yet</td></tr>'; return; }
+    if (!bands || !bands.length) { body.innerHTML = '<tr><td class="left muted" colspan="6">אין עדיין דגימות</td></tr>'; return; }
     body.innerHTML = bands.map(function (band) {
       var gate = band.under_live_bar
-        ? '<span class="tag">refused by the live bar</span>'
-        : '<span class="tag admitted">above the live bar</span>';
+        ? '<span class="tag">נדחה על ידי הרף החי</span>'
+        : '<span class="tag admitted">מעל הרף החי</span>';
       var focus = band.in_probe_window ? ' class="focus"' : "";
-      var mark = band.in_probe_window ? ' <span class="tag here">v3 window</span>' : "";
+      var mark = band.in_probe_window ? ' <span class="tag here">חלון v3</span>' : "";
       return "<tr" + focus + '><td class="left">' + band.label + mark + "</td>"
         + "<td>" + band.markets + "</td><td>" + band.moments + "</td>"
         + '<td class="' + (band.pairs > 0 ? "pos" : "zero") + '">' + band.pairs + "</td>"
@@ -429,14 +483,15 @@
   function renderFamilies(rows) {
     var body = $("families-body");
     if (!rows || !rows.length) {
-      body.innerHTML = '<tr><td class="left muted" colspan="8">no family cleared the entry condition yet</td></tr>';
+      body.innerHTML = '<tr><td class="left muted" colspan="8">שום משפחה לא עברה עדיין את תנאי הכניסה</td></tr>';
       return;
     }
     body.innerHTML = rows.map(function (row) {
       var gate = row.admitted
-        ? '<span class="tag admitted">admitted</span>'
-        : '<span class="tag">' + row.gate + "</span>";
-      return '<tr><td class="left name" title="' + row.family + '">' + row.family + "</td>"
+        ? '<span class="tag admitted">מאושר</span>'
+        : '<span class="tag">' + escapeHtml(row.gate) + "</span>";
+      return '<tr><td class="left name" title="' + escapeHtml(row.family) + '">'
+        + escapeHtml(row.family) + "</td>"
         + '<td class="' + signClass(row.pairs_per_day) + '">' + num(row.pairs_per_day) + "</td>"
         + "<td>" + num(row.singles_per_day) + "</td>"
         + "<td>" + num(row.pair_pct, 1) + "</td>"
@@ -449,40 +504,47 @@
   function renderRefusals(refusals) {
     var body = $("refusals-body");
     if (!refusals || !refusals.length) {
-      body.innerHTML = '<tr><td class="left muted" colspan="4">every sampled market passed the gate</td></tr>';
+      body.innerHTML = '<tr><td class="left muted" colspan="4">כל שוק שנדגם עבר את הסלקטור</td></tr>';
       return;
     }
     var top = refusals[0].markets || 1;
     body.innerHTML = refusals.slice(0, 12).map(function (row) {
       var pct = Math.round(100 * row.markets / top);
       var detail = row.variants > 1
-        ? '<div class="muted" style="font-size:10px">e.g. ' + row.example
-          + " · " + row.variants + " measured values</div>"
+        ? '<div class="muted" dir="rtl" style="font-size:10px">למשל <span class="ltr">'
+          + escapeHtml(row.example) + "</span> · " + row.variants
+          + " ערכים שנמדדו</div>"
         : "";
-      return '<tr><td class="left name" title="' + row.example + '">' + row.reason + detail + "</td>"
+      return '<tr><td class="left name" title="' + escapeHtml(row.example) + '">'
+        + escapeHtml(row.reason) + detail + "</td>"
         + "<td>" + row.markets + "</td><td>" + row.samples + "</td>"
         + '<td><div class="meter"><i style="width:' + pct + '%"></i></div></td></tr>';
     }).join("");
   }
 
+  var GATE_LABELS = { admitted: "מאושר", refused: "נדחה" };
+
   function renderGateSplit(split) {
     var body = $("gate-body");
     var keys = Object.keys(split || {});
-    if (!keys.length) { body.innerHTML = '<tr><td class="left muted" colspan="6">no moments yet</td></tr>'; return; }
+    if (!keys.length) { body.innerHTML = '<tr><td class="left muted" colspan="6">אין עדיין רגעים</td></tr>'; return; }
     body.innerHTML = keys.map(function (key) {
       var row = split[key];
       var tag = key === "admitted" ? "admitted" : "";
-      return '<tr><td class="left"><span class="tag ' + tag + '">' + key + "</span></td>"
+      return '<tr><td class="left"><span class="tag ' + tag + '">'
+        + (GATE_LABELS[key] || key) + "</span></td>"
         + "<td>" + row.moments + "</td><td>" + row.pairs + "</td><td>" + row.singles + "</td>"
         + "<td>" + num(row.pairs_per_day) + "</td>"
         + '<td class="' + signClass(row.net_per_day) + '">' + money(row.net_per_day) + "</td></tr>";
     }).join("");
   }
 
+  var VERDICT_LABELS = { NO: "לא", MAYBE: "אולי", PENDING: "ממתין" };
+
   function renderVerdict(verdict) {
     var box = $("verdict");
     box.className = "verdict " + verdict.answer;
-    text("verdict-answer", verdict.answer);
+    text("verdict-answer", VERDICT_LABELS[verdict.answer] || verdict.answer);
     text("verdict-headline", verdict.headline);
     text("verdict-rec", verdict.recommendation);
   }
@@ -505,18 +567,17 @@
       renderGateSplit(strict.gate_split);
       renderVerdict(strict.verdict);
       text("findings-sub",
-        "computed by scripts/family_fill_report.py · rate basis: "
-        + (strict.rate_basis || "unknown")
-        + " · entry: queue <= " + num(strict.queue_bar, 0) + "min AND pair < "
-        + num(strict.pair_bar) + " · $" + num(strict.size_usd, 0) + "/pair, "
-        + num(strict.horizon_min, 0) + "min horizon");
-      text("refreshed", "refreshed " + new Date().toLocaleTimeString());
+        "מחושב על ידי scripts/family_fill_report.py · בסיס הקצב: "
+        + (strict.rate_basis || "לא ידוע")
+        + " · כניסה: queue <= " + num(strict.queue_bar, 0) + "min AND pair < "
+        + num(strict.pair_bar) + " · $" + num(strict.size_usd, 0) + " לזוג, אופק "
+        + num(strict.horizon_min, 0) + " דק׳");
+      text("refreshed", "רוענן " + new Date().toLocaleTimeString("he-IL"));
       if (strict.rate_basis && strict.rate_basis.indexOf("last") !== 0) {
-        fail("rate basis is '" + strict.rate_basis + "' — these numbers are not comparable to a 60-minute run");
+        fail("<b>בסיס הקצב הוא '" + escapeHtml(strict.rate_basis)
+          + "'.</b> המספרים האלה אינם ברי־השוואה לריצה על חלון של 60 דקות.");
       }
-    }).catch(function (error) {
-      fail(String(error.message || error));
-    });
+    }).catch(reportFailure);
   }
 
   refresh();

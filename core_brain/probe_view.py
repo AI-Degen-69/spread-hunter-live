@@ -304,8 +304,8 @@ def probe_report(db_path: str | Path,
         "totals": _totals([]), "rows": [], "gate_split": {},
         "bands": _bands({}, {}), "refusals": [],
         "baseline": PROBE_V2_BASELINE,
-        "verdict": {"answer": "PENDING", "headline": "no samples yet",
-                    "recommendation": "wait for the probe to write a cycle"},
+        "verdict": {"answer": "PENDING", "headline": "אין עדיין דגימות",
+                    "recommendation": "המתן שהפרוב יכתוב מחזור ראשון"},
     }
     if _connect(path) is None:
         return blank
@@ -489,25 +489,25 @@ def _verdict(report: dict[str, Any], stats: list) -> dict[str, str]:
     """
     payers = [s for s in stats if s.pairs > 0 and s.net_per_day > 0]
     if not report.get("ok"):
-        return {"answer": "PENDING", "headline": "no samples yet",
-                "recommendation": "wait for the probe to write a cycle"}
+        return {"answer": "PENDING", "headline": "אין עדיין דגימות",
+                "recommendation": "המתן שהפרוב יכתוב מחזור ראשון"}
     if not payers:
         moments = report["moments"]
         return {
             "answer": "NO",
-            "headline": (f"{moments} quotable moments, 0 families pay: no "
-                         f"queue drained at our price"),
+            "headline": (f"{moments} רגעים ניתנים לציטוט, 0 משפחות משלמות: "
+                         f"שום תור לא התנקז במחיר שלנו"),
             "recommendation": (
-                f"the ${LIVE_VOLUME_BAR:,.0f} volume bar is not the binding "
-                f"constraint -- close 'widen the universe' and do NOT lower "
+                f"רף הנפח ${LIVE_VOLUME_BAR:,.0f} אינו האילוץ הכובל — לסגור "
+                f"את המשימה \"להרחיב את היקום\" ולא להוריד את "
                 f"select_min_volume_24h_usd"),
         }
     best = max(payers, key=lambda s: s.net_per_day)
     return {
         "answer": "MAYBE",
-        "headline": (f"{best.family} shows {best.pairs} strict pairs at "
-                     f"${best.net_per_day:,.2f}/day net"),
+        "headline": (f"{best.family} מראה {best.pairs} זוגות strict ברווח נטו "
+                     f"${best.net_per_day:,.2f} ליום"),
         "recommendation": (
-            "one run is noise -- run a second confirming probe before any "
-            "config change; do not tune on this"),
+            "ריצה אחת היא רעש — הרץ פרוב מאשר שני לפני כל שינוי קונפיג; "
+            "אל תכוונן על סמך זה"),
     }

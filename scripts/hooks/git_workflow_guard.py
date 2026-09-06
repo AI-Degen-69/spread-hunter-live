@@ -41,8 +41,8 @@ GLOBAL_OPTS = {
 }
 
 ROUND_RULES = f"""\
-Pushing to a branch with an open pull request starts another automatic review.
-Before this push, from {DOC}:
+Pushing to a branch with an open pull request starts another incremental review
+once the review has been triggered. Before this push, from {DOC}:
 
   * Batch every accepted fix into ONE commit and push ONCE. Each push is its own
     incremental review, so four pushes cost four reviews for one round.
@@ -51,9 +51,16 @@ Before this push, from {DOC}:
     review has finished, never while one is in flight -- and read the commit it
     pushes before merging.
   * Post `@coderabbitai resolve` as a SEPARATE comment.
-  * The handle is allowed in four places only: the PR title placeholder, the
-    body summary line, `resolve`, and `autofix`.
-  * Never post `@coderabbitai review` or `full review`. Reviews fire on their own.
+  * The handle is allowed in five places only: the PR title placeholder, the
+    body summary line, `review`, `resolve`, and `autofix`.
+  * Reviews do NOT fire on their own here. When a pull request opens with the
+    "fewer than 10 stars / Trigger review" notice, post `@coderabbitai review`
+    as its own comment, wait 30 seconds, and read the reply. Trigger BEFORE
+    merging -- a closed pull request refuses it.
+  * This push will NOT start a review by itself. Fire the trigger again after
+    it, and if the reply is `Review rate limited`, do the agent review instead
+    of waiting.
+  * Never post `@coderabbitai full review`. That is the expensive one.
 """
 
 MERGE_RULES = f"""\

@@ -97,32 +97,65 @@ in the next section is about comments posted during review rounds.
 
 ## Review by CodeRabbit
 
-CodeRabbit reviews this repo automatically, and is configured entirely through its
-repository UI — this repo has no `.coderabbit.yaml`, and adding one would silently
-override every UI setting.
+CodeRabbit does **not** review this repo automatically — it is public with fewer than 10
+stars, so every review starts from the manual trigger described below. It is configured
+entirely through its repository UI: this repo has no `.coderabbit.yaml`, and adding one
+would silently override every UI setting.
 
 #### Where the handle is allowed
 
-`@coderabbitai` may appear in exactly four places, and nowhere else:
+`@coderabbitai` may appear in exactly five places, and nowhere else:
 
 | Use | Where |
 | --- | --- |
 | `@coderabbitai` | the PR **title** placeholder, set once at creation |
 | `@coderabbitai summary` | one line in the PR **body**, set once at creation |
+| `@coderabbitai review` | its own comment, **only** to answer a "Trigger review" notice |
 | `@coderabbitai resolve` | its own comment, closing the threads you accepted |
 | `@coderabbitai autofix` | its own comment, once per round, after triage |
 
-Every other use is banned, and the two below are the ones that cost real money.
+Every other use is banned, and `full review` is the one that costs real money.
 
-**Never post `@coderabbitai review` or `@coderabbitai full review` in a comment, at any
-point.** There is nothing to request:
+**Never post `@coderabbitai full review`.** It re-scans the entire diff — all files,
+including the ones already passed twice — and costs far more than the incremental pass it
+duplicates. Asking for one is how a two-round review turns into six.
 
-- Opening the PR triggers the first review, over the full diff.
-- Every push after that triggers an incremental review, scoped to the new commits only.
+#### The manual trigger
 
-`full review` re-scans the entire diff — all files, including the ones already passed twice
-— and costs far more than the automatic incremental pass it duplicates. Asking for one is
-how a two-round review turns into six.
+This repo is public with fewer than 10 stars, so CodeRabbit does **not** review it
+automatically. Every PR opens with this comment instead:
+
+> 🔍 Trigger review
+> This repository does not receive automatic reviews because it has fewer than 10 stars.
+
+That notice is an **instruction to fire the trigger**, not permission to skip CodeRabbit.
+Post it as its own comment:
+
+```bash
+gh pr comment <n> --body "@coderabbitai review"
+```
+
+Then **wait ~30 seconds and read the reply**, which is one of three things:
+
+| Reply | What it means | What to do |
+| --- | --- | --- |
+| A review starts (walkthrough, file comments) | The trigger worked | Work the round normally |
+| `Review rate limited` / "wait 1 hour" | The hourly OSS allowance is spent | Give up on CodeRabbit for this round — fall back to the agent review below. Never wait out the window |
+| `⚠️ Action not completed — Pull request is closed` | The PR was already merged | Too late; nothing gets reviewed |
+
+**Trigger before merging.** A merged PR refuses the trigger outright. The order is: open
+the PR → see the skip notice → post the trigger → wait 30 s → read the reply → merge.
+
+**Every push needs its own trigger.** Measured on PR #173: after pushing the round-1 fix
+commit, the CodeRabbit check went straight back to `Review skipped: manual review required
+for this OSS repository`. The incremental review a push would normally start does not fire
+here either, so each round is *push, then trigger*. The hourly allowance is the limit on
+how many rounds a PR can actually get — a trigger fired inside the same hour answers
+`Review rate limited`, and that is the point where the agent review takes over.
+
+A green CodeRabbit status check proves nothing on its own: both `Review skipped: manual
+review required for this OSS repository` and `Review rate limited` report `pass`. Read the
+check's description, never its colour.
 
 ### Working a round
 
@@ -168,13 +201,13 @@ The PR is review-complete when the latest **automatic** review carries no Critic
 Major touching `core_brain/`, `scoring/` or `dashboard/server.py`. Open Minors do not block
 merge.
 
-Three rounds is a runaway guard, not a target. If a PR reaches a fourth automatic review,
-something is wrong with the change or the filters — stop and say so rather than grinding.
+Three rounds is a runaway guard, not a target. If a PR reaches a fourth review, something
+is wrong with the change or the filters — stop and say so rather than grinding.
 
 ### CodeRabbit limit fallback
 
-1. **Priority 1**: Let CodeRabbit do the review automatically (initial 10m wait + 2m check cycles).
-2. **Priority 2**: If CodeRabbit reports that its review limit has been reached (or asks to wait 1 hour), **never wait 1 hour**. The agent executes an objective diff review directly, checking logic, limits, tests, and regressions.
+1. **Priority 1**: Get a CodeRabbit review. Fire the manual trigger (`@coderabbitai review`), wait ~30 seconds for the reply, then let the review land (2m check cycles).
+2. **Priority 2**: If CodeRabbit reports that its review limit has been reached (or asks to wait 1 hour), **never wait 1 hour**. A "fewer than 10 stars" notice is not this case — that one means fire the trigger. The agent executes an objective diff review directly, checking logic, limits, tests, and regressions.
 3. **Priority 3**: CodeRabbit outages or quota limits must never block development. Triage internal findings, post review summary to the PR, verify CI, and proceed.
 
 

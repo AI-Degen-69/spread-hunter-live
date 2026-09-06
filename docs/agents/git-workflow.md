@@ -103,26 +103,51 @@ override every UI setting.
 
 #### Where the handle is allowed
 
-`@coderabbitai` may appear in exactly four places, and nowhere else:
+`@coderabbitai` may appear in exactly five places, and nowhere else:
 
 | Use | Where |
 | --- | --- |
 | `@coderabbitai` | the PR **title** placeholder, set once at creation |
 | `@coderabbitai summary` | one line in the PR **body**, set once at creation |
+| `@coderabbitai review` | its own comment, **only** to answer a "Trigger review" notice |
 | `@coderabbitai resolve` | its own comment, closing the threads you accepted |
 | `@coderabbitai autofix` | its own comment, once per round, after triage |
 
-Every other use is banned, and the two below are the ones that cost real money.
+Every other use is banned, and `full review` is the one that costs real money.
 
-**Never post `@coderabbitai review` or `@coderabbitai full review` in a comment, at any
-point.** There is nothing to request:
+**Never post `@coderabbitai full review`.** It re-scans the entire diff — all files,
+including the ones already passed twice — and costs far more than the incremental pass it
+duplicates. Asking for one is how a two-round review turns into six.
 
-- Opening the PR triggers the first review, over the full diff.
-- Every push after that triggers an incremental review, scoped to the new commits only.
+#### The manual trigger
 
-`full review` re-scans the entire diff — all files, including the ones already passed twice
-— and costs far more than the automatic incremental pass it duplicates. Asking for one is
-how a two-round review turns into six.
+This repo is public with fewer than 10 stars, so CodeRabbit does **not** review it
+automatically. Every PR opens with this comment instead:
+
+> 🔍 Trigger review
+> This repository does not receive automatic reviews because it has fewer than 10 stars.
+
+That notice is an **instruction to fire the trigger**, not permission to skip CodeRabbit.
+Post it as its own comment:
+
+```bash
+gh pr comment <n> --body "@coderabbitai review"
+```
+
+Then **wait ~30 seconds and read the reply**, which is one of three things:
+
+| Reply | What it means | What to do |
+| --- | --- | --- |
+| A review starts (walkthrough, file comments) | The trigger worked | Work the round normally |
+| `Review rate limited` / "wait 1 hour" | The hourly OSS allowance is spent | Give up on CodeRabbit for this round — fall back to the agent review below. Never wait out the window |
+| `⚠️ Action not completed — Pull request is closed` | The PR was already merged | Too late; nothing gets reviewed |
+
+**Trigger before merging.** A merged PR refuses the trigger outright. The order is: open
+the PR → see the skip notice → post the trigger → wait 30 s → read the reply → merge.
+
+A green CodeRabbit status check proves nothing on its own: both `Review skipped: manual
+review required for this OSS repository` and `Review rate limited` report `pass`. Read the
+check's description, never its colour.
 
 ### Working a round
 

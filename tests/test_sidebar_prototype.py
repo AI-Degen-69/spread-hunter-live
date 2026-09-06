@@ -37,8 +37,10 @@ requires_node = pytest.mark.skipif(shutil.which("node") is None,
 
 
 def _nav(clicks: list[str] | None = None, stored: str | None = None,
-         toggle_nav: bool = False) -> dict:
-    payload = {"clicks": clicks or [], "stored": stored, "toggleNav": toggle_nav}
+         toggle_nav: bool = False, stored_pin: str | None = None,
+         click_pin: int = 0) -> dict:
+    payload = {"clicks": clicks or [], "stored": stored, "toggleNav": toggle_nav,
+               "storedPin": stored_pin, "clickPin": click_pin}
     out = subprocess.run([shutil.which("node"), str(HARNESS), json.dumps(payload)],
                          capture_output=True, text=True, check=True, encoding="utf-8")
     return json.loads(out.stdout)
@@ -48,6 +50,19 @@ def _layout() -> dict:
     out = subprocess.run([shutil.which("node"), str(LAYOUT_HARNESS)],
                          capture_output=True, text=True, check=True, encoding="utf-8")
     return json.loads(out.stdout)
+
+
+def _rule(css: str, selector: str) -> str:
+    """The declarations of the first rule this selector is part of.
+
+    A rule may list several selectors, so matching on the whole comma group
+    would make the assertion depend on how the stylesheet wraps its lines.
+    """
+    body = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    for head, block in re.findall(r"([^{}]+)\{([^{}]*)\}", body):
+        if selector in [part.strip() for part in head.split(",")]:
+            return block
+    raise AssertionError(f"no rule for {selector}")
 
 
 def _matches(html: str, selector: str) -> int:
@@ -313,11 +328,12 @@ def test_the_open_drawer_is_opaque():
 
 def test_the_layout_inherits_the_dashboard_theme():
     # Arrange — a layout with its own colours drifts from the live page the
-    # moment either changes.
+    # moment either changes. The rail reads `--bg-surface` rather than the
+    # translucent `--bg-card` because it expands over the page (#163).
     css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
 
     # Act / Assert
-    assert "var(--bg-card)" in css
+    assert "var(--bg-surface)" in css
     assert "var(--border-subtle)" in css
 
 
@@ -401,3 +417,213 @@ def test_the_root_serves_the_layout_and_links_out_of_nothing():
     assert CONTROL_TOKEN in root.text
     assert 'href="/prototype"' not in index
     assert "Layout prototype" not in index
+
+
+# ── The collapsible icon rail (#163) ────────────────────────────────────────
+
+def test_the_rail_sits_at_icon_width_until_it_is_asked_for():
+    # Arrange — a fixed 236px column spends the widest panels' room on five
+    # short labels that are only read when the operator is switching pages.
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+
+    # Act
+    shell = _rule(css, ".proto-shell")
+    rail = _rule(css, ".proto-sidebar")
+
+    # Assert — the grid track and the rail agree on the collapsed width.
+    assert "grid-template-columns: 56px minmax(0, 1fr)" in shell
+    assert "width: 56px" in rail
+
+
+def test_hovering_the_rail_expands_it_over_the_page():
+    # Arrange — an expansion that widens the grid track reflows every panel
+    # on the page each time the pointer crosses the rail.
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+
+    # Act
+    rail = _rule(css, ".proto-sidebar")
+    hovered = _rule(css, ".proto-body:not(.proto-rail-pinned) .proto-sidebar:hover")
+
+    # Assert — the rail overlays: it widens itself, above the page, on its own
+    # layer, while the track it sits in keeps the collapsed width.
+    assert "transition: width 220ms cubic-bezier(0.16, 1, 0.3, 1)" in rail
+    assert "z-index" in rail
+    assert "background: var(--bg-surface)" in rail
+    assert "width: 236px" in hovered
+    assert "236px minmax" not in _rule(css, ".proto-shell")
+
+
+def test_a_collapsed_label_is_still_announced():
+    # Arrange — an icon-only rail that drops its labels from the accessibility
+    # tree leaves a screen reader with five unnamed buttons.
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+    js = (_STATIC / "prototype.js").read_text(encoding="utf-8")
+
+    # Act
+    label = _rule(css, ".proto-nav-label")
+
+    # Assert — clipped, not removed.
+    assert "display: none" not in label
+    assert "visibility: hidden" not in label
+    assert "white-space: nowrap" in label
+    assert "proto-nav-label" in js
+
+
+def test_the_labels_are_revealed_when_the_rail_is_open():
+    # Arrange / Act — hover and pin are the two ways the rail opens, and a
+    # label revealed by only one of them is a half-finished rail.
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+
+    # Assert
+    assert ".proto-sidebar:hover .proto-nav-label" in css
+    assert ".proto-rail-pinned .proto-nav-label" in css
+
+
+@requires_node
+def test_pinning_the_rail_holds_it_open():
+    # Arrange / Act
+    pinned = _nav(click_pin=1)
+
+    # Assert
+    assert pinned["rail_pinned"] is True
+    assert pinned["pin_pressed"] == "true"
+
+
+@requires_node
+def test_a_second_click_unpins_the_rail():
+    # Arrange / Act
+    unpinned = _nav(click_pin=2)
+
+    # Assert
+    assert unpinned["rail_pinned"] is False
+    assert unpinned["pin_pressed"] == "false"
+
+
+@requires_node
+def test_the_pinned_rail_survives_a_reload():
+    # Arrange — pinning is a preference, not a per-visit mode.
+    pinned = _nav(click_pin=1)
+    assert pinned["stored_pin"] == "1"
+
+    # Act — the next visit reads what the last one wrote.
+    reloaded = _nav(stored_pin="1")
+
+    # Assert
+    assert reloaded["rail_pinned"] is True
+
+
+@requires_node
+def test_an_unreadable_pinned_state_loads_the_rail_collapsed():
+    # Arrange — stored state is data, not a command.
+    rendered = _nav(stored_pin="yes-please")
+
+    # Act / Assert
+    assert rendered["rail_pinned"] is False
+
+
+@requires_node
+def test_pinning_does_not_disturb_the_chosen_page():
+    # Arrange — the pin writes to storage, and one shared slot would make
+    # pinning the rail forget which page the operator was on.
+    rendered = _nav(clicks=["reports"], click_pin=1)
+
+    # Act / Assert
+    assert rendered["stored"] == "reports"
+    assert rendered["visible"] == ["reports"]
+
+
+@requires_node
+def test_every_page_carries_an_svg_icon():
+    # Arrange — a font glyph renders differently on every machine, and an
+    # icon-only rail has nothing else to identify a page by.
+    layout = _layout()
+    js = (_STATIC / "prototype.js").read_text(encoding="utf-8")
+
+    # Act
+    icons = [entry["icon"] for entry in layout["layout"]]
+
+    # Assert — path data, drawn as real SVG, hidden from the label beside it.
+    assert len(icons) == len(PAGES)
+    for icon in icons:
+        assert icon.startswith("M"), f"not SVG path data: {icon}"
+    assert "createElementNS" in js
+    assert "aria-hidden" in js
+
+
+def test_the_rail_ends_in_the_links_the_operator_leaves_for():
+    # Arrange — the venue and the repo are the two places the operator opens
+    # next, and both were a browser-history hunt from here.
+    js = (_STATIC / "prototype.js").read_text(encoding="utf-8")
+
+    # Act / Assert
+    assert "proto-rail-divider" in js
+    assert "https://polymarket.com" in js
+    assert "https://github.com/AI-Degen-69/spread-hunter-live" in js
+    assert 'rel' in js and 'noopener' in js
+
+
+@requires_node
+def test_the_pin_leaves_the_narrow_screen_drawer_alone():
+    # Arrange — below 900px the rail is a drawer over the page; a pin that
+    # also opened the drawer would cover the dashboard on a phone.
+    rendered = _nav(click_pin=1)
+
+    # Act / Assert
+    assert rendered["rail_pinned"] is True
+    assert rendered["nav_open"] is False
+
+
+def test_the_drawer_ignores_the_collapsed_width():
+    # Arrange — the drawer slides a full-width rail over the page; inheriting
+    # the 56px desktop width would slide in an unreadable strip.
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+
+    # Act
+    drawer = css.split("@media (max-width: 900px)")[1]
+    rail = drawer.split(".proto-sidebar {")[1].split("}")[0]
+
+    # Assert
+    assert "width: 240px" in rail
+
+
+def test_the_drawer_drops_the_pin():
+    # Arrange — below 900px there is no collapsed rail to hold open, so a pin
+    # in the drawer is a control that does nothing.
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+
+    # Act
+    drawer = css.split("@media (max-width: 900px)")[1]
+
+    # Assert
+    pin = drawer.split(".proto-rail-pin {")[1].split("}")[0]
+    assert "display: none" in pin
+
+
+def test_the_pin_is_announced_by_the_label_the_operator_reads():
+    # Arrange - an aria-label overrides the visible text, so a button reading
+    # "Pin sidebar" announced as something else is the mismatch WCAG 2.5.3
+    # exists to catch. The state it toggles rides on aria-pressed instead.
+    js = (_STATIC / "prototype.js").read_text(encoding="utf-8")
+
+    # Act
+    pin = js.split("function buildRailPin(doc)")[1].split("function buildRailDivider")[0]
+
+    # Assert
+    assert "aria-label" not in pin
+    assert "aria-pressed" in pin
+    assert "buildNavLabel(doc, 'Pin sidebar')" in pin
+
+
+def test_the_keyboard_opens_the_rail_without_the_mouse_holding_it_open():
+    # Arrange - `:focus-within` fires for a mouse click too, so clicking the
+    # pin to close the rail left it open under the pointer that had just
+    # closed it. Keyboard focus still has to open it.
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+
+    # Act - the comment above the rule names the pitfall, so read the
+    # selectors rather than the raw file.
+    body = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+    # Assert
+    assert ":focus-within" not in body
+    assert ":has(:focus-visible)" in body

@@ -18,6 +18,7 @@ process.stdout.write(JSON.stringify({
   layout: proto.PAGE_LAYOUT.map(entry => ({
     page: entry.page,
     label: entry.label,
+    icon: entry.icon,
     selectors: entry.selectors,
   })),
   layout_paths: proto.LAYOUT_PATHS,

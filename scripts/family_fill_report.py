@@ -362,6 +362,34 @@ def summarise(moments: list[Moment], rows: list[dict],
     return out
 
 
+def _rate_basis(rows: list[dict]) -> str:
+    """Over what window these samples measured the drain rate at our level.
+
+    Rows written before the probe bounded its tape window carry NULL here, and
+    their rate is the market's LIFETIME average -- a different unit from a
+    recent rate, not a different value of the same one. Pooling the two would
+    average a month against an hour, so the header says plainly when a run
+    carries the old basis.
+
+    Only rows that carry a rate are read. A market sampled with no book at all
+    writes NULL for the window AND for the span, because there was nothing to
+    measure -- it is not an old measurement, and counting it as one makes a
+    fresh store report itself as MIXED.
+    """
+    rated = [r for r in rows if r.get("tape_span_min") is not None]
+    windows = {r.get("tape_window_min") for r in rated}
+    if not windows:
+        return "no sample carries a measurable tape window"
+    bounded = sorted(w for w in windows if w is not None)
+    if not bounded:
+        return ("the venue's whole tape history (LEGACY -- this rate is a "
+                "lifetime average and predicts drains that do not happen)")
+    if None in windows:
+        return (f"MIXED: {', '.join(f'{w:.0f}min' for w in bounded)} and "
+                f"legacy lifetime rows -- do not compare these to each other")
+    return ", ".join(f"last {w:.0f}min of tape" for w in bounded)
+
+
 def _span_days(rows: list[dict],
                max_gap_min: float = DEFAULT_MAX_GAP_MIN) -> float:
     """Days the probe was WATCHING, which is not the clock between the ends.
@@ -396,6 +424,9 @@ def report(db_path: Path, hours: Optional[float], queue_bar: float,
         print(f"{len(rows)} samples over {days * 24:.1f}h, "
               f"0 moments clear queue <= {queue_bar:.0f}min "
               f"AND pair < {pair_bar:.2f}")
+        # A store on the legacy basis reports zero moments for a reason -- the
+        # basis is the finding, so it has to survive the early return.
+        print(f"rate basis: {_rate_basis(rows)}")
         return 1
     stats = summarise(moments, rows, days)
     mode = ("upper bound (adverse moves count as fills)" if count_adverse
@@ -405,6 +436,7 @@ def report(db_path: Path, hours: Optional[float], queue_bar: float,
     print(f"{len(rows)} samples, {days * 24:.1f}h watched, "
           f"{len(moments)} quotable moments, {len(stats)} families "
           f"[{label}]")
+    print(f"rate basis: {_rate_basis(rows)}")
     print(f"entry: queue <= {queue_bar:.0f}min AND pair < {pair_bar:.2f}; "
           f"${size_usd:.0f}/pair, {horizon_min:.0f}min horizon")
     print(f"fills: {mode}\n")

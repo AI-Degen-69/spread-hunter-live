@@ -62,6 +62,14 @@ REFUSED_STORES = ("orders.db",)
 # tick the venue quotes on.
 _PRICE_EPS = 1e-9
 
+# How far back the tape is read when measuring the drain rate at our level.
+# Long enough that a market trading a few times an hour still registers, short
+# enough that the rate describes now rather than the market's whole life. An
+# order this project would actually rest is judged over 15 minutes
+# (`pairs_exit_window_sec`), so an hour is four of those -- the shortest window
+# that does not turn one quiet stretch into "nothing ever trades here".
+DEFAULT_TAPE_WINDOW_MIN = 60.0
+
 DATA_API = "https://data-api.polymarket.com"
 GAMMA_API = "https://gamma-api.polymarket.com"
 CLOB_API = "https://clob.polymarket.com"
@@ -100,7 +108,8 @@ CREATE TABLE IF NOT EXISTS probe_samples (
     spread_up REAL, spread_down REAL,
     touch_pair_cost REAL,
     q_bid_up REAL, q_ask_up REAL, q_bid_down REAL, q_ask_down REAL,
-    tape_span_min REAL, tape_prints INTEGER, tape_prints_new INTEGER,
+    tape_span_min REAL, tape_window_min REAL,
+    tape_prints INTEGER, tape_prints_new INTEGER,
     vol_at_bid_up REAL, vol_at_ask_up REAL,
     qmin_bid_up REAL, qmin_ask_up REAL, qmin_worst REAL,
     book_ok INTEGER NOT NULL DEFAULT 0,
@@ -309,29 +318,72 @@ def new_trades(rows: Iterable[dict], since_ts: float) -> list[dict]:
     return out
 
 
-def tape_at_touch(rows: list[dict], best_bid: float,
-                  best_ask: float) -> tuple[float, float, float, int]:
-    """Volume that traded AT our two levels, and the span it took.
+def _finite_window(window_min: float) -> float:
+    """The tape window as a positive, finite float, or a refusal.
+
+    `float()` happily accepts zero, a negative, `nan` and `inf`.
+    `queue_minutes_at` turns a zero or negative window into `math.inf`, and a
+    `nan` slips past every comparison it makes and comes out the other side as
+    a `nan` queue estimate that `_finite` does not catch. A bad window is
+    therefore not a bad number downstream -- it is a measurement that looks
+    valid and is not, so it is refused here.
+    """
+    try:
+        window = float(window_min)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"tape window must be a number, got {window_min!r}") from None
+    if not math.isfinite(window) or window <= 0.0:
+        raise ValueError(
+            f"tape window must be finite and greater than zero, "
+            f"got {window_min!r}")
+    return window
+
+
+def tape_at_touch(rows: list[dict], best_bid: float, best_ask: float,
+                  window_min: float = DEFAULT_TAPE_WINDOW_MIN,
+                  now_ts: Optional[float] = None
+                  ) -> tuple[float, float, float, int]:
+    """Volume that traded AT our two levels in the LAST `window_min` minutes.
 
     A trade is attributed to the bid side when it hits down into our bid and to
     the ask side when it lifts up through our ask; a maker resting there is the
     counterparty in exactly those two cases and in no others. Prices are
     normalised to the UP token, so a NO print at 0.40 is read as 0.60.
+
+    BOUNDED, AND THIS IS THE POINT. The venue returns whatever tape history it
+    holds -- spans of 46,000 minutes, a month, were recorded on live markets --
+    and dividing a month of volume by a month of minutes produces an average
+    rate no 15-minute order will ever see. Measured that way the probe admitted
+    173 moments whose queues it said would clear inside 10 minutes; 97% of
+    those legs then drained less than 1% of what they needed. The rate has to
+    be measured over a window comparable to how long an order actually rests.
+
+    The denominator is the WINDOW, not the spread of the prints inside it. Two
+    prints three minutes apart inside an hour is 3 minutes of tape only if you
+    are willing to claim the other 57 minutes did not happen; they did, and
+    nothing traded in them.
     """
-    # `is not None`, not truthiness: a timestamp of 0 is a real reading and
-    # dropping it silently collapses the span to zero, which reads downstream
-    # as "no queue data" on a market that had plenty.
-    stamps = []
+    window = _finite_window(window_min)
+    horizon = window * 60.0
+    now = time.time() if now_ts is None else float(now_ts)
+    floor = now - horizon
+    recent = []
     for row in rows:
+        # `is not None`, not truthiness: a timestamp of 0 is a real reading and
+        # dropping it silently collapses the span to zero, which reads
+        # downstream as "no queue data" on a market that had plenty.
         try:
-            stamps.append(float(row["timestamp"]))
+            stamp = float(row["timestamp"])
         except (TypeError, ValueError, KeyError):
             continue
-    if len(stamps) < 2:
-        return 0.0, 0.0, 0.0, len(rows)
-    span_min = (max(stamps) - min(stamps)) / 60.0
+        if stamp >= floor:
+            recent.append(row)
+    if not recent:
+        return 0.0, 0.0, window, 0
+    span_min = window
     vol_bid = vol_ask = 0.0
-    for row in rows:
+    for row in recent:
         try:
             price, size = float(row["price"]), float(row["size"])
         except (TypeError, ValueError, KeyError):
@@ -347,7 +399,7 @@ def tape_at_touch(rows: list[dict], best_bid: float,
             vol_ask += size
         elif (not lifts) and up_price <= best_bid + _PRICE_EPS:
             vol_bid += size
-    return vol_bid, vol_ask, span_min, len(rows)
+    return vol_bid, vol_ask, span_min, len(recent)
 
 
 # Every measurement key, so a row without a book has the same shape as a row
@@ -357,6 +409,7 @@ _BLANK_MEASURE = {
     "best_ask_down": None, "spread_up": None, "spread_down": None,
     "touch_pair_cost": None, "q_bid_up": None, "q_ask_up": None,
     "q_bid_down": None, "q_ask_down": None, "tape_span_min": None,
+    "tape_window_min": None,
     "vol_at_bid_up": None, "vol_at_ask_up": None, "qmin_bid_up": None,
     "qmin_ask_up": None, "qmin_worst": None,
 }
@@ -367,13 +420,16 @@ def _finite(value: float) -> Optional[float]:
 
 
 def measure(up_book: object, down_book: object, rows: list[dict],
-            prints_new: int = 0) -> Optional[dict]:
+            prints_new: int = 0,
+            window_min: float = DEFAULT_TAPE_WINDOW_MIN,
+            now_ts: Optional[float] = None) -> Optional[dict]:
     """Everything one market contributes to one cycle, or None if unreadable.
 
-    `rows` is the venue's FULL recent window and the queue is measured against
-    the span that window covers, so consecutive cycles are repeated readings of
-    the same quantity rather than a partition of it. `prints_new` is the count
-    of those prints the previous cycle had not already seen.
+    `rows` is whatever tape history the venue returned; only the last
+    `window_min` minutes of it are counted, and that window is the denominator
+    of the queue rate. Consecutive cycles are therefore overlapping readings of
+    a recent rate rather than of the market's lifetime average. `prints_new` is
+    the count of those prints the previous cycle had not already seen.
     """
     from scoring.selector import queue_minutes_at
 
@@ -381,7 +437,8 @@ def measure(up_book: object, down_book: object, rows: list[dict],
     if bb_up is None or ba_up is None or ba_up <= bb_up:
         return None
     bb_dn, ba_dn, q_bid_dn, q_ask_dn = touch(down_book)
-    vol_bid, vol_ask, span_min, prints = tape_at_touch(rows, bb_up, ba_up)
+    vol_bid, vol_ask, span_min, prints = tape_at_touch(
+        rows, bb_up, ba_up, window_min=window_min, now_ts=now_ts)
     qmin_bid = queue_minutes_at(q_bid_up, vol_bid, span_min)
     qmin_ask = queue_minutes_at(q_ask_up, vol_ask, span_min)
     return dict(
@@ -393,7 +450,8 @@ def measure(up_book: object, down_book: object, rows: list[dict],
         touch_pair_cost=(None if bb_dn is None else round(bb_up + bb_dn, 4)),
         q_bid_up=q_bid_up, q_ask_up=q_ask_up,
         q_bid_down=q_bid_dn, q_ask_down=q_ask_dn,
-        tape_span_min=round(span_min, 2), tape_prints=prints,
+        tape_span_min=round(span_min, 2), tape_window_min=float(window_min),
+        tape_prints=prints,
         tape_prints_new=prints_new,
         vol_at_bid_up=round(vol_bid, 1), vol_at_ask_up=round(vol_ask, 1),
         qmin_bid_up=_finite(qmin_bid), qmin_ask_up=_finite(qmin_ask),
@@ -415,8 +473,23 @@ def open_store(db_path: Path) -> sqlite3.Connection:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(db_path))
     conn.executescript(SCHEMA)
+    _add_missing_columns(conn)
     conn.commit()
     return conn
+
+
+def _add_missing_columns(conn: sqlite3.Connection) -> None:
+    """Bring a store written by an older probe up to the current schema.
+
+    The store is resumable by design, so a run started against last week's
+    file must not fail on a column that did not exist then. The added column
+    stays NULL on those rows, which is the honest reading: their rate was
+    measured over the venue's whole tape, not over a bounded window, and a
+    report that mixes the two is comparing different units.
+    """
+    have = {row[1] for row in conn.execute("PRAGMA table_info(probe_samples)")}
+    if "tape_window_min" not in have:
+        conn.execute("ALTER TABLE probe_samples ADD COLUMN tape_window_min REAL")
 
 
 def last_seen(conn: sqlite3.Connection) -> dict[str, float]:
@@ -438,7 +511,8 @@ _COLUMNS = (
     "volume_24h", "days_to_resolve", "gate_pass", "gate_reason",
     "best_bid_up", "best_ask_up", "best_bid_down", "best_ask_down",
     "spread_up", "spread_down", "touch_pair_cost", "q_bid_up", "q_ask_up",
-    "q_bid_down", "q_ask_down", "tape_span_min", "tape_prints",
+    "q_bid_down", "q_ask_down", "tape_span_min", "tape_window_min",
+    "tape_prints",
     "tape_prints_new",
     "vol_at_bid_up", "vol_at_ask_up", "qmin_bid_up", "qmin_ask_up",
     "qmin_worst", "book_ok", "is_bootstrap")
@@ -689,7 +763,8 @@ def fetch_tapes(get: Callable, cids: list[str]) -> dict[str, list[dict]]:
 def build_rows(metas: dict[str, dict], books: dict[str, Any],
                tapes: dict[str, list[dict]], seen: dict[str, float],
                now: float, run_id: str, cycle: int,
-               min_volume_usd: float, max_days: float) -> list[dict]:
+               min_volume_usd: float, max_days: float,
+               tape_window_min: float = DEFAULT_TAPE_WINDOW_MIN) -> list[dict]:
     """Turn one cycle's raw reads into the rows the store keeps.
 
     Pure, so the cycle's judgement can be tested without the venue.
@@ -710,7 +785,8 @@ def build_rows(metas: dict[str, dict], books: dict[str, Any],
         # 2026-09-03, the venue lists tomorrow's five-minute crypto markets
         # ~20 hours early with a completely empty book, and a run that skipped
         # them would have concluded the family does not exist.
-        measured = measure(up_book, down_book, rows_all, prints_new)
+        measured = measure(up_book, down_book, rows_all, prints_new,
+                           window_min=tape_window_min, now_ts=now)
         passed, reason = gate_verdict(meta, min_volume_usd, max_days)
         row = dict(
             ts=now, run_id=run_id, cycle=cycle, condition_id=cid,
@@ -734,7 +810,8 @@ def run_cycle(get: Callable, conn: sqlite3.Connection, run_id: str,
               cycle: int, seen: dict[str, float], candidates: int,
               pages: int, open_pages: int, min_volume_usd: float,
               max_days: float,
-              now: Callable[[], float] = time.time) -> int:
+              now: Callable[[], float] = time.time,
+              tape_window_min: float = DEFAULT_TAPE_WINDOW_MIN) -> int:
     """Sweep the tape, read the open books, write what one pass measured."""
     started = time.monotonic()
     tape = sweep_tape(get, pages)
@@ -751,7 +828,7 @@ def run_cycle(get: Callable, conn: sqlite3.Connection, run_id: str,
     tapes = fetch_tapes(get, list(metas))
     stamp = now()
     rows = build_rows(metas, books, tapes, seen, stamp, run_id, cycle,
-                      min_volume_usd, max_days)
+                      min_volume_usd, max_days, tape_window_min)
     write_samples(conn, rows)
     for row in rows:
         seen[row["condition_id"]] = stamp
@@ -768,6 +845,7 @@ def run_cycle(get: Callable, conn: sqlite3.Connection, run_id: str,
 def run(hours: float, interval_min: float, db_path: Path, run_id: str,
         candidates: int, pages: int, open_pages: int, per_second: float,
         min_volume_usd: float, max_days: float,
+        tape_window_min: float = DEFAULT_TAPE_WINDOW_MIN,
         get: Optional[Callable] = None,
         now: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep) -> int:
@@ -787,7 +865,8 @@ def run(hours: float, interval_min: float, db_path: Path, run_id: str,
             try:
                 sampled += run_cycle(fetch, conn, run_id, cycle, seen,
                                      candidates, pages, open_pages,
-                                     min_volume_usd, max_days, now)
+                                     min_volume_usd, max_days, now,
+                                     tape_window_min)
             except Exception as exc:                        # noqa: BLE001
                 log.warning("cycle %d failed: %s", cycle, exc)
             cycle += 1
@@ -812,6 +891,11 @@ def _parse_args(argv: Optional[list[str]] = None):
                              "minutes; a slower cadence cannot see one alive")
     parser.add_argument("--db", default="runtime/family_probe.db")
     parser.add_argument("--run-id", default=None)
+    parser.add_argument("--tape-window-min", type=float,
+                        default=DEFAULT_TAPE_WINDOW_MIN,
+                        help="minutes of tape the drain rate is measured over "
+                             "(the venue's whole history was the old basis, "
+                             "and it predicted drains that never happened)")
     parser.add_argument("--candidates", type=int, default=150,
                         help="open markets per cycle, tape-active first")
     parser.add_argument("--pages", type=int, default=20,
@@ -824,7 +908,12 @@ def _parse_args(argv: Optional[list[str]] = None):
                         help="volume gate to score against (default: config)")
     parser.add_argument("--max-days", type=float, default=None,
                         help="horizon gate to score against (default: config)")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    try:
+        _finite_window(args.tape_window_min)
+    except ValueError as exc:
+        parser.error(f"--tape-window-min: {exc}")
+    return args
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -845,7 +934,7 @@ def main(argv: Optional[list[str]] = None) -> int:
              min_volume, max_days, args.db)
     return run(args.hours, args.interval_min, Path(args.db), run_id,
                args.candidates, args.pages, args.open_pages, args.per_second,
-               min_volume, max_days)
+               min_volume, max_days, args.tape_window_min)
 
 
 if __name__ == "__main__":

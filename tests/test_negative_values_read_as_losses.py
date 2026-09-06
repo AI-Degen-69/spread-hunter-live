@@ -36,7 +36,7 @@ requires_node = pytest.mark.skipif(shutil.which("node") is None,
 
 def _render(realized: float = -2.40, *, expectancy: float = -0.343,
             sharpe: float = -0.63, profit_factor: float = 0.13,
-            mc_end: float | None = None) -> dict:
+            mc_end: float | None = None, win_rate_ci95=None) -> dict:
     stats = {
         "trade_analytics": {
             "n_closes": 7, "expectancy_usd": expectancy,
@@ -45,6 +45,8 @@ def _render(realized: float = -2.40, *, expectancy: float = -0.343,
             "payoff_ratio": 0.0, "win_rate": 0.286,
             "var_95_usd": 0.0, "cvar_95_usd": 0.0,
             "kelly_fraction": 0.0, "half_kelly": 0.0,
+            "win_rate_ci95": (win_rate_ci95 if win_rate_ci95 is not None
+                              else {"lower": 0.0822, "upper": 0.6411}),
         },
     }
     payload = {
@@ -159,3 +161,25 @@ def test_the_run_verdict_puts_the_minus_in_front_of_the_dollar():
     assert _signed_usd(-2.40) == "-$2.40"
     assert _signed_usd(2.40) == "+$2.40"
     assert _signed_usd(0.0) == "+$0.00"
+
+
+@requires_node
+def test_the_wilson_interval_is_read_off_the_shape_the_report_sends():
+    """`win_rate_ci95` is `{lower, upper}`, and the card indexed it as `[0]`
+    and `[1]`. Both ends came back `undefined`, so the interval the report had
+    computed rendered as `[NaN%-NaN%]` and was never once displayed."""
+    assert _render()["quant_ci"] == "95% CI: [8%–64%]"
+    # An array is still accepted, for any caller that sends one.
+    assert _render(win_rate_ci95=[0.0822, 0.6411])["quant_ci"] == "95% CI: [8%–64%]"
+
+
+@requires_node
+def test_a_confidence_interval_with_a_missing_end_shows_no_interval():
+    # Better the placeholder than half an interval presented as a whole one.
+    assert _render(win_rate_ci95={"lower": 0.08})["quant_ci"] == "95% CI: [0%–0%]"
+
+
+@requires_node
+def test_the_expectancy_tile_puts_the_minus_in_front_of_the_dollar():
+    assert _render(expectancy=-0.343)["quant_expectancy_text"] == "-$0.343"
+    assert _render(expectancy=0.343)["quant_expectancy_text"] == "$0.343"

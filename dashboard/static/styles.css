@@ -247,7 +247,7 @@ header {
 
 .card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
   gap: 16px;
 }
 /* DT1: Guardrail card first (visual priority) — order via flex */
@@ -379,7 +379,7 @@ header {
 .analytics-chip.live { color:#34d399; background:var(--green-bg); border-color:var(--green-border); }
 .analytics-chip.warn { color:#fbbf24; background:var(--amber-bg); border-color:var(--amber-border); }
 .analytics-chip.bad { color:#fca5a5; background:var(--red-bg); border-color:var(--red-border); }
-.analytics-chart-grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; align-items:stretch; }
+.analytics-chart-grid { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:16px; align-items:stretch; }
 .analytics-chart-card { min-width:0; min-height:280px; aspect-ratio:1; height:auto; }
 .analytics-chart-card h3 { font-size:14px; margin:0; letter-spacing:.04em; }
 .analytics-chart-head { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:10px; }
@@ -427,7 +427,7 @@ header {
 .analytics-gates .gate-group th { text-transform:uppercase; letter-spacing:.06em; font-size:10px;
   color:var(--text-muted); padding-top:12px; }
 .math-inline { white-space:nowrap; }
-@media (max-width:900px) { .analytics-chart-grid { grid-template-columns:1fr; } }
+@media (max-width:900px) { .analytics-chart-grid { grid-template-columns:minmax(0, 1fr); } }
 @media (max-width:600px) { .analytics-totals { grid-template-columns:1fr; } .analytics-chip { font-size:12px; } }
 
 /* ── KPI tiles ── */
@@ -1382,6 +1382,7 @@ td { font-size: 13px; }
 
 /* ── Statistical Chart Cards & SVG Canvas ── */
 .stats-chart-card {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;

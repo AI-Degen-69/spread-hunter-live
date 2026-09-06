@@ -325,7 +325,7 @@ function Get-NextShadowSeq {
     $seqs = @(Get-ChildItem (Join-Path $ProjectPath "data") -File -Filter "*.db" -ErrorAction SilentlyContinue |
         ForEach-Object { if ($_.BaseName -match '^(\d{1,2})_shadow_') { [int]$Matches[1] } })
     $next = 1
-    if ($seqs.Count -gt 0) { $next = (@($seqs | Measure-Object -Maximum).Maximum) + 1 }
+    if ($seqs.Count -gt 0) { $next = [int](@($seqs | Measure-Object -Maximum).Maximum) + 1 }
     if ($next -gt 99) { $next = 1 }   # stay within the 00-99 run-id range
     return ("{0:D2}" -f $next)
 }

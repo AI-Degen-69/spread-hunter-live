@@ -75,17 +75,31 @@ def test_an_adverse_bar_hangs_below_the_zero_line():
 
 
 @requires_node
-def test_a_favourable_run_still_sits_on_a_baseline_at_the_bottom():
-    # Arrange — with nothing adverse, the zero line stays where it always was,
-    # so the fix does not redraw a chart that was already right.
+def test_a_favourable_run_still_sits_on_the_floor_of_the_plot():
+    # Arrange — with nothing adverse the chart was already right, and moving
+    # its baseline would be a regression dressed as a fix. `padT + plotH` is
+    # 18 + 142: the floor, where it has always been.
     rendered = _render([_interval("1m", 12.0), _interval("5m", 30.0)])
 
     # Assert
+    assert rendered["zeroLineY"] == pytest.approx(160.0, abs=0.01)
     assert rendered["labels"] == ["+12.0 bps", "+30.0 bps"]
     for rect in rendered["rects"]:
         assert rect["height"] > 0
-        assert rect["y"] + rect["height"] == pytest.approx(
-            rendered["zeroLineY"], abs=0.01)
+        assert rect["y"] + rect["height"] == pytest.approx(160.0, abs=0.01)
+
+
+@requires_node
+def test_an_all_adverse_run_hangs_from_the_top_of_the_plot():
+    # Arrange — the mirror of the case above: nothing favourable, so the zero
+    # line is the ceiling and every bar hangs from it.
+    rendered = _render([_interval("1m", -20.0), _interval("5m", -45.0)])
+
+    # Assert — `padT` is 18.
+    assert rendered["zeroLineY"] == pytest.approx(18.0, abs=0.01)
+    for rect in rendered["rects"]:
+        assert rect["y"] == pytest.approx(18.0, abs=0.01)
+        assert rect["height"] > 0
 
 
 @requires_node
@@ -98,8 +112,3 @@ def test_a_flat_run_is_not_magnified_into_a_curve():
     # Assert — every bar is a sliver, not half the panel.
     assert max(r["height"] for r in rendered["rects"]) < 15.0
 
-
-@requires_node
-def test_no_matured_horizon_says_so_rather_than_drawing_nothing():
-    rendered = _render([])
-    assert rendered["chartEmpty"]

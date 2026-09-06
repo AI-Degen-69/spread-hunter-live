@@ -2356,7 +2356,14 @@ function renderMarkoutChart(stats) {
   // a dramatic curve by its own rounding noise.
   const span = Math.max(hi - lo, 3.0);
   const usable = plotH * 0.85;
-  const zeroY = padT + (plotH - usable) / 2 + (hi / span) * usable;
+  // One-sided data keeps the baseline on the edge it has always sat on: with
+  // nothing adverse the zero line is the floor of the plot, exactly as before
+  // this change, and centring the band would have shifted every favourable
+  // bar up by ~11px for no reason. Only a chart carrying both signs needs the
+  // line somewhere in the middle.
+  const zeroY = lo === 0 ? padT + plotH
+    : hi === 0 ? padT
+    : padT + (plotH - usable) / 2 + (hi / span) * usable;
   const step = plotW / intervals.length;
   const barW = step * 0.55;
 

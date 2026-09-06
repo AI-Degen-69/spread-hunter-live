@@ -2357,3 +2357,11 @@ td { font-size: 13px; }
   color: var(--text-muted);
 }
 .funnel-declined-chip b { color: var(--text-secondary); }
+
+/* Impact tiers (#90). The grid keeps document order -- a screen reader and an
+   unstyled render both follow that -- and reorders visually, so exploration
+   decks (projections, the what-if simulator) can never sit above the decks
+   that decide whether we trade at all. */
+.analytics-chart-grid > [data-tier="1"] { order: 1; }
+.analytics-chart-grid > [data-tier="2"] { order: 2; }
+.analytics-chart-grid > [data-tier="3"] { order: 3; }

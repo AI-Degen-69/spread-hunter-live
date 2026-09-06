@@ -4613,7 +4613,8 @@ if (typeof module === 'undefined' || !module.exports) {
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { renderPositionDistributionChart, renderMarkoutChart, renderMonteCarloChart, renderQuantRiskGrid, signClass, fmtSignedUSD, _ciBounds, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity,
-    statsFilterScope, pruneStatsSubnav, STATS_VIEW_TARGETS,
+    statsFilterScope, pruneStatsSubnav, STATS_VIEW_TARGETS, applyStatsViewFilter,
+    renderPnlCiReadout, renderExecutionFunnel,
     OT_VIEWS, OT_COLUMNS, ordersTradesRows, ordersTradesCounts, otHeadHtml,
     activeMarketsRows, openOrdersRows, positionsRows, resolvedMarketsRows,
     heldMarketEntries, heldLegs, isFinishedMarket, latestLegMids, latestLegQuotes,

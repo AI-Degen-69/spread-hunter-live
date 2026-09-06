@@ -66,6 +66,54 @@ Z_BETA_80_POWER = 0.8416       # 80% power (beta=0.20)
 Z_95_TWO_SIDED = 1.96          # 95% two-sided (used by _wilson_ci default)
 
 
+# Two-sided normal critical values, by confidence level.
+_CI_Z_BY_LEVEL = ((90, 1.645), (95, 1.96))
+
+
+def _mean_pnl_ci(pnls: list[float]) -> dict[str, Any]:
+    """The 90% and 95% band on the mean realized PnL per close, in dollars.
+
+    The GO/NO-GO question #90 names is not "what is the average" but "does the
+    interval around it still contain a loss, and how deep". So each level
+    carries that answer outright rather than leaving it to be inferred from a
+    lower bound printed next to a mean.
+
+    A sample too small for a standard error reports no levels at all. A zero
+    would read as "breaks even", which is a measurement one close has not made.
+    """
+    n = len(pnls)
+    mean_usd = statistics.mean(pnls) if n else None
+    if n < 2 or mean_usd is None:
+        return {"mean_usd": mean_usd, "n": n, "levels": [], "verdict": None}
+
+    se = statistics.stdev(pnls) / math.sqrt(n)
+    levels = []
+    for level, z in _CI_Z_BY_LEVEL:
+        lower = mean_usd - z * se
+        upper = mean_usd + z * se
+        levels.append({
+            "level": level,
+            "lower": lower,
+            "upper": upper,
+            "includes_negative": lower < 0,
+            # How far below zero the band reaches -- the "and how much" half
+            # of the question. NULL when it never gets there.
+            "negative_depth_usd": abs(lower) if lower < 0 else None,
+        })
+
+    # The verdict reads off the wider band: passing on 90% while the 95% band
+    # still spans zero is not a pass.
+    widest = levels[-1]
+    if widest["lower"] > 0:
+        verdict = "positive"
+    elif widest["upper"] < 0:
+        verdict = "negative"
+    else:
+        verdict = "spans_zero"
+
+    return {"mean_usd": mean_usd, "n": n, "levels": levels, "verdict": verdict}
+
+
 def required_sample_size(
     sigma: float | None,
     delta: float | None,
@@ -275,6 +323,8 @@ def compute_trade_analytics(
             "upper": mean_return_pct + 1.96 * se,
         }
 
+    mean_pnl_ci = _mean_pnl_ci(wins + losses)
+
     avg_win_usd = statistics.mean(wins) if wins else None
     avg_loss_usd = statistics.mean(losses) if losses else None
     # Classic reward:risk = average win / average loss (magnitude). NULL when
@@ -334,6 +384,7 @@ def compute_trade_analytics(
         "stdev_return_pct": stdev_return_pct,
         "ci90_lower_pct": ci90_lower_pct,
         "ci95_return_pct": ci95_return_pct,
+        "mean_pnl_ci": mean_pnl_ci,
         "avg_win_usd": avg_win_usd,
         "avg_loss_usd": avg_loss_usd,
         "risk_reward_ratio": risk_reward_ratio,

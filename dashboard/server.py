@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import math
 import os
 import logging
 import secrets
@@ -2068,10 +2069,93 @@ def get_closed_markets():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+def _probe_number(name: str, value: float | None, fallback: float) -> float:
+    """A `?queue_bar=` / `?hours=` from the page, or the default, as a number.
+
+    NaN and Infinity are the reason this exists. FastAPI parses `NaN` into a
+    float happily and every comparison downstream is then silently false --
+    `max(nan, x)` is nan, `nan >= 100.0` is False -- so the value survives the
+    whole computation and reaches `JSONResponse`, which renders with
+    `allow_nan=False` and raises `ValueError` inside the response. The caller
+    gets an opaque 500 for what is a bad parameter. Refuse it at the edge and
+    name the parameter instead.
+
+    Zero and negatives are refused with it: a queue bar of 0 admits nothing, a
+    horizon of 0 hours watches nothing, and both would report an empty run as
+    a finding.
+    """
+    if value is None:
+        return fallback
+    number = float(value)
+    if not math.isfinite(number) or number <= 0:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{name} must be a finite number greater than 0")
+    return number
+
+
+@app.get("/api/probe/status")
+def get_probe_status(db: str | None = None, target_hours: float | None = None):
+    """Is the family probe alive, and how far into its run is it?
+
+    Read-only, and pointed at the probe's own store -- never at the live
+    registry, which `resolve_probe_db` refuses by name. A missing store is a
+    200 that says MISSING: the page it feeds is watched WHILE a probe runs, and
+    an operator opening it before launching one should see "not started", not
+    a red error that reads like a broken dashboard.
+    """
+    from core_brain.probe_view import (
+        DEFAULT_TARGET_HOURS,
+        RefusedStore,
+        probe_status,
+        resolve_request_db,
+    )
+
+    try:
+        path = resolve_request_db(db)
+    except RefusedStore as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    hours = _probe_number("target_hours", target_hours, DEFAULT_TARGET_HOURS)
+    return JSONResponse(probe_status(path, target_hours=hours))
+
+
+@app.get("/api/probe/findings")
+def get_probe_findings(db: str | None = None,
+                       queue_bar: float | None = None,
+                       adverse: int = 0,
+                       hours: float | None = None):
+    """What the probe has found so far: the fill report, as JSON.
+
+    Every number is computed by `scripts.family_fill_report`, so this endpoint
+    and the terminal report cannot disagree. `adverse=1` is that script's
+    `--count-adverse`: the upper bound, in which a level the market traded
+    through counts as a fill. Both are meant to be read together -- the strict
+    number is a floor, the adverse one a ceiling, and either alone is a number
+    to argue with.
+    """
+    from core_brain.probe_view import (
+        DEFAULT_QUEUE_BAR,
+        RefusedStore,
+        probe_report,
+        resolve_request_db,
+    )
+
+    try:
+        path = resolve_request_db(db)
+    except RefusedStore as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    bar = _probe_number("queue_bar", queue_bar, DEFAULT_QUEUE_BAR)
+    window = None if hours is None else _probe_number("hours", hours, 0.0)
+    return JSONResponse(probe_report(path, queue_bar=bar,
+                                     count_adverse=bool(adverse),
+                                     hours=window))
+
+
 # PAGE_HTML: backward-compat shim for tests that reference the constant.
 # The actual HTML now lives in dash/static/index.html. Tests that assert on
 # specific HTML strings should read from the static file directly.
 _PAGE_HTML_FILE = Path(__file__).resolve().parent / "static" / "index.html"
+_PROBE_HTML_FILE = Path(__file__).resolve().parent / "static" / "probe.html"
 
 def _load_page_html() -> str:
     """Read the static HTML file, or return empty string if missing."""
@@ -2084,6 +2168,29 @@ def _load_page_html() -> str:
 # PAGE_HTML. Reads the file once at import time; index() reads fresh per
 # request so file edits are picked up without restart.
 PAGE_HTML = _load_page_html()
+
+
+@app.get("/probe", response_class=HTMLResponse)
+def probe_page():
+    """The family probe, watched live.
+
+    Its own path and its own document rather than a fourth tab on `/`: this
+    dashboard is the control surface for a loop that places real orders, and a
+    research page that reads a store in another worktree has no business
+    sharing a poll loop, a control token, or a layout with it. Nothing here
+    can start, stop, or price anything -- there is no control token on this
+    page because it has nothing to authorize.
+    """
+    try:
+        html = _PROBE_HTML_FILE.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404,
+                            detail="probe page not built") from exc
+    return HTMLResponse(html, headers={
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    })
 
 
 @app.get("/prototype", response_class=HTMLResponse)

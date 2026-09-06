@@ -102,3 +102,10 @@ runtime/**/*.log
 
 # Session handoff working notes (never committed)
 HANDOFF-*.md
+
+# `npm install` for the JS dashboard harnesses (tests/js/*.cjs) leaves ~1,400
+# files here. `package.json` is tracked; the lockfile never has been, and
+# leaving it unignored is how it gets swept into a commit by an `add -A`.
+# Committing it instead is a dependency-policy call, not a dashboard one.
+node_modules/
+package-lock.json

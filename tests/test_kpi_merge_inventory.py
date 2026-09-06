@@ -195,18 +195,22 @@ def test_the_board_and_the_engine_agree_on_what_is_held(temp_db):
     assert m["dn_cost"] == pytest.approx(inv.down_cost)
 
 
-def test_an_unmerged_pair_is_still_a_position(temp_db):
-    # Arrange -- the subtraction must not fire on a market that never merged.
+def test_a_partly_merged_pair_is_priced_on_what_is_left(temp_db):
+    # Arrange -- 10 a side at $0.98 the pair, 6 of them merged. What is left is
+    # a real position and has to be priced as one: the old reader kept all ten
+    # a side, so it reported $9.80 of cost against shares that were already
+    # back at the venue as USDC.
     reg = OrderRegistry(temp_db)
     _fill_leg(reg, "o-up", TOK_UP, 10.0, 0.48)
     _fill_leg(reg, "o-dn", TOK_DN, 10.0, 0.50)
+    _merge(reg, shares=6.0, cost_basis=5.88)
 
     # Act
     m = _market(temp_db)
 
-    # Assert -- held, priced and balanced, exactly as before this change.
-    assert m["up_sh"] == pytest.approx(10.0)
-    assert m["dn_sh"] == pytest.approx(10.0)
-    assert m["total_cost"] == pytest.approx(9.80)
+    # Assert -- four a side, at the price they were bought at, still balanced.
+    assert m["up_sh"] == pytest.approx(4.0)
+    assert m["dn_sh"] == pytest.approx(4.0)
+    assert m["total_cost"] == pytest.approx(3.92)
     assert m["pair_cost"] == pytest.approx(0.98)
     assert m["balance"] == pytest.approx(1.0)

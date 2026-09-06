@@ -709,6 +709,7 @@ def sweep_market_resolutions(
                 winning_token=state.winner_token,
                 resolved_ts=now,
                 run_id=r_id,
+                winning_token_id=state.winning_token_id,
             ))
         except Exception:
             pass

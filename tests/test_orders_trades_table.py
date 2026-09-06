@@ -674,6 +674,62 @@ def test_resolved_marks_a_settled_pair_at_par():
 
 
 @requires_node
+def test_resolved_values_a_winning_naked_leg_without_any_quote():
+    """A settled market has no book, and a lone winning leg is still money.
+
+    `positionMarkValue` prices naked shares at the mid. Nobody quotes a race
+    that is over, so it returns null and the operator reads `--` beside five
+    shares that redeem at $5.00.
+    """
+    # Arrange — five UP shares, nothing on the other leg, no quotes at all,
+    # and the sweeper recorded that the UP token won.
+    kpi = _kpi()
+    market = kpi["by_market"][CID_SETTLED]
+    market.update({"up_sh": 5, "dn_sh": 0, "total_sh": 5, "up_cost": 2.40,
+                   "dn_cost": 0.0, "total_cost": 2.40, "pair_cost": None,
+                   "quotes": [], "winning_leg": "up"})
+
+    # Act
+    rendered = _render("resolved", kpi, _state())
+
+    # Assert
+    assert "$5.00" in rendered["html"]
+
+
+@requires_node
+def test_resolved_values_a_losing_naked_leg_at_nothing():
+    # Arrange — the same five shares on the leg that lost redeem at zero, and
+    # zero is a number the operator needs to see, not a dash.
+    kpi = _kpi()
+    market = kpi["by_market"][CID_SETTLED]
+    market.update({"up_sh": 5, "dn_sh": 0, "total_sh": 5, "up_cost": 2.40,
+                   "dn_cost": 0.0, "total_cost": 2.40, "pair_cost": None,
+                   "quotes": [], "winning_leg": "dn"})
+
+    # Act
+    rendered = _render("resolved", kpi, _state())
+
+    # Assert
+    assert "$0.00" in rendered["html"]
+
+
+@requires_node
+def test_resolved_falls_back_to_quotes_when_no_leg_won():
+    # Arrange — a market that finished without the sweeper naming a token has
+    # nothing to settle against, so the old quote-based mark still stands.
+    kpi = _kpi()
+    market = kpi["by_market"][CID_SETTLED]
+    market.update({"up_sh": 5, "dn_sh": 0, "total_sh": 5, "quotes": []})
+    market.pop("winning_leg", None)
+
+    # Act
+    rendered = _render("resolved", kpi, _state())
+
+    # Assert — no mid for the naked leg means no mark, and it says so.
+    assert "--" in rendered["html"]
+
+
+@requires_node
 def test_resolved_says_resolved_when_no_winner_was_recorded():
     # Arrange — the ranker's days_to_resolve can go negative before the
     # resolution sweeper writes a winner. Naming one anyway would be inventing

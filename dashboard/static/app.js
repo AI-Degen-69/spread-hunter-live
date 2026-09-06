@@ -3093,6 +3093,41 @@ function positionMarkValue(m, mids) {
   return value;
 }
 
+/* What a SETTLED market is worth, which the book can no longer say.
+ *
+ * `positionMarkValue` prices naked shares at the mid. A settled market has no
+ * mid -- nobody quotes a race that is over -- so it returns null and the
+ * operator reads `--` beside shares that are worth real money. Five winning UP
+ * shares on a finished market are $5.00, not "unknown".
+ *
+ * Settlement is not a price, it is an outcome: every merged pair redeems at
+ * $1.00 whichever side won, the winning leg's naked shares redeem at $1.00
+ * each, and the losing leg's redeem at nothing. Only when the winner is not
+ * named -- a market that finished without the sweeper recording a token id --
+ * is there nothing to do but fall back to quotes.
+ */
+function settledMarkValue(m, mids) {
+  const leg = winningLeg(m);
+  if (leg === null) return positionMarkValue(m, mids);
+  const up = Number(m.up_sh) || 0;
+  const dn = Number(m.dn_sh) || 0;
+  const merged = Math.min(up, dn);
+  // Both legs cannot be naked at once: `merged` is the smaller of the two.
+  const naked = (leg === 'up') ? (up - merged) : (dn - merged);
+  return merged + naked;
+}
+
+/* Which leg the settlement paid, or null when nothing in the data says.
+ *
+ * The report decides this, because that is where the UP/DOWN split of the
+ * market's tokens is made; it matches the venue token id, never the winning
+ * label ("Up", a team name), which is for the operator to read and would be a
+ * guess to map a leg from. */
+function winningLeg(m) {
+  const leg = m && m.winning_leg;
+  return (leg === 'up' || leg === 'dn') ? leg : null;
+}
+
 /* An order can outlive its market's entry in the KPI report -- the market
  * leaves the graduated universe, the report stops carrying its title -- and
  * `marketLink` has nothing to render but `--`. A truncated condition id is
@@ -3398,8 +3433,9 @@ function resolvedMarketsRows(kpi) {
 
   return entries.map(([cid, m], marketIndex) => {
     // A settled pair is worth exactly $1.00 a pair whichever side won -- that
-    // is the whole strategy -- so the mark is the pair count, not a mid.
-    const mark = positionMarkValue(m, latestLegMids(m));
+    // is the whole strategy -- so the mark is the pair count, not a mid. A
+    // naked leg is worth the settlement too, not a quote nobody is posting.
+    const mark = settledMarkValue(m, latestLegMids(m));
     const status = pairStatus(Number(m.up_sh) || 0, Number(m.dn_sh) || 0);
     const legs = heldLegs(m);
     if (!legs.length) return '';
@@ -4383,7 +4419,8 @@ if (typeof module !== 'undefined' && module.exports) {
     OT_VIEWS, OT_COLUMNS, ordersTradesRows, ordersTradesCounts, otHeadHtml,
     activeMarketsRows, openOrdersRows, positionsRows, resolvedMarketsRows,
     heldMarketEntries, heldLegs, isFinishedMarket, latestLegMids, latestLegQuotes,
-    positionMarkValue, isQuotedMarket, isRestingOrder, tokenLegMap, legForOrder,
+    positionMarkValue, settledMarkValue, winningLeg,
+    isQuotedMarket, isRestingOrder, tokenLegMap, legForOrder,
     normalizeLeg, groupOrdersByPair, restingPairCost, restingPairLegs,
     pairStatus, PAIR_STATUS };
 }

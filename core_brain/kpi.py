@@ -601,6 +601,26 @@ def _funnel_from_pipeline(
     }
 
 
+def _winning_leg(resolution: Optional[dict], up_fills: list, dn_fills: list
+                 ) -> Optional[str]:
+    """`"up"`, `"dn"`, or None when the store does not say.
+
+    Matched on the venue token id, never on the winning label: the label is a
+    human-readable outcome name and mapping a leg from it would be a guess.
+    """
+    if not isinstance(resolution, dict):
+        return None
+    token = resolution.get("winner_token_id")
+    if not token:
+        return None
+    token = str(token)
+    if any(str(f.get("token_id")) == token for f in up_fills):
+        return "up"
+    if any(str(f.get("token_id")) == token for f in dn_fills):
+        return "dn"
+    return None
+
+
 def _is_live_registry(db_path: Path | str | None) -> bool:
     """Whether this report is reading the production registry.
 
@@ -836,6 +856,9 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         resolution_cids.add(cid)
         resolution_by_cid[cid] = {
             "winner": r.get("winning_token"),
+            # The label is what the operator reads; the token id is what says
+            # which held leg redeems at $1.00 once the book is gone.
+            "winner_token_id": r.get("winning_token_id"),
             "resolved_ts": r.get("resolved_ts"),
         }
 
@@ -1079,6 +1102,13 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
             # Winner + resolved time when the sweeper recorded a resolution,
             # else None. The dashboard renders this under the FINISHED pill.
             "resolution": resolution_by_cid.get(cid.lower()),
+            # Which leg the settlement paid, decided HERE because this is where
+            # the UP/DOWN split of the tokens is already made. A settled market
+            # can have no book left to price its shares against, and the
+            # winning label ("Up", a team name) is not a leg -- the token id
+            # is. `None` when nothing in the store names a winner.
+            "winning_leg": _winning_leg(
+                resolution_by_cid.get(cid.lower()), up_fills, dn_fills),
             "up_sh": up_sh,
             "dn_sh": dn_sh,
             "up_cost": up_cost,

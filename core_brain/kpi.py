@@ -601,6 +601,79 @@ def _funnel_from_pipeline(
     }
 
 
+# The two spellings of a completed pair: `merge` is what the venue verb
+# writes, `shadow_merge` what a rehearsal writes. Both retire two legs at once.
+MERGE_METHODS = ("merge", "shadow_merge")
+# Bookkeeping rows the account sweep writes against a market. They are not an
+# exit the strategy chose, so they belong to no execution stage.
+NON_TRADE_CLOSE_METHODS = ("venue_sync",)
+# The stages, in the order a leg travels them.
+EXECUTION_STAGES = (
+    ("quoted", "Quoted"),
+    ("filled", "Filled"),
+    ("closed", "Closed"),
+    ("merged", "Merged"),
+)
+
+
+def _execution_funnel(
+    quotes: list[dict],
+    fills: list[dict],
+    closes: list[dict],
+    top_skips: list[tuple[str, int]],
+) -> dict[str, Any]:
+    """Where the run falls off between a resting quote and a merged pair.
+
+    The screener funnel answers which markets passed the gates. This answers
+    what happened to the legs that did: how many were quoted, how many filled,
+    how many closed, and how many of those closes were merges. The step that
+    loses the most is named outright so the board does not have to be read.
+    """
+    traded = [c for c in closes if (c.get("method") or "unknown") not in NON_TRADE_CLOSE_METHODS]
+    merged = [c for c in traded if (c.get("method") or "unknown") in MERGE_METHODS]
+    filled_quotes = [q for q in quotes if float(q.get("filled") or 0.0) > 0.0]
+
+    def _markets(rows: list[dict]) -> int:
+        return len({r["condition_id"] for r in rows if r.get("condition_id")})
+
+    counted = {
+        "quoted": (len(quotes), _markets(quotes)),
+        # Markets come off `fills` rather than the quote rows: a fill is the
+        # durable record that a market traded, and a quote row's `filled` is
+        # only updated while the quoter is still watching it.
+        "filled": (len(filled_quotes), max(_markets(fills), _markets(filled_quotes))),
+        "closed": (len(traded), _markets(traded)),
+        "merged": (len(merged), _markets(merged)),
+    }
+
+    stages = [
+        {"key": key, "label": label, "legs": counted[key][0], "markets": counted[key][1]}
+        for key, label in EXECUTION_STAGES
+    ]
+
+    drop_off = []
+    for earlier, later in zip(stages, stages[1:]):
+        before, after = earlier["legs"], later["legs"]
+        drop_off.append({
+            "from": earlier["key"],
+            "to": later["key"],
+            "lost": before - after,
+            # No percentage exists when nothing reached the earlier stage. A
+            # run that has not started is not a 0% funnel; 0% is a verdict.
+            "retained_pct": (100.0 * after / before) if before > 0 else None,
+        })
+
+    losing = [d for d in drop_off if d["lost"] > 0]
+    worst = max(losing, key=lambda d: d["lost"]) if losing else None
+
+    return {
+        "stages": stages,
+        "drop_off": drop_off,
+        "worst_step": worst,
+        "declined": [{"reason": code, "cycles": n} for code, n in top_skips],
+    }
+
+
 def _signed_usd(value: float) -> str:
     """`-$2.40`, not `$-2.40`.
 
@@ -1734,6 +1807,11 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         "partial_fill_shares_missing": unfilled_of_partials,
         "quote_uptime": quote_uptime,
         "top_skip_reasons": [{"reason": r, "cycles": n} for r, n in top_skips],
+
+        # Execution drop-off: quoted -> filled -> closed -> merged, with the
+        # step that loses the most named. Distinct from `funnel`, which is the
+        # screener's market-selection view.
+        "execution_funnel": _execution_funnel(quotes, fills, closes, top_skips),
         "pair_cost_distribution": sorted(pairs),
 
         # Inventory discipline

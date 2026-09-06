@@ -1404,8 +1404,7 @@ class OrderRegistry:
                     (condition_id, winning_token, winning_token_id, resolved_ts, run_id)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                (res.condition_id, res.winning_token,
-                 getattr(res, "winning_token_id", None),
+                (res.condition_id, res.winning_token, res.winning_token_id,
                  res.resolved_ts, r_id),
             )
             conn.commit()

@@ -328,6 +328,7 @@ CREATE TABLE IF NOT EXISTS hedge_census (
 CREATE TABLE IF NOT EXISTS resolutions (
     condition_id TEXT PRIMARY KEY,
     winning_token TEXT,
+    winning_token_id TEXT,
     resolved_ts REAL,
     run_id TEXT
 );
@@ -463,6 +464,15 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE closes ADD COLUMN tx_hash TEXT")
         if "run_id" not in cols:
             conn.execute("ALTER TABLE closes ADD COLUMN run_id TEXT")
+
+    # Check columns in resolutions. `winning_token` is the label the operator
+    # reads ("Up", a team name); `winning_token_id` is the venue token id, and
+    # it is the only field that says WHICH held leg redeems at $1.00. Without
+    # it a settled market can only be valued off quotes it no longer has.
+    cur = conn.execute("PRAGMA table_info(resolutions)")
+    cols = {row["name"] for row in cur.fetchall()}
+    if cols and "winning_token_id" not in cols:
+        conn.execute("ALTER TABLE resolutions ADD COLUMN winning_token_id TEXT")
 
     # Check columns in account_marks
     cur = conn.execute("PRAGMA table_info(account_marks)")
@@ -723,6 +733,10 @@ class ResolutionRecord:
     winning_token: str
     resolved_ts: float
     run_id: Optional[str] = None
+    # The venue token id of the winning outcome. `winning_token` is a label a
+    # human reads; this is what says which held leg redeems at $1.00, and a
+    # settled market has no book left to infer it from.
+    winning_token_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -1386,10 +1400,12 @@ class OrderRegistry:
             conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """
-                INSERT OR REPLACE INTO resolutions (condition_id, winning_token, resolved_ts, run_id)
-                VALUES (?, ?, ?, ?)
+                INSERT OR REPLACE INTO resolutions
+                    (condition_id, winning_token, winning_token_id, resolved_ts, run_id)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (res.condition_id, res.winning_token, res.resolved_ts, r_id),
+                (res.condition_id, res.winning_token, res.winning_token_id,
+                 res.resolved_ts, r_id),
             )
             conn.commit()
 

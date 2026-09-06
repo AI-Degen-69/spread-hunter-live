@@ -419,10 +419,16 @@ def test_api_kpi_endpoint_returns_3_levels_and_run_isolation(client, temp_db):
     # Level 2: Market level & Drilldown
     assert "0xmarket1" in data["by_market"]
     mkt = data["by_market"]["0xmarket1"]
-    assert mkt["up_sh"] == 5.0
-    assert mkt["dn_sh"] == 5.0
-    assert mkt["pair_cost"] == 0.94
-    assert mkt["balance"] == 1.0
+    # The pair merged: both legs went back to the venue and came out as $1.00
+    # a share, booked in `realized_pnl` above. Nothing is held, so there is no
+    # pair left to price or to call balanced. Asserting 5/5 here asserted the
+    # phantom -- the same shares counted once as realized and again as an open
+    # position marked at par. `pair_cost` and `balance` on a pair that is still
+    # held are covered by tests/test_kpi_merge_inventory.py.
+    assert mkt["up_sh"] == 0.0
+    assert mkt["dn_sh"] == 0.0
+    assert mkt["pair_cost"] is None
+    assert mkt["balance"] is None
     assert len(mkt["markouts"]) == 1
     assert mkt["markouts"][0]["mid_h0"] == 0.635
     assert mkt["markouts"][0]["mid_h1"] == 0.64

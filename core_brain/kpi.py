@@ -601,6 +601,26 @@ def _funnel_from_pipeline(
     }
 
 
+def _winning_leg(resolution: Optional[dict], up_fills: list, dn_fills: list
+                 ) -> Optional[str]:
+    """`"up"`, `"dn"`, or None when the store does not say.
+
+    Matched on the venue token id, never on the winning label: the label is a
+    human-readable outcome name and mapping a leg from it would be a guess.
+    """
+    if not isinstance(resolution, dict):
+        return None
+    token = resolution.get("winner_token_id")
+    if not token:
+        return None
+    token = str(token)
+    if any(str(f.get("token_id")) == token for f in up_fills):
+        return "up"
+    if any(str(f.get("token_id")) == token for f in dn_fills):
+        return "dn"
+    return None
+
+
 def _is_live_registry(db_path: Path | str | None) -> bool:
     """Whether this report is reading the production registry.
 
@@ -836,6 +856,9 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         resolution_cids.add(cid)
         resolution_by_cid[cid] = {
             "winner": r.get("winning_token"),
+            # The label is what the operator reads; the token id is what says
+            # which held leg redeems at $1.00 once the book is gone.
+            "winner_token_id": r.get("winning_token_id"),
             "resolved_ts": r.get("resolved_ts"),
         }
 
@@ -1013,10 +1036,30 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         # keeps showing shares the venue no longer holds -- the phantom
         # position this subtraction exists to retire. Same encoding as
         # inventory_from_registry: up_price set => the UP leg was sold.
+        #
+        # A `merge` / `shadow_merge` close retires BOTH legs: the pair went
+        # back to the venue and came out as $1.00 a share of USDC, and those
+        # proceeds are already booked in `m_pnl` below. Left in, the same
+        # shares are counted twice -- once realized, once again as a position
+        # still marked at par -- so a market whose every pair has merged reads
+        # as an open position worth its whole merged value. `merge` is the
+        # venue's spelling and `shadow_merge` the rehearsal's; the row labels
+        # differ on purpose but the arithmetic they record is the same.
+        #
+        # `inventory_from_registry` (core_brain/order_registry.py) has always
+        # subtracted both. This is the reader that did not, which left the
+        # engine and the board disagreeing about the same store.
         for c in m_closes:
-            if c.get("method") not in ("single_buy_exit", "naked_exit"):
-                continue
+            method = c.get("method")
             sh = float(c.get("shares") or 0.0)
+            if method in ("merge", "shadow_merge"):
+                up_sh = max(0.0, up_sh - sh)
+                dn_sh = max(0.0, dn_sh - sh)
+                up_cost = max(0.0, up_cost - float(c.get("up_cost_removed") or 0.0))
+                dn_cost = max(0.0, dn_cost - float(c.get("dn_cost_removed") or 0.0))
+                continue
+            if method not in ("single_buy_exit", "naked_exit"):
+                continue
             if c.get("up_price") is not None:
                 up_sh = max(0.0, up_sh - sh)
                 up_cost = max(0.0, up_cost - float(c.get("up_cost_removed") or 0.0))
@@ -1059,6 +1102,13 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
             # Winner + resolved time when the sweeper recorded a resolution,
             # else None. The dashboard renders this under the FINISHED pill.
             "resolution": resolution_by_cid.get(cid.lower()),
+            # Which leg the settlement paid, decided HERE because this is where
+            # the UP/DOWN split of the tokens is already made. A settled market
+            # can have no book left to price its shares against, and the
+            # winning label ("Up", a team name) is not a leg -- the token id
+            # is. `None` when nothing in the store names a winner.
+            "winning_leg": _winning_leg(
+                resolution_by_cid.get(cid.lower()), up_fills, dn_fills),
             "up_sh": up_sh,
             "dn_sh": dn_sh,
             "up_cost": up_cost,

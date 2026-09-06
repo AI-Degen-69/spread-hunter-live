@@ -2068,10 +2068,67 @@ def get_closed_markets():
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+@app.get("/api/probe/status")
+def get_probe_status(db: str | None = None, target_hours: float | None = None):
+    """Is the family probe alive, and how far into its run is it?
+
+    Read-only, and pointed at the probe's own store -- never at the live
+    registry, which `resolve_probe_db` refuses by name. A missing store is a
+    200 that says MISSING: the page it feeds is watched WHILE a probe runs, and
+    an operator opening it before launching one should see "not started", not
+    a red error that reads like a broken dashboard.
+    """
+    from core_brain.probe_view import (
+        DEFAULT_TARGET_HOURS,
+        RefusedStore,
+        probe_status,
+        resolve_request_db,
+    )
+
+    try:
+        path = resolve_request_db(db)
+    except RefusedStore as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    hours = DEFAULT_TARGET_HOURS if target_hours is None else float(target_hours)
+    return JSONResponse(probe_status(path, target_hours=hours))
+
+
+@app.get("/api/probe/findings")
+def get_probe_findings(db: str | None = None,
+                       queue_bar: float | None = None,
+                       adverse: int = 0,
+                       hours: float | None = None):
+    """What the probe has found so far: the fill report, as JSON.
+
+    Every number is computed by `scripts.family_fill_report`, so this endpoint
+    and the terminal report cannot disagree. `adverse=1` is that script's
+    `--count-adverse`: the upper bound, in which a level the market traded
+    through counts as a fill. Both are meant to be read together -- the strict
+    number is a floor, the adverse one a ceiling, and either alone is a number
+    to argue with.
+    """
+    from core_brain.probe_view import (
+        DEFAULT_QUEUE_BAR,
+        RefusedStore,
+        probe_report,
+        resolve_request_db,
+    )
+
+    try:
+        path = resolve_request_db(db)
+    except RefusedStore as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    bar = DEFAULT_QUEUE_BAR if queue_bar is None else float(queue_bar)
+    return JSONResponse(probe_report(path, queue_bar=bar,
+                                     count_adverse=bool(adverse),
+                                     hours=hours))
+
+
 # PAGE_HTML: backward-compat shim for tests that reference the constant.
 # The actual HTML now lives in dash/static/index.html. Tests that assert on
 # specific HTML strings should read from the static file directly.
 _PAGE_HTML_FILE = Path(__file__).resolve().parent / "static" / "index.html"
+_PROBE_HTML_FILE = Path(__file__).resolve().parent / "static" / "probe.html"
 
 def _load_page_html() -> str:
     """Read the static HTML file, or return empty string if missing."""
@@ -2084,6 +2141,29 @@ def _load_page_html() -> str:
 # PAGE_HTML. Reads the file once at import time; index() reads fresh per
 # request so file edits are picked up without restart.
 PAGE_HTML = _load_page_html()
+
+
+@app.get("/probe", response_class=HTMLResponse)
+def probe_page():
+    """The family probe, watched live.
+
+    Its own path and its own document rather than a fourth tab on `/`: this
+    dashboard is the control surface for a loop that places real orders, and a
+    research page that reads a store in another worktree has no business
+    sharing a poll loop, a control token, or a layout with it. Nothing here
+    can start, stop, or price anything -- there is no control token on this
+    page because it has nothing to authorize.
+    """
+    try:
+        html = _PROBE_HTML_FILE.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404,
+                            detail="probe page not built") from exc
+    return HTMLResponse(html, headers={
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    })
 
 
 @app.get("/prototype", response_class=HTMLResponse)

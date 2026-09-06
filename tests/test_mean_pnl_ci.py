@@ -18,6 +18,9 @@ Journeys under test:
 """
 from __future__ import annotations
 
+import math
+import statistics
+
 import pytest
 
 from core_brain.kpi import compute_trade_analytics
@@ -120,6 +123,35 @@ def test_a_single_close_supports_no_band_at_all():
     assert ci["n"] == 1
     assert ci["levels"] == []
     assert ci["verdict"] is None
+
+
+def test_two_closes_do_not_manufacture_a_profitable_verdict():
+    # Arrange -- $1.00 and $3.00. Under fixed normal critical values this band
+    # is +$0.04 to +$3.96 and reads "positive": a confident profit verdict
+    # drawn from two observations. With one degree of freedom the band spans
+    # zero, which is what two closes actually support.
+    ci = _ci([1.00, 3.00])
+
+    # Act
+    b95 = _level(ci, 95)
+
+    # Assert
+    assert b95["lower"] < 0 < b95["upper"]
+    assert ci["verdict"] == "spans_zero"
+
+
+def test_a_large_sample_reads_the_normal_band():
+    # Arrange -- past 30 degrees of freedom the t and normal values agree to
+    # the third decimal, so the band is the textbook mean +/- 1.96 se.
+    pnls = [0.10, -0.10] * 30
+    ci = _ci(pnls)
+
+    # Act
+    b95 = _level(ci, 95)
+    se = statistics.stdev(pnls) / math.sqrt(len(pnls))
+
+    # Assert
+    assert b95["upper"] == pytest.approx(statistics.mean(pnls) + 1.96 * se)
 
 
 def test_a_run_with_no_closes_reports_nothing_rather_than_zero():

@@ -66,8 +66,44 @@ Z_BETA_80_POWER = 0.8416       # 80% power (beta=0.20)
 Z_95_TWO_SIDED = 1.96          # 95% two-sided (used by _wilson_ci default)
 
 
-# Two-sided normal critical values, by confidence level.
+# Two-sided normal critical values, by confidence level. Used once the sample
+# is large enough for the normal approximation to hold.
 _CI_Z_BY_LEVEL = ((90, 1.645), (95, 1.96))
+
+# Two-sided Student-t critical values by degrees of freedom (n - 1), for the
+# same two levels. On the samples this dashboard actually runs on -- three
+# closes, seven closes -- the normal value is far too narrow: two closes of
+# $1.00 and $3.00 give a 95% normal band of +$0.04 to +$3.96, a confident
+# "profitable" verdict drawn from two observations. The t band on the same two
+# closes spans zero, which is the truth. Beyond 30 degrees of freedom the two
+# agree to the third decimal and the normal value takes over.
+_CI_T_BY_DF: dict[int, dict[int, float]] = {
+    1: {90: 6.314, 95: 12.706}, 2: {90: 2.920, 95: 4.303},
+    3: {90: 2.353, 95: 3.182}, 4: {90: 2.132, 95: 2.776},
+    5: {90: 2.015, 95: 2.571}, 6: {90: 1.943, 95: 2.447},
+    7: {90: 1.895, 95: 2.365}, 8: {90: 1.860, 95: 2.306},
+    9: {90: 1.833, 95: 2.262}, 10: {90: 1.812, 95: 2.228},
+    11: {90: 1.796, 95: 2.201}, 12: {90: 1.782, 95: 2.179},
+    13: {90: 1.771, 95: 2.160}, 14: {90: 1.761, 95: 2.145},
+    15: {90: 1.753, 95: 2.131}, 16: {90: 1.746, 95: 2.120},
+    17: {90: 1.740, 95: 2.110}, 18: {90: 1.734, 95: 2.101},
+    19: {90: 1.729, 95: 2.093}, 20: {90: 1.725, 95: 2.086},
+    21: {90: 1.721, 95: 2.080}, 22: {90: 1.717, 95: 2.074},
+    23: {90: 1.714, 95: 2.069}, 24: {90: 1.711, 95: 2.064},
+    25: {90: 1.708, 95: 2.060}, 26: {90: 1.706, 95: 2.056},
+    27: {90: 1.703, 95: 2.052}, 28: {90: 1.701, 95: 2.048},
+    29: {90: 1.699, 95: 2.045}, 30: {90: 1.697, 95: 2.042},
+}
+
+
+def _ci_critical_value(level: int, n: int, z: float) -> float:
+    """The multiplier for a two-sided interval on a sample of `n`.
+
+    Student-t while the sample is small enough for it to matter, the normal
+    value once it is not. No new dependency: the table is the whole of what
+    `scipy.stats.t.ppf` would be used for here.
+    """
+    return _CI_T_BY_DF.get(n - 1, {}).get(level, z)
 
 
 def _mean_pnl_ci(pnls: list[float]) -> dict[str, Any]:
@@ -89,8 +125,9 @@ def _mean_pnl_ci(pnls: list[float]) -> dict[str, Any]:
     se = statistics.stdev(pnls) / math.sqrt(n)
     levels = []
     for level, z in _CI_Z_BY_LEVEL:
-        lower = mean_usd - z * se
-        upper = mean_usd + z * se
+        crit = _ci_critical_value(level, n, z)
+        lower = mean_usd - crit * se
+        upper = mean_usd + crit * se
         levels.append({
             "level": level,
             "lower": lower,
@@ -687,12 +724,17 @@ def _execution_funnel(
     def _markets(rows: list[dict]) -> int:
         return len({r["condition_id"] for r in rows if r.get("condition_id")})
 
+    # A leg that filled is one order that filled, counted off the durable
+    # `fills` rows: `order_uuid` is the leg's stable identity, and two partial
+    # fills of the same order are one leg, not two. The quote row's `filled`
+    # is repair-written and only for rows carrying a `local_id`, so counting
+    # that instead silently drops legs whose quote was never updated.
+    filled_legs = len({f["order_uuid"] for f in fills if f.get("order_uuid")})
+
     counted = {
         "quoted": (len(quotes), _markets(quotes)),
-        # Markets come off `fills` rather than the quote rows: a fill is the
-        # durable record that a market traded, and a quote row's `filled` is
-        # only updated while the quoter is still watching it.
-        "filled": (len(filled_quotes), max(_markets(fills), _markets(filled_quotes))),
+        # Markets come off `fills` for the same reason.
+        "filled": (filled_legs, max(_markets(fills), _markets(filled_quotes))),
         "closed": (len(traded), _markets(traded)),
         "merged": (len(merged), _markets(merged)),
     }

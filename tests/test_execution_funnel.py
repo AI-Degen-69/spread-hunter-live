@@ -122,6 +122,32 @@ def test_every_stage_from_quoted_to_merged_is_counted(temp_db):
     assert _stage(funnel, "merged")["legs"] == 1
 
 
+def test_two_partial_fills_of_one_order_are_one_leg(temp_db):
+    # Arrange -- the `fills` table stores one row per `trade_id`, so an order
+    # that filled in two prints has two rows and one leg. A quote row left at
+    # `filled = 0` is the other half of this: quote repair only writes rows
+    # carrying a `local_id`, so counting quotes would drop the leg entirely.
+    reg = OrderRegistry(temp_db)
+    _quote(reg, TOK_UP, 0.48, 10.0)
+    now = int(time.time())
+    reg.create_order(OrderRecord(
+        id="o-split", condition_id=CID, token_id=TOK_UP, side="BUY", price=0.48,
+        original_size=10.0, status="filled", posted_ts=now, last_polled_ts=now,
+        order_id="venue-o-split", pair_id="pair-1", run_id=RUN,
+    ))
+    for i, size in enumerate((4.0, 6.0)):
+        reg.record_fill(FillRecord(trade_id=f"trade-split-{i}", order_uuid="o-split",
+                                   size=size, price=0.48, venue_ts=now * 1000,
+                                   run_id=RUN))
+
+    # Act
+    funnel = _funnel(temp_db)
+
+    # Assert -- one order that filled is one leg, whatever the quote row says.
+    assert _stage(funnel, "filled")["legs"] == 1
+    assert _stage(funnel, "filled")["markets"] == 1
+
+
 def test_each_stage_counts_the_markets_that_reached_it(temp_db):
     # Arrange -- two markets quoted, only one of them ever fills.
     reg = OrderRegistry(temp_db)

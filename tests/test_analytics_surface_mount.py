@@ -165,5 +165,8 @@ def test_no_analytics_sub_view_hides_the_go_no_go_row(view):
     # Act
     out = _mount(_kpi(LOSING_CI, FUNNEL))
 
-    # Assert -- the filter may hide decks; it may never hide Tier 1.
+    # Assert -- the filter may hide decks; it may never hide Tier 1. The
+    # harness swallows a throwing filter, so a stored display of '' would
+    # otherwise pass this test on a filter that never ran at all.
+    assert not [e for e in out["errors"] if e.startswith("filter ")]
     assert out["tier1_visibility"][view] != "none"

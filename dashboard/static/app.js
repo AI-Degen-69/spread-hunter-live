@@ -79,6 +79,29 @@ function fmtUSD(v) {
   return '$' + n.toFixed(2);
 }
 
+/* Which way a number reads, taken from the number.
+ *
+ * The panels used to pick their colour from "do we have any samples yet"
+ * (`n > 0 ? 'positive' : ''`), so every measured figure came out green --
+ * a Sharpe of -0.63 and an expectancy of -$0.34 were painted as wins. The
+ * sign is the only thing that decides this. */
+function signClass(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n === 0) return '';
+  return n > 0 ? 'positive' : 'negative';
+}
+
+/* Money with the sign in front of the dollar: `-$2.40`, never `$-2.40`.
+ * `fmtUSD` puts the minus where the number is, which reads as a strange
+ * currency rather than as a loss. */
+function fmtSignedUSD(v) {
+  if (v === null || v === undefined) return '--';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '--';
+  const sign = n > 0 ? '+' : (n < 0 ? '-' : '');
+  return sign + fmtUSD(Math.abs(n));
+}
+
 function fmtPct(v) {
   if (v === null || v === undefined) return '--';
   return (v >= 0 ? '+' : '') + Number(v).toFixed(2) + '%';
@@ -1118,9 +1141,14 @@ function renderBrokerPortfolioOverview(kpi, status) {
 
   if (elEquity) elEquity.textContent = fmtUSD(totalVal);
   if (elPnlAmount) {
-    elPnlAmount.textContent = realizedMeasured
-      ? `${realizedPnL >= 0 ? '+' : ''}${fmtUSD(realizedPnL)}`
-      : '--';
+    elPnlAmount.textContent = realizedMeasured ? fmtSignedUSD(realizedPnL) : '--';
+  }
+  // The chevron in the pill was a fixed "up" in the markup, so a loss was
+  // announced by an arrow pointing at a gain.
+  const elPnlArrow = elPnlPill && elPnlPill.querySelector('polyline');
+  if (elPnlArrow) {
+    elPnlArrow.setAttribute('points',
+      realizedPnL >= 0 ? '18 15 12 9 6 15' : '18 9 12 15 6 9');
   }
   if (elPnlPct) {
     elPnlPct.textContent = realizedMeasured
@@ -1183,9 +1211,8 @@ function renderBrokerPortfolioOverview(kpi, status) {
   if (elPairs) elPairs.textContent = `${activePairs} Pairs`;
   if (elSpread) {
     // Same rule as the hero pill: an unread realized figure is not $0.00.
-    elSpread.textContent = realizedMeasured
-      ? `${realizedPnL >= 0 ? '+' : ''}${fmtUSD(realizedPnL)}`
-      : '--';
+    elSpread.textContent = realizedMeasured ? fmtSignedUSD(realizedPnL) : '--';
+    elSpread.className = `broker-kpi-val mono ${realizedMeasured ? signClass(realizedPnL) : ''}`;
   }
   if (elExpectancy) elExpectancy.textContent = `Avg ${expectancy} / close`;
   if (elWinrate) elWinrate.textContent = `${winRate}%`;
@@ -1348,7 +1375,7 @@ function renderBrokerPortfolioChart(kpi, timeframe = '1D') {
         <div class="broker-tooltip-row"><span class="broker-tooltip-label">Account Value:</span> <span class="broker-tooltip-val mono" style="color:#34d399">$${Number(data.account_value).toFixed(2)}</span></div>
         <div class="broker-tooltip-row"><span class="broker-tooltip-label">Cash (USDC):</span> <span class="broker-tooltip-val mono">$${Number(data.cash_usd).toFixed(2)}</span></div>
         <div class="broker-tooltip-row"><span class="broker-tooltip-label">Resting Bids:</span> <span class="broker-tooltip-val mono">$${Number(data.positions_committed || 0).toFixed(2)}</span></div>
-        <div class="broker-tooltip-row"><span class="broker-tooltip-label">Realized Spread:</span> <span class="broker-tooltip-val mono" style="color:#34d399">+$${Number(data.realized_pnl || 0).toFixed(2)}</span></div>
+        <div class="broker-tooltip-row"><span class="broker-tooltip-label">Realized Spread:</span> <span class="broker-tooltip-val mono" style="color:${Number(data.realized_pnl || 0) < 0 ? '#f87171' : '#34d399'}">${fmtSignedUSD(data.realized_pnl || 0)}</span></div>
       `;
 
       // Position tooltip avoiding overflow
@@ -1976,17 +2003,17 @@ function renderQuantRiskGrid(ta, p, stats) {
   container.innerHTML = `
     <div class="quant-tile">
       <div class="quant-label">Mathematical Expectancy</div>
-      <div class="quant-value ${n > 0 ? 'positive' : ''}">${esc(expectancy)}</div>
+      <div class="quant-value ${n > 0 ? signClass(ta.expectancy_usd) : ''}">${esc(expectancy)}</div>
       <div class="quant-sub">${esc(meanRet)} mean return / trade</div>
     </div>
     <div class="quant-tile">
       <div class="quant-label">95% Value at Risk (1D)</div>
-      <div class="quant-value ${n > 0 ? 'negative' : ''}">${esc(var95)}</div>
+      <div class="quant-value ${n > 0 && Number(ta.var_95_usd) ? 'negative' : ''}">${esc(var95)}</div>
       <div class="quant-sub">CVaR Tail: ${esc(cvar95)}</div>
     </div>
     <div class="quant-tile">
       <div class="quant-label">Sharpe &amp; Sortino Ratio</div>
-      <div class="quant-value ${n > 0 ? 'positive' : ''}">${esc(sharpe)} <span style="font-size:11px;color:var(--text-secondary)">/ ${esc(sortino)}</span></div>
+      <div class="quant-value ${n > 0 ? signClass(ta.sharpe_ratio) : ''}">${esc(sharpe)} <span style="font-size:11px;color:var(--text-secondary)">/ ${esc(sortino)}</span></div>
       <div class="quant-sub">Downside-deviation weighted</div>
     </div>
     <div class="quant-tile">
@@ -1996,12 +2023,12 @@ function renderQuantRiskGrid(ta, p, stats) {
     </div>
     <div class="quant-tile">
       <div class="quant-label">Win Rate &amp; Wilson CI</div>
-      <div class="quant-value ${n > 0 ? 'positive' : ''}">${esc(winRate)}</div>
+      <div class="quant-value">${esc(winRate)}</div>
       <div class="quant-sub">95% CI: ${esc(ci95)}</div>
     </div>
     <div class="quant-tile">
       <div class="quant-label">Profit Factor &amp; Payoff</div>
-      <div class="quant-value ${n > 0 ? 'positive' : ''}">${esc(profitFactor)}</div>
+      <div class="quant-value ${n > 0 ? (Number(ta.profit_factor) >= 1 ? 'positive' : 'negative') : ''}">${esc(profitFactor)}</div>
       <div class="quant-sub">Payoff Ratio: ${esc(payoffRatio)}</div>
     </div>
   `;
@@ -2206,7 +2233,7 @@ function renderMonteCarloChart(stats, cyclesCount = 100) {
       <path d="M ${p50Points.join(' L ')}" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linecap="round"/>
 
       <!-- End Value Badges -->
-      <text x="${w - padR + 2}" y="${getY(dataSteps[dataSteps.length - 1].p50) + 3}" fill="#34d399" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700">+$${(dataSteps[dataSteps.length - 1].p50 - 100).toFixed(1)}</text>
+      <text x="${w - padR - 4}" y="${getY(dataSteps[dataSteps.length - 1].p50) - 6}" fill="${(dataSteps[dataSteps.length - 1].p50 - 100) < 0 ? '#f87171' : '#34d399'}" font-family="'JetBrains Mono', monospace" font-size="9" font-weight="700" text-anchor="end">${fmtSignedUSD(dataSteps[dataSteps.length - 1].p50 - 100)}</text>
 
       <!-- X-Axis Labels -->
       <text x="${padL}" y="${padT + plotH + 16}" fill="var(--text-muted)" font-family="'JetBrains Mono', monospace" font-size="8.5">0 Cycles</text>
@@ -2224,7 +2251,7 @@ function renderMonteCarloChart(stats, cyclesCount = 100) {
       ? mc.prob_positive_return.toFixed(1) : null;
     footer.innerHTML = `
       <div class="chart-footer-item"><span>P(Profit &gt; 0):</span> <b style="color:var(--signal)">${profitProb == null ? 'unmeasured' : profitProb + '%'}</b></div>
-      <div class="chart-footer-item"><span>Median Return:</span> <b style="color:var(--signal)">+$${(endP50 - 100).toFixed(2)}</b></div>
+      <div class="chart-footer-item"><span>Median Return:</span> <b style="color:${(endP50 - 100) < 0 ? '#f87171' : 'var(--signal)'}">${fmtSignedUSD(endP50 - 100)}</b></div>
       <div class="chart-footer-item"><span>Worst-Case Drawdown:</span> <b style="color:#f87171">${mc.worst_case_drawdown_pct == null ? 'unmeasured' : mc.worst_case_drawdown_pct.toFixed(2) + '%'}</b></div>
       <div class="chart-footer-item"><span>Simulations:</span> <b>${mc.paths == null ? 'unmeasured' : mc.paths.toLocaleString() + ' Paths'}</b></div>
     `;
@@ -2635,17 +2662,17 @@ function renderAnalyticsSurface(kpi, status) {
   grid.innerHTML = `
     <div class="kpi-tile">
       <div class="kpi-label">Average Profit Per Close</div>
-      ${fmtVal(ta.expectancy_usd != null && n > 0 ? fmtUSD(ta.expectancy_usd) : '$0.000', n > 0 ? ' positive' : '')}
+      ${fmtVal(ta.expectancy_usd != null && n > 0 ? fmtSignedUSD(ta.expectancy_usd) : '$0.000', n > 0 ? ' ' + signClass(ta.expectancy_usd) : '')}
       <div class="hint">Spread capture net of slippage</div>
     </div>
     <div class="kpi-tile">
       <div class="kpi-label">Mean Return Per Trade</div>
-      ${fmtVal(ta.mean_return_pct != null && n > 0 ? fmtPct(ta.mean_return_pct) : '0.00%', n > 0 ? ' positive' : '')}
+      ${fmtVal(ta.mean_return_pct != null && n > 0 ? fmtPct(ta.mean_return_pct) : '0.00%', n > 0 ? ' ' + signClass(ta.mean_return_pct) : '')}
       <div class="hint">± ${ta.stdev_return_pct != null && n > 0 ? Number(ta.stdev_return_pct).toFixed(2) + '%' : '0.00%'} (σ)</div>
     </div>
     <div class="kpi-tile">
       <div class="kpi-label">Annualized Sharpe Ratio</div>
-      ${fmtVal(ta.sharpe_ratio != null && n > 0 ? ta.sharpe_ratio.toFixed(2) : '0.00', n > 0 ? ' positive' : '')}
+      ${fmtVal(ta.sharpe_ratio != null && n > 0 ? ta.sharpe_ratio.toFixed(2) : '0.00', n > 0 ? ' ' + signClass(ta.sharpe_ratio) : '')}
       <div class="hint">Risk-adjusted spread performance</div>
     </div>
     <div class="kpi-tile">
@@ -3272,10 +3299,7 @@ function fmtCompactUSD(v) {
  * dollar, so the magnitude is formatted and the sign prepended. */
 function signedUSD(v) {
   if (v === null || v === undefined || !Number.isFinite(Number(v))) return '--';
-  const n = Number(v);
-  const cls = n > 0 ? 'positive' : (n < 0 ? 'negative' : '');
-  const sign = n > 0 ? '+' : (n < 0 ? '-' : '');
-  return `<span class="${cls}">${sign}${fmtUSD(Math.abs(n))}</span>`;
+  return `<span class="${signClass(v)}">${fmtSignedUSD(v)}</span>`;
 }
 
 function activeMarketsRows(kpi, state) {
@@ -4448,7 +4472,7 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderPositionDistributionChart, renderMarkoutChart, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity,
+  module.exports = { renderPositionDistributionChart, renderMarkoutChart, renderMonteCarloChart, renderQuantRiskGrid, signClass, fmtSignedUSD, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity,
     statsFilterScope, pruneStatsSubnav, STATS_VIEW_TARGETS,
     OT_VIEWS, OT_COLUMNS, ordersTradesRows, ordersTradesCounts, otHeadHtml,
     activeMarketsRows, openOrdersRows, positionsRows, resolvedMarketsRows,

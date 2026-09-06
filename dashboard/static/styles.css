@@ -1693,6 +1693,11 @@ td { font-size: 13px; }
   font-weight: 800;
   color: #34d399;
 }
+/* The verdict carries its own level -- `profit`, `loss`, `neutral` -- and the
+ * report has always sent it. Without a rule for the other two, a run that lost
+ * money announced the loss in the green of a win. */
+.rp-verdict-text.loss { color: #f87171; }
+.rp-verdict-text.neutral { color: var(--text-secondary); }
 
 /* Hero Numbers */
 .broker-hero-metrics {

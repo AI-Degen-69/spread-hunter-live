@@ -601,6 +601,16 @@ def _funnel_from_pipeline(
     }
 
 
+def _signed_usd(value: float) -> str:
+    """`-$2.40`, not `$-2.40`.
+
+    `f"${v:+.2f}"` puts the minus after the dollar, which reads as an odd
+    currency rather than as a loss. The sign belongs in front of the amount.
+    """
+    amount = float(value)
+    return f"{'-' if amount < 0 else '+'}${abs(amount):.2f}"
+
+
 def _winning_leg(resolution: Optional[dict], up_fills: list, dn_fills: list
                  ) -> Optional[str]:
     """`"up"`, `"dn"`, or None when the store does not say.
@@ -1629,16 +1639,18 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
             _verdict = "No trades yet — no fills or closes to mark."
             _verdict_level = "neutral"
         elif _profit_basis > 0:
-            _verdict = f"+${_profit_basis:.2f} net profit · ${realized_pnl:+.2f} realized"
+            _verdict = (f"+${_profit_basis:.2f} net profit · "
+                        f"{_signed_usd(realized_pnl)} realized")
             _verdict_level = "profit"
         elif _profit_basis < 0:
-            _verdict = f"-${abs(_profit_basis):.2f} net loss · ${realized_pnl:+.2f} realized"
+            _verdict = (f"-${abs(_profit_basis):.2f} net loss · "
+                        f"{_signed_usd(realized_pnl)} realized")
             _verdict_level = "loss"
         else:
             _verdict = "Break-even"
             _verdict_level = "neutral"
         if unrealized_usd is not None and unrealized_usd != 0:
-            _verdict += f" · ${unrealized_usd:+.2f} open"
+            _verdict += f" · {_signed_usd(unrealized_usd)} open"
         # Exit-shape counts (merges vs one-sided dumps) feed the card's details
         # line, which owns the "all exits were naked" warning.
         _merge_closes = sum(1 for c in closes if c.get("method") == "merge")

@@ -597,3 +597,18 @@ def test_the_drawer_drops_the_pin():
     # Assert
     pin = drawer.split(".proto-rail-pin {")[1].split("}")[0]
     assert "display: none" in pin
+
+
+def test_the_pin_is_announced_by_the_label_the_operator_reads():
+    # Arrange - an aria-label overrides the visible text, so a button reading
+    # "Pin sidebar" announced as something else is the mismatch WCAG 2.5.3
+    # exists to catch. The state it toggles rides on aria-pressed instead.
+    js = (_STATIC / "prototype.js").read_text(encoding="utf-8")
+
+    # Act
+    pin = js.split("function buildRailPin(doc)")[1].split("function buildRailDivider")[0]
+
+    # Assert
+    assert "aria-label" not in pin
+    assert "aria-pressed" in pin
+    assert "buildNavLabel(doc, 'Pin sidebar')" in pin

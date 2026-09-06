@@ -27,12 +27,14 @@ const DEFAULT_PAGE = 'home';
 const LAYOUT_PATHS = ['/', '/prototype'];
 const EXPLAINER_SRC = '/static/strategy_explainer.html';
 
-/* Which live panel lands on which page. `icon` is SVG path data drawn at
- * 16x16 -- a font glyph renders differently on every machine, and an
- * icon-only rail has nothing else to identify a page by. Every selector is an id `app.js`
- * already renders into; a selector that no longer matches is skipped rather
- * than throwing, so a renamed panel costs one empty slot instead of the whole
- * layout. */
+/* Which live panel lands on which page.
+ *
+ * `icon` is SVG path data drawn at 16x16: a font glyph renders differently on
+ * every machine, and an icon-only rail has nothing else to identify a page by.
+ *
+ * Every selector is an id `app.js` already renders into; a selector that no
+ * longer matches is skipped rather than throwing, so a renamed panel costs one
+ * empty slot instead of the whole layout. */
 const PAGE_LAYOUT = [
   {
     page: 'home',
@@ -130,7 +132,7 @@ function setRailPinned(pinned, doc) {
   const pin = scope.getElementById('proto-rail-pin');
   if (pin) {
     pin.setAttribute('aria-pressed', pinned ? 'true' : 'false');
-    pin.setAttribute('aria-label', pinned ? 'Unpin the sidebar' : 'Pin the sidebar open');
+    pin.setAttribute('title', pinned ? 'Unpin sidebar' : 'Pin sidebar');
   }
   return !!pinned;
 }
@@ -231,8 +233,8 @@ function buildIcon(doc, pathData) {
 }
 
 /* The label is clipped when the rail is collapsed, never removed: an
- * icon-only rail that drops its labels leaves a screen reader with five
- * unnamed buttons. */
+ * icon-only rail that drops its labels leaves a screen reader with seven
+ * unnamed controls. */
 function buildNavLabel(doc, text) {
   const label = doc.createElement('span');
   label.className = 'proto-nav-label';
@@ -265,7 +267,7 @@ function buildRailPin(doc) {
   pin.id = 'proto-rail-pin';
   pin.className = 'proto-rail-pin';
   pin.setAttribute('aria-pressed', 'false');
-  pin.setAttribute('aria-label', 'Pin the sidebar open');
+  pin.setAttribute('title', 'Pin sidebar');
   pin.appendChild(buildIcon(doc, 'M2.5 3.5h11 M2.5 8h6 M2.5 12.5h11'));
   pin.appendChild(buildNavLabel(doc, 'Pin sidebar'));
   return pin;

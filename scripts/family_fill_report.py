@@ -370,8 +370,16 @@ def _rate_basis(rows: list[dict]) -> str:
     recent rate, not a different value of the same one. Pooling the two would
     average a month against an hour, so the header says plainly when a run
     carries the old basis.
+
+    Only rows that carry a rate are read. A market sampled with no book at all
+    writes NULL for the window AND for the span, because there was nothing to
+    measure -- it is not an old measurement, and counting it as one makes a
+    fresh store report itself as MIXED.
     """
-    windows = {r.get("tape_window_min") for r in rows}
+    rated = [r for r in rows if r.get("tape_span_min") is not None]
+    windows = {r.get("tape_window_min") for r in rated}
+    if not windows:
+        return "no sample carries a measurable tape window"
     bounded = sorted(w for w in windows if w is not None)
     if not bounded:
         return ("the venue's whole tape history (LEGACY -- this rate is a "

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from scripts.family_fill_report import (
     ALL_RUNS,
+    _rate_basis,
     DEFAULT_HORIZON_MIN,
     _level_state,
     _rate,
@@ -273,6 +274,22 @@ def test_main_refuses_a_simulation_it_cannot_run(tmp_path, capsys):
                 ["--max-gap-min", "-5"]):
         assert main(["--db", str(path)] + bad) == 2
         assert bad[0] in capsys.readouterr().out
+
+
+def test_a_market_with_no_book_does_not_make_a_fresh_store_read_as_mixed():
+    """No book is no measurement, not an old one.
+
+    A sampled market the venue quoted nothing for writes NULL for the window
+    AND for the span. Reading that as a legacy lifetime row labels every fresh
+    store MIXED, which is the one label that tells the reader not to trust the
+    numbers.
+    """
+    bounded = {"tape_window_min": 60.0, "tape_span_min": 60.0}
+    bookless = {"tape_window_min": None, "tape_span_min": None}
+    assert _rate_basis([bounded, bookless]) == "last 60min of tape"
+    assert "MIXED" in _rate_basis(
+        [bounded, {"tape_window_min": None, "tape_span_min": 46_000.0}])
+    assert _rate_basis([bookless]) == "no sample carries a measurable tape window"
 
 
 def test_the_rate_basis_is_printed_even_when_nothing_qualifies(tmp_path, capsys):

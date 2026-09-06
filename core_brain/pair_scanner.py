@@ -29,10 +29,24 @@ difference between `edge_per_pair` and the tighter leg's own spread was
 0.000c in 32 of 32. A 13c pair edge is a 13c spread: a market nobody is
 quoting, not money nobody has noticed.
 
-That makes `dislocation` the only figure here that can name a genuine
-mispricing -- the amount by which the pair edge EXCEEDS what either leg's own
-spread already offers. It is zero almost always, and when it is not, the two
-books have come apart and a pair is cheap for a reason other than illiquidity.
+That identity is not a coincidence, and the reason closes the question. A
+binary market has ONE order book, served under two token ids. Checked
+level-for-level on 12 live markets -- including books 148 levels deep -- every
+UP bid (p, s) appeared as a DOWN ask (1-p, s), same price, same size, 12 of 12.
+Selling UP and buying DOWN are the same order. So `dislocation` on a binary
+market is not rare, it is IMPOSSIBLE: the two sides cannot come apart because
+there are not two sides. It stays in the output as an integrity check -- a
+non-zero reading means the venue's own book invariant broke -- not as an
+opportunity finder.
+
+Cross-market arbitrage on multi-outcome events is where separate books do
+exist. Measured the same day on 8 complete events over $20k of daily volume:
+sum-of-asks under $1.00 in 0 of 8, median $1.0215. A further 14 events could
+not be priced at all because some outcome had no ask resting. That surface was
+checked and is not open either.
+
+What survives every measurement is this: the strategy is two-sided market
+making. Profit is the spread, and it is earned only when BOTH legs fill.
 
 Everything else in this module ranks MARKET-MAKING value, not arbitrage:
 capturing `edge_per_pair` requires BOTH legs to fill at the bid, which is the
@@ -139,10 +153,11 @@ class PairQuote:
     def dislocation(self) -> float:
         """How far the pair edge exceeds either leg's own spread.
 
-        Zero means the pair is only as cheap as the book is wide -- no
-        mispricing, just illiquidity. Positive means the two books have come
-        apart and the pair is genuinely cheap. This is the only figure here
-        that can name an arbitrage.
+        An integrity check, not an opportunity finder. A binary market serves
+        ONE book under two token ids, so this reads zero by construction: a
+        pair can only be as cheap as the book is wide. A non-zero reading means
+        the venue's own mirror invariant broke, and the number is worth acting
+        on for that reason rather than as a trade.
         """
         raw = self.edge_per_pair - min(self.leg_spread_up, self.leg_spread_down)
         return raw if raw >= DISLOCATION_EPS else 0.0
@@ -361,8 +376,9 @@ def _main() -> None:
     takeable = [q for q in quotes if q.taker_pair_is_profitable]
     print(f"\n{len(quotes)} markets with a pair under $1.00 at the bid; "
           f"{len(takeable)} of them are also under $1.00 at the ask.")
-    print(f"{len(real)} genuinely dislocated -- a pair cheaper than either "
-          f"leg's own spread.")
+    print(f"{len(real)} dislocated. A binary market has one book served under "
+          f"two token ids, so this reads 0 unless the venue's book invariant "
+          f"broke.")
     print("The 'spread' column is the bid-ask spread by identity, not free "
           "money: capturing it needs BOTH legs filled at the bid.")
 

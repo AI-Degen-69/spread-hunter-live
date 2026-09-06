@@ -82,3 +82,23 @@ Thumbs.db
 
 .gstack/
 .collab/
+
+# Shadow/statistical run databases dropped in the repo root
+stats_*.db*
+
+# Runtime state in nested per-run directories (runtime/run145/... etc.)
+runtime/**/*.db*
+runtime/**/*.json
+runtime/**/*.jsonl
+runtime/**/*.txt
+runtime/**/*.log
+
+# Local agent tooling state (ECC antigravity harness, opencode, rtk).
+# .agents/ itself is tracked (skills, workflows, hooks) -- only the
+# machine-generated rules drop is local.
+.agents/rules/
+.opencode/
+.rtk/
+
+# Session handoff working notes (never committed)
+HANDOFF-*.md

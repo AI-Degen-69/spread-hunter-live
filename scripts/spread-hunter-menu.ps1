@@ -1913,7 +1913,7 @@ function Show-MenuGrid {
         Write-Host ("  " + $g.Header) -ForegroundColor $cInfo
         foreach ($it in $g.Items) {
             Write-Host "   " -NoNewline
-            Write-Host (" {0} " -f $it.K) -BackgroundColor DarkCyan -ForegroundColor White -NoNewline
+            Write-Host (" {0} " -f $it.K) -BackgroundColor (Get-ProfileColor -Name Border) -ForegroundColor Black -NoNewline
             Write-Host ("  {0} " -f $it.Icon) -ForegroundColor (Get-ProfileColor -Name $it.IconColor) -NoNewline
             Write-Host ("{0,-26}" -f $it.V) -ForegroundColor $cStrong -NoNewline
             Write-Host $it.D -ForegroundColor $cNeutral
@@ -2039,15 +2039,19 @@ if ($Action -ne "") {
     exit 0
 }
 
-Lsh-Banner -Title "SPREAD HUNTER LIVE - CONTROL CENTER"
-Show-MenuGrid
-Write-Host "  Select " -ForegroundColor Gray -NoNewline
-Write-Host "[1-9, q]" -ForegroundColor Cyan -NoNewline
+while ($true) {
+    Lsh-Banner -Title "SPREAD HUNTER LIVE - CONTROL CENTER"
+    Show-MenuGrid
+    Write-Host "  Select " -ForegroundColor (Get-ProfileColor -Name Text) -NoNewline
+    Write-Host "[1-9, q]" -ForegroundColor (Get-ProfileColor -Name Command) -NoNewline
+    Write-Host " › " -ForegroundColor (Get-ProfileColor -Name Highlight) -NoNewline
+    $choice = Read-Host
+    if ($null -eq $choice) { exit 0 }
+    $choice = $choice.Trim().ToLower()
+    if ($choice -eq "") { exit 0 }
+    Invoke-LiveAction $choice
 
-Write-Host " › " -ForegroundColor Yellow -NoNewline
-$choice = Read-Host
-if ($null -eq $choice) { exit 0 }
-$choice = $choice.Trim().ToLower()
-if ($choice -eq "") { exit 0 }
-Invoke-LiveAction $choice
-exit 0
+    Write-Host ""
+    Write-Host "  Press Enter to return to main menu..." -ForegroundColor (Get-ProfileColor -Name Neutral)
+    $null = Read-Host
+}

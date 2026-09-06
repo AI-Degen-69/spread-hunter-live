@@ -395,3 +395,28 @@ def test_the_endpoints_refuse_to_be_pointed_at_the_live_registry(client):
         response = client.get(route, params={"db": "data/orders.db"})
         assert response.status_code == 400
         assert "registry" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("route,param", [
+    ("/api/probe/status", "target_hours"),
+    ("/api/probe/findings", "queue_bar"),
+    ("/api/probe/findings", "hours"),
+])
+@pytest.mark.parametrize("value", ["NaN", "Infinity", "-Infinity", "0", "-3"])
+def test_a_number_that_is_not_one_is_refused_at_the_edge(client, tmp_path,
+                                                         route, param, value):
+    # NaN parses into a float and survives every comparison after it, so it
+    # reaches JSONResponse -- which renders with `allow_nan=False` and raises
+    # inside the response. Unrefused, a bad parameter is an opaque 500.
+    path = _store(tmp_path / "probe.db", _timeline(2))
+    response = client.get(route, params={"db": str(path), param: value})
+    assert response.status_code == 400
+    assert param in response.json()["detail"]
+
+
+@pytest.mark.parametrize("route", ["/api/probe/status", "/api/probe/findings"])
+def test_every_number_the_endpoints_serve_is_valid_json(client, tmp_path, route):
+    path = _store(tmp_path / "probe.db", _timeline(3))
+    body = client.get(route, params={"db": str(path)}).text
+    for literal in ("NaN", "Infinity", "-Infinity"):
+        assert literal not in body

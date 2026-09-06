@@ -1549,7 +1549,9 @@ function Kill-RecordedPid {
 }
 
 function Get-ProcessRecord {
-    param([Parameter(Mandatory)]$Entry)
+    # A session file written before a process started has no key for it, so the
+    # caller hands us $null for that slot. That is "not running", not an error.
+    param([Parameter(Mandatory)][AllowNull()]$Entry)
     if (-not $Entry -or -not $Entry.pid) { return $null }
     try { $p = Get-Process -Id $Entry.pid -ErrorAction Stop } catch { return $null }
     if ($null -eq $Entry.started_ticks) { return $null }

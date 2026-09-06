@@ -2662,6 +2662,120 @@ function decisionGatesHtml(ta, stats, n, kpi) {
   `;
 }
 
+/* Tier 1: the band around our average close, and whether it still contains a
+ * loss. `mean_pnl_ci` answers that in dollars; this only has to not soften it.
+ */
+function renderPnlCiReadout(ta) {
+  const host = document.getElementById('pnl-ci-readout');
+  if (!host) return;
+
+  const ci = ta?.mean_pnl_ci || {};
+  const n = ci.n != null ? Number(ci.n) : 0;
+  const mean = ci.mean_usd != null ? Number(ci.mean_usd) : null;
+  const levels = Array.isArray(ci.levels) ? ci.levels : [];
+
+  // No band is not a zero band. A run under two closes says what it has,
+  // which is a mean and a sample size, and stops there.
+  if (!levels.length) {
+    host.innerHTML = `
+      <div class="pnl-ci-mean mono">${esc(mean === null ? '--' : fmtSignedUSD(mean))}</div>
+      <div class="pnl-ci-sub">Mean realized PnL per close</div>
+      <div class="pnl-ci-verdict standby">NO BAND YET · ${n} ${n === 1 ? 'CLOSE' : 'CLOSES'}</div>
+      <div class="pnl-ci-note">A confidence interval needs at least two closes. Nothing is being withheld; nothing has been measured.</div>
+    `;
+    return;
+  }
+
+  const rows = levels.map(lv => {
+    const lower = Number(lv.lower);
+    const upper = Number(lv.upper);
+    return `
+      <div class="pnl-ci-band-row">
+        <span class="pnl-ci-band-label mono">${esc(String(lv.level))}%</span>
+        <span class="pnl-ci-band-range mono">
+          <b class="${lower < 0 ? 'negative' : 'positive'}">${esc(fmtSignedUSD(lower))}</b>
+          <span class="pnl-ci-band-dash">to</span>
+          <b class="${upper < 0 ? 'negative' : 'positive'}">${esc(fmtSignedUSD(upper))}</b>
+        </span>
+      </div>`;
+  }).join('');
+
+  const widest = levels[levels.length - 1];
+  const depth = widest.negative_depth_usd != null ? Number(widest.negative_depth_usd) : null;
+  const verdictMap = {
+    positive: { cls: 'go', text: `BAND CLEAR OF ZERO · NO LOSS INCLUDED AT ${widest.level}%` },
+    spans_zero: {
+      cls: 'warn',
+      text: `BAND INCLUDES A LOSS DOWN TO ${depth === null ? '--' : '-$' + depth.toFixed(3)} PER CLOSE`,
+    },
+    negative: { cls: 'nogo', text: `BAND ENTIRELY BELOW ZERO AT ${widest.level}%` },
+  };
+  const verdict = verdictMap[ci.verdict] || { cls: 'standby', text: 'VERDICT UNAVAILABLE' };
+
+  host.innerHTML = `
+    <div class="pnl-ci-mean mono ${mean === null ? '' : signClass(mean)}">${esc(mean === null ? '--' : fmtSignedUSD(mean))}</div>
+    <div class="pnl-ci-sub">Mean realized PnL per close · ${n} ${n === 1 ? 'close' : 'closes'}</div>
+    <div class="pnl-ci-bands">${rows}</div>
+    <div class="pnl-ci-verdict ${verdict.cls}">${esc(verdict.text)}</div>
+  `;
+}
+
+/* Tier 1: quoted -> filled -> closed -> merged, and the step that loses most.
+ * Bars are scaled against the first stage, so the shape of the drop is the
+ * thing being read, not the absolute counts.
+ */
+function renderExecutionFunnel(kpi) {
+  const host = document.getElementById('execution-funnel');
+  if (!host) return;
+
+  const funnel = kpi?.execution_funnel;
+  if (!funnel || !Array.isArray(funnel.stages) || !funnel.stages.length) {
+    host.innerHTML = '<div class="pnl-ci-note">No execution telemetry in this run yet.</div>';
+    return;
+  }
+
+  const stages = funnel.stages;
+  const dropByFrom = {};
+  for (const d of (funnel.drop_off || [])) dropByFrom[d.from] = d;
+  const top = Number(stages[0].legs) || 0;
+  const worst = funnel.worst_step || null;
+
+  const rows = stages.map(st => {
+    const legs = Number(st.legs) || 0;
+    const pct = top > 0 ? Math.max(legs > 0 ? 2 : 0, (100 * legs) / top) : 0;
+    const drop = dropByFrom[st.key];
+    const isWorstFrom = worst && worst.from === st.key;
+    const retained = drop && drop.retained_pct != null
+      ? `${Number(drop.retained_pct).toFixed(1)}% carried on`
+      : (drop ? 'no rate yet' : '');
+    return `
+      <div class="funnel-stage-row${isWorstFrom ? ' worst' : ''}">
+        <div class="funnel-stage-head">
+          <span class="funnel-stage-label">${esc(st.label || st.key)}</span>
+          <span class="funnel-stage-count mono">${legs} ${legs === 1 ? 'leg' : 'legs'} · ${Number(st.markets) || 0} ${Number(st.markets) === 1 ? 'market' : 'markets'}</span>
+        </div>
+        <div class="funnel-bar-track"><div class="funnel-bar-fill" style="width:${pct.toFixed(1)}%"></div></div>
+        ${drop ? `<div class="funnel-drop-note${isWorstFrom ? ' worst' : ''}">${esc(retained)}${drop.lost > 0 ? ` · lost ${drop.lost}` : ''}</div>` : ''}
+      </div>`;
+  }).join('');
+
+  const worstLine = worst
+    ? `Worst step: ${esc(worst.from)} &rarr; ${esc(worst.to)}, ${Number(worst.lost)} lost`
+    : 'No step has lost anything yet';
+
+  const declined = (funnel.declined || []).slice(0, 3);
+  const declinedChips = declined.length
+    ? `<div class="funnel-declined">${declined.map(d =>
+        `<span class="funnel-declined-chip mono">${esc(d.reason)} <b>${Number(d.cycles) || 0}</b></span>`).join('')}</div>`
+    : '';
+
+  host.innerHTML = `
+    <div class="funnel-stages">${rows}</div>
+    <div class="funnel-worst${worst ? ' has-worst' : ''}">${worstLine}</div>
+    ${declinedChips}
+  `;
+}
+
 function renderAnalyticsSurface(kpi, status) {
   const grid = document.getElementById('kpi-grid');
   const gates = document.getElementById('analytics-gates');
@@ -2702,6 +2816,11 @@ function renderAnalyticsSurface(kpi, status) {
       <div class="hint">Empirical Win Rate: ${n > 0 ? winRate.toFixed(1) + '%' : '0.0%'}</div>
     </div>
   `;
+
+  // Tier 1 first: the two readings that gate live trading are rendered before
+  // the drill-down decks, and a throw in either must not take the rest down.
+  try { renderPnlCiReadout(ta); } catch (e) { console.error('Error rendering PnL CI readout', e); }
+  try { renderExecutionFunnel(kpi); } catch (e) { console.error('Error rendering execution funnel', e); }
 
   // Render Quant Grid
   renderQuantRiskGrid(ta, p, stats);
@@ -4494,7 +4613,8 @@ if (typeof module === 'undefined' || !module.exports) {
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = { renderPositionDistributionChart, renderMarkoutChart, renderMonteCarloChart, renderQuantRiskGrid, signClass, fmtSignedUSD, _ciBounds, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity,
-    statsFilterScope, pruneStatsSubnav, STATS_VIEW_TARGETS,
+    statsFilterScope, pruneStatsSubnav, STATS_VIEW_TARGETS, applyStatsViewFilter,
+    renderPnlCiReadout, renderExecutionFunnel,
     OT_VIEWS, OT_COLUMNS, ordersTradesRows, ordersTradesCounts, otHeadHtml,
     activeMarketsRows, openOrdersRows, positionsRows, resolvedMarketsRows,
     heldMarketEntries, heldLegs, isFinishedMarket, latestLegMids, latestLegQuotes,

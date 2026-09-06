@@ -1,70 +1,114 @@
-"""DOM and copy contracts for the OLD analytics tab.
+"""DOM and copy contracts for the analytics surface.
 
-Every marker these four tests assert on (`analytics-hist-wrap`, `portfolioLine`,
-"Required Observations", "Price Band", "Average Return") was present at
-574269c and gone by aaa0098: the analytics tab was rewritten between those two
-commits, and again in #94. The tests were not running at the time -- they were
-parked outside `tests/` -- so nothing caught the drift.
+These replace four tests that described the pre-#94 analytics tab. Every
+marker they asserted on (`analytics-hist-wrap`, `portfolioLine`, "Required
+Observations", "Price Band") was gone from the page long before anything
+failed, because the file was parked outside `tests/` and never ran. They were
+kept skipped as a reminder of what the old panel guaranteed; #90 is the
+redesign they were waiting for, so this is the replacement.
 
-They are skipped rather than deleted or rewritten. The surface they describe is
-being redesigned under #90, and that is where the replacement contracts belong;
-rewriting them against a panel scheduled for replacement would be work thrown
-away twice. Skipped, they stay visible as a reminder of what the old panel
-guaranteed.
+What the surface owes the Owner, and what these tests hold it to:
+
+- The two go/no-go readings lead, and say what they mean in words.
+- Nothing on the surface invents a number. Absent measurements read as
+  absent -- no fabricated zero, no placeholder series.
+- The squares and gates stay in human language, not field names.
+
+Journeys under test:
+1. As the Owner, Tier 1 renders the confidence verdict in plain words.
+2. As the Owner, the drop-off names its worst step in plain words.
+3. As the Owner, every figure on the surface comes from the payload.
+4. As the Owner, the panels read as English, not as JSON keys.
 """
-import pytest
-
-pytestmark = pytest.mark.skip(
-    reason="asserts the pre-rewrite analytics tab; replacement contracts belong "
-           "to the #90 redesign")
-
 from pathlib import Path
 
+import pytest
 
-def test_tab2_chip_copy_and_semantic_classes_are_present():
-    source = Path("dashboard/static/app.js").read_text(encoding="utf-8")
-    assert "Required Observations" in source
-    assert "Price Band" in source
-    assert "n_required" not in source
-    assert "? 'live' : 'warn'" in source
-    assert "? 'live' : 'bad'" in source
-    assert "winRate != null && winRate > 50 ? 'live' : 'bad'" in source
+STATIC = Path(__file__).resolve().parent.parent / "dashboard" / "static"
 
 
-def test_histogram_ci_rail_contract_is_present():
-    source = Path("dashboard/static/app.js").read_text(encoding="utf-8")
-    css = Path("dashboard/static/styles.css").read_text(encoding="utf-8")
-    assert 'class="analytics-hist-wrap"><div class="analytics-hist">${histogram}</div><div class="analytics-rail">' in source
-    assert 'left:26%;width:46%' in source
-    assert 'left:20%;width:58%' in source
-    assert 'analytics-rail-mean' in source
-    assert 'border-radius:10px 10px 0 0' in css
-    assert 'border-radius:0 0 10px 10px' in css
-    assert 'margin-top:0' in css
+@pytest.fixture(scope="module")
+def app_js() -> str:
+    return (STATIC / "app.js").read_text(encoding="utf-8")
 
 
-def test_portfolio_line_dom_layout_contract_is_present():
-    source = Path("dashboard/static/app.js").read_text(encoding="utf-8")
-    css = Path("dashboard/static/styles.css").read_text(encoding="utf-8")
-    assert 'svg id="portfolioLine"' in source
-    assert source.count('<path d="${line}') >= 2
-    assert 'Latest observations' in source and 'Unmeasured trend' in source
-    assert 'hasMeasuredPortfolio' in source
-    assert '$${esc' in source
-    assert 'points = [100,101,100.5,102,101.8,103,104,103.6,105,106]' not in source
-    assert '.analytics-line' in css and 'min-height:150px' in css
-    assert 'grid-template-columns:1fr 1fr' in css
-    assert 'analytics-portfolio-card' in source
+@pytest.fixture(scope="module")
+def index_html() -> str:
+    return (STATIC / "index.html").read_text(encoding="utf-8")
 
 
-def test_squares_and_gates_use_human_language():
-    source = Path("dashboard/static/app.js").read_text(encoding="utf-8")
-    for title in ("Average Profit Per Close", "Average Return", "Win Rate", "Observations"):
-        assert title in source
-    assert "Gate</th><th>What It Measures</th><th>Needs</th><th>This Run</th><th>Result" in source
-    assert "Total Profit Stays Above 1%" in source
-    assert "90% Confidence Lower Bound Is" in source
-    for threshold in ("Above 1.00%", "More Than Half Wins", "More Than 120 Observations", "At Least 25 Matured Samples"):
-        assert threshold in source
-    assert "GO" in source and "NO-GO" in source and "Inconclusive" in source
-    assert "n_required" not in source
+@pytest.fixture(scope="module")
+def styles_css() -> str:
+    return (STATIC / "styles.css").read_text(encoding="utf-8")
+
+
+# -- Tier 1 says what it means -----------------------------------------------
+
+def test_the_confidence_card_states_its_verdict_in_words(app_js):
+    # Every branch of the verdict is spelled out. A band that reaches below
+    # zero has to say so in the copy, not leave it to a colour.
+    for phrase in ("BAND CLEAR OF ZERO",
+                   "BAND INCLUDES A LOSS DOWN TO",
+                   "BAND ENTIRELY BELOW ZERO",
+                   "NO BAND YET"):
+        assert phrase in app_js
+
+    # Both levels are named, on one quantity.
+    assert "Mean realized PnL per close" in app_js
+    assert "mean_pnl_ci" in app_js
+
+
+def test_a_sample_too_small_for_a_band_explains_itself(app_js):
+    # The old panel's failure mode was a zero that looked like a measurement.
+    assert "A confidence interval needs at least two closes" in app_js
+    assert "nothing has been measured" in app_js
+
+
+def test_the_drop_off_card_names_its_worst_step(app_js):
+    assert "Worst step:" in app_js
+    assert "carried on" in app_js
+    assert "No step has lost anything yet" in app_js
+    assert "No execution telemetry in this run yet." in app_js
+
+
+# -- Nothing is invented -----------------------------------------------------
+
+def test_the_tier_1_cards_read_every_figure_from_the_payload(app_js):
+    # The renderers reach for payload fields; none of them carries a literal
+    # sample series like the placeholder the old portfolio line shipped with.
+    for field in ("execution_funnel", "mean_pnl_ci", "negative_depth_usd",
+                  "retained_pct", "worst_step"):
+        assert field in app_js
+    assert "points = [100,101,100.5,102,101.8,103,104,103.6,105,106]" not in app_js
+
+
+def test_an_unmeasured_retention_reads_as_absent_rather_than_zero(app_js):
+    # `retained_pct` is NULL when no leg reached the earlier stage. Rendering
+    # that as 0% would report a verdict the run has not earned.
+    assert "'no rate yet'" in app_js
+
+
+# -- The surface is ordered, and stays in English ----------------------------
+
+def test_the_go_no_go_row_leads_the_surface(index_html):
+    assert index_html.index('id="tier1-decision-row"') < index_html.index('id="kpi-grid"')
+    assert 'id="pnl-ci-readout"' in index_html
+    assert 'id="execution-funnel"' in index_html
+
+
+def test_the_squares_and_gates_use_human_language(app_js):
+    for title in ("Average Profit Per Close", "Mean Return Per Trade",
+                  "Annualized Sharpe Ratio", "Executed Sample Size"):
+        assert title in app_js
+
+    # The gates table names what each row measures and what it needs, in
+    # column headers a reader can follow without the schema.
+    assert ("<th>Hypothesis / decision gate</th><th>Parameter &amp; standard</th>"
+            "<th>Required threshold</th><th>Observed value</th><th>Gate verdict</th>") in app_js
+    assert "n_required" not in app_js
+
+
+def test_the_tier_1_row_has_styling_of_its_own(styles_css):
+    # Tier 1 is a distinct band above the decks, not another card in the grid.
+    for selector in (".tier1-decision-row", ".pnl-ci-verdict", ".funnel-bar-fill"):
+        assert selector in styles_css

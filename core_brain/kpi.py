@@ -66,6 +66,91 @@ Z_BETA_80_POWER = 0.8416       # 80% power (beta=0.20)
 Z_95_TWO_SIDED = 1.96          # 95% two-sided (used by _wilson_ci default)
 
 
+# Two-sided normal critical values, by confidence level. Used once the sample
+# is large enough for the normal approximation to hold.
+_CI_Z_BY_LEVEL = ((90, 1.645), (95, 1.96))
+
+# Two-sided Student-t critical values by degrees of freedom (n - 1), for the
+# same two levels. On the samples this dashboard actually runs on -- three
+# closes, seven closes -- the normal value is far too narrow: two closes of
+# $1.00 and $3.00 give a 95% normal band of +$0.04 to +$3.96, a confident
+# "profitable" verdict drawn from two observations. The t band on the same two
+# closes spans zero, which is the truth. Beyond 30 degrees of freedom the two
+# agree to the third decimal and the normal value takes over.
+_CI_T_BY_DF: dict[int, dict[int, float]] = {
+    1: {90: 6.314, 95: 12.706}, 2: {90: 2.920, 95: 4.303},
+    3: {90: 2.353, 95: 3.182}, 4: {90: 2.132, 95: 2.776},
+    5: {90: 2.015, 95: 2.571}, 6: {90: 1.943, 95: 2.447},
+    7: {90: 1.895, 95: 2.365}, 8: {90: 1.860, 95: 2.306},
+    9: {90: 1.833, 95: 2.262}, 10: {90: 1.812, 95: 2.228},
+    11: {90: 1.796, 95: 2.201}, 12: {90: 1.782, 95: 2.179},
+    13: {90: 1.771, 95: 2.160}, 14: {90: 1.761, 95: 2.145},
+    15: {90: 1.753, 95: 2.131}, 16: {90: 1.746, 95: 2.120},
+    17: {90: 1.740, 95: 2.110}, 18: {90: 1.734, 95: 2.101},
+    19: {90: 1.729, 95: 2.093}, 20: {90: 1.725, 95: 2.086},
+    21: {90: 1.721, 95: 2.080}, 22: {90: 1.717, 95: 2.074},
+    23: {90: 1.714, 95: 2.069}, 24: {90: 1.711, 95: 2.064},
+    25: {90: 1.708, 95: 2.060}, 26: {90: 1.706, 95: 2.056},
+    27: {90: 1.703, 95: 2.052}, 28: {90: 1.701, 95: 2.048},
+    29: {90: 1.699, 95: 2.045}, 30: {90: 1.697, 95: 2.042},
+}
+
+
+def _ci_critical_value(level: int, n: int, z: float) -> float:
+    """The multiplier for a two-sided interval on a sample of `n`.
+
+    Student-t while the sample is small enough for it to matter, the normal
+    value once it is not. No new dependency: the table is the whole of what
+    `scipy.stats.t.ppf` would be used for here.
+    """
+    return _CI_T_BY_DF.get(n - 1, {}).get(level, z)
+
+
+def _mean_pnl_ci(pnls: list[float]) -> dict[str, Any]:
+    """The 90% and 95% band on the mean realized PnL per close, in dollars.
+
+    The GO/NO-GO question #90 names is not "what is the average" but "does the
+    interval around it still contain a loss, and how deep". So each level
+    carries that answer outright rather than leaving it to be inferred from a
+    lower bound printed next to a mean.
+
+    A sample too small for a standard error reports no levels at all. A zero
+    would read as "breaks even", which is a measurement one close has not made.
+    """
+    n = len(pnls)
+    mean_usd = statistics.mean(pnls) if n else None
+    if n < 2 or mean_usd is None:
+        return {"mean_usd": mean_usd, "n": n, "levels": [], "verdict": None}
+
+    se = statistics.stdev(pnls) / math.sqrt(n)
+    levels = []
+    for level, z in _CI_Z_BY_LEVEL:
+        crit = _ci_critical_value(level, n, z)
+        lower = mean_usd - crit * se
+        upper = mean_usd + crit * se
+        levels.append({
+            "level": level,
+            "lower": lower,
+            "upper": upper,
+            "includes_negative": lower < 0,
+            # How far below zero the band reaches -- the "and how much" half
+            # of the question. NULL when it never gets there.
+            "negative_depth_usd": abs(lower) if lower < 0 else None,
+        })
+
+    # The verdict reads off the wider band: passing on 90% while the 95% band
+    # still spans zero is not a pass.
+    widest = levels[-1]
+    if widest["lower"] > 0:
+        verdict = "positive"
+    elif widest["upper"] < 0:
+        verdict = "negative"
+    else:
+        verdict = "spans_zero"
+
+    return {"mean_usd": mean_usd, "n": n, "levels": levels, "verdict": verdict}
+
+
 def required_sample_size(
     sigma: float | None,
     delta: float | None,
@@ -275,6 +360,8 @@ def compute_trade_analytics(
             "upper": mean_return_pct + 1.96 * se,
         }
 
+    mean_pnl_ci = _mean_pnl_ci(wins + losses)
+
     avg_win_usd = statistics.mean(wins) if wins else None
     avg_loss_usd = statistics.mean(losses) if losses else None
     # Classic reward:risk = average win / average loss (magnitude). NULL when
@@ -334,6 +421,7 @@ def compute_trade_analytics(
         "stdev_return_pct": stdev_return_pct,
         "ci90_lower_pct": ci90_lower_pct,
         "ci95_return_pct": ci95_return_pct,
+        "mean_pnl_ci": mean_pnl_ci,
         "avg_win_usd": avg_win_usd,
         "avg_loss_usd": avg_loss_usd,
         "risk_reward_ratio": risk_reward_ratio,
@@ -598,6 +686,84 @@ def _funnel_from_pipeline(
         "reward_min_income_usd_day": snap.get("reward_min_income_usd_day"),
         "spread_min_income_usd_day": snap.get("spread_min_income_usd_day"),
         "max_pair_cost": snap.get("max_pair_cost"),
+    }
+
+
+# The two spellings of a completed pair: `merge` is what the venue verb
+# writes, `shadow_merge` what a rehearsal writes. Both retire two legs at once.
+MERGE_METHODS = ("merge", "shadow_merge")
+# Bookkeeping rows the account sweep writes against a market. They are not an
+# exit the strategy chose, so they belong to no execution stage.
+NON_TRADE_CLOSE_METHODS = ("venue_sync",)
+# The stages, in the order a leg travels them.
+EXECUTION_STAGES = (
+    ("quoted", "Quoted"),
+    ("filled", "Filled"),
+    ("closed", "Closed"),
+    ("merged", "Merged"),
+)
+
+
+def _execution_funnel(
+    quotes: list[dict],
+    fills: list[dict],
+    closes: list[dict],
+    top_skips: list[tuple[str, int]],
+) -> dict[str, Any]:
+    """Where the run falls off between a resting quote and a merged pair.
+
+    The screener funnel answers which markets passed the gates. This answers
+    what happened to the legs that did: how many were quoted, how many filled,
+    how many closed, and how many of those closes were merges. The step that
+    loses the most is named outright so the board does not have to be read.
+    """
+    traded = [c for c in closes if (c.get("method") or "unknown") not in NON_TRADE_CLOSE_METHODS]
+    merged = [c for c in traded if (c.get("method") or "unknown") in MERGE_METHODS]
+    filled_quotes = [q for q in quotes if float(q.get("filled") or 0.0) > 0.0]
+
+    def _markets(rows: list[dict]) -> int:
+        return len({r["condition_id"] for r in rows if r.get("condition_id")})
+
+    # A leg that filled is one order that filled, counted off the durable
+    # `fills` rows: `order_uuid` is the leg's stable identity, and two partial
+    # fills of the same order are one leg, not two. The quote row's `filled`
+    # is repair-written and only for rows carrying a `local_id`, so counting
+    # that instead silently drops legs whose quote was never updated.
+    filled_legs = len({f["order_uuid"] for f in fills if f.get("order_uuid")})
+
+    counted = {
+        "quoted": (len(quotes), _markets(quotes)),
+        # Markets come off `fills` for the same reason.
+        "filled": (filled_legs, max(_markets(fills), _markets(filled_quotes))),
+        "closed": (len(traded), _markets(traded)),
+        "merged": (len(merged), _markets(merged)),
+    }
+
+    stages = [
+        {"key": key, "label": label, "legs": counted[key][0], "markets": counted[key][1]}
+        for key, label in EXECUTION_STAGES
+    ]
+
+    drop_off = []
+    for earlier, later in zip(stages, stages[1:]):
+        before, after = earlier["legs"], later["legs"]
+        drop_off.append({
+            "from": earlier["key"],
+            "to": later["key"],
+            "lost": before - after,
+            # No percentage exists when nothing reached the earlier stage. A
+            # run that has not started is not a 0% funnel; 0% is a verdict.
+            "retained_pct": (100.0 * after / before) if before > 0 else None,
+        })
+
+    losing = [d for d in drop_off if d["lost"] > 0]
+    worst = max(losing, key=lambda d: d["lost"]) if losing else None
+
+    return {
+        "stages": stages,
+        "drop_off": drop_off,
+        "worst_step": worst,
+        "declined": [{"reason": code, "cycles": n} for code, n in top_skips],
     }
 
 
@@ -1734,6 +1900,11 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         "partial_fill_shares_missing": unfilled_of_partials,
         "quote_uptime": quote_uptime,
         "top_skip_reasons": [{"reason": r, "cycles": n} for r, n in top_skips],
+
+        # Execution drop-off: quoted -> filled -> closed -> merged, with the
+        # step that loses the most named. Distinct from `funnel`, which is the
+        # screener's market-selection view.
+        "execution_funnel": _execution_funnel(quotes, fills, closes, top_skips),
         "pair_cost_distribution": sorted(pairs),
 
         # Inventory discipline

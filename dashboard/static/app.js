@@ -1982,15 +1982,36 @@ function renderPositionDistributionChart(stats) {
   }
 }
 
+/* The two ends of a confidence interval, whichever shape it arrives in.
+ * Returns null when either end is missing, so the caller shows its placeholder
+ * rather than `NaN%`. */
+function _ciBounds(ci) {
+  if (!ci) return null;
+  const lower = Array.isArray(ci) ? ci[0] : ci.lower;
+  const upper = Array.isArray(ci) ? ci[1] : ci.upper;
+  if (!Number.isFinite(Number(lower)) || !Number.isFinite(Number(upper))) return null;
+  return [Number(lower), Number(upper)];
+}
+
 function renderQuantRiskGrid(ta, p, stats) {
   const container = document.getElementById('quant-grid');
   if (!container) return;
 
   const n = ta.n_closes ?? (ta.closes_count || 0);
-  const expectancy = ta.expectancy_usd != null && n > 0 ? `$${ta.expectancy_usd.toFixed(3)}` : '$0.000';
+  // `$-0.343` puts the minus inside the currency; the sign goes in front.
+  const expectancy = ta.expectancy_usd != null && n > 0
+    ? `${ta.expectancy_usd < 0 ? '-' : ''}$${Math.abs(ta.expectancy_usd).toFixed(3)}`
+    : '$0.000';
   const meanRet = ta.mean_return_pct != null && n > 0 ? `${ta.mean_return_pct.toFixed(2)}%` : '0.00%';
   const winRate = ta.win_rate != null && n > 0 ? `${(ta.win_rate * 100).toFixed(1)}%` : '0.0%';
-  const ci95 = ta.win_rate_ci95 && n > 0 ? `[${(ta.win_rate_ci95[0]*100).toFixed(0)}%–${(ta.win_rate_ci95[1]*100).toFixed(0)}%]` : '[0%–0%]';
+  // `win_rate_ci95` is `{lower, upper}`, not a two-element array. Indexing it
+  // gave `undefined * 100` on both ends, so the Wilson interval rendered as
+  // `[NaN%–NaN%]` -- an interval that exists in the report and was never once
+  // displayed. The array form is still read, for any caller that sends one.
+  const ciBounds = _ciBounds(ta.win_rate_ci95);
+  const ci95 = ciBounds && n > 0
+    ? `[${(ciBounds[0] * 100).toFixed(0)}%–${(ciBounds[1] * 100).toFixed(0)}%]`
+    : '[0%–0%]';
   const var95 = ta.var_95_usd != null && n > 0 ? `$${ta.var_95_usd.toFixed(2)}` : '$0.00';
   const cvar95 = ta.cvar_95_usd != null && n > 0 ? `$${ta.cvar_95_usd.toFixed(2)}` : '$0.00';
   const sharpe = ta.sharpe_ratio != null && n > 0 ? ta.sharpe_ratio.toFixed(2) : '0.00';
@@ -4472,7 +4493,7 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderPositionDistributionChart, renderMarkoutChart, renderMonteCarloChart, renderQuantRiskGrid, signClass, fmtSignedUSD, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity,
+  module.exports = { renderPositionDistributionChart, renderMarkoutChart, renderMonteCarloChart, renderQuantRiskGrid, signClass, fmtSignedUSD, _ciBounds, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity,
     statsFilterScope, pruneStatsSubnav, STATS_VIEW_TARGETS,
     OT_VIEWS, OT_COLUMNS, ordersTradesRows, ordersTradesCounts, otHeadHtml,
     activeMarketsRows, openOrdersRows, positionsRows, resolvedMarketsRows,

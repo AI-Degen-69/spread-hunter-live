@@ -84,6 +84,22 @@ const spread = element('broker-kpi-spread');
 const quant = element('quant-grid').innerHTML;
 const mcSvg = element('monte-carlo-svg-container').innerHTML;
 
+/* The sub-line under the tile with this label. */
+function quantSub(label) {
+  const at = quant.indexOf(label);
+  if (at < 0) return null;
+  const m = quant.slice(at).match(/<div class="quant-sub">([\s\S]*?)<\/div>/);
+  return m ? m[1].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim() : null;
+}
+
+/* The value text of the tile with this label. */
+function quantValue(label) {
+  const at = quant.indexOf(label);
+  if (at < 0) return null;
+  const m = quant.slice(at).match(/<div class="quant-value[^"]*">([\s\S]*?)<\/div>/);
+  return m ? m[1].replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim() : null;
+}
+
 /* The class the tile with this label was rendered with. */
 function quantClass(label) {
   const at = quant.indexOf(label);
@@ -104,6 +120,8 @@ process.stdout.write(JSON.stringify({
   quant_sharpe: quantClass('Sharpe &amp; Sortino Ratio'),
   quant_profit_factor: quantClass('Profit Factor &amp; Payoff'),
   quant_win_rate: quantClass('Win Rate &amp; Wilson CI'),
+  quant_ci: quantSub('Win Rate &amp; Wilson CI'),
+  quant_expectancy_text: quantValue('Mathematical Expectancy'),
   mc_end_label: (mcSvg.match(/font-weight="700"[^>]*>([^<]*)</) || [])[1] || null,
   mc_end_x: parseFloat((mcSvg.match(/<text x="([\d.]+)"[^>]*font-size="9"/) || [])[1]),
   mc_end_anchor: /font-size="9"[^>]*text-anchor="end"/.test(mcSvg),

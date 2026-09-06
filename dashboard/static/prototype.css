@@ -81,8 +81,16 @@
   transition: width 220ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.proto-body:not(.proto-rail-pinned) .proto-sidebar:hover,
-.proto-body:not(.proto-rail-pinned) .proto-sidebar:focus-within {
+.proto-body:not(.proto-rail-pinned) .proto-sidebar:hover {
+  width: 236px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+}
+
+/* Keyboard focus opens the rail too -- `:focus-visible`, not `:focus-within`:
+   the latter also fires for a mouse click, so unpinning with the pointer left
+   the rail stuck open under the cursor that had just closed it. A browser
+   without `:has()` drops this rule alone and keeps hover. */
+.proto-body:not(.proto-rail-pinned) .proto-sidebar:has(:focus-visible) {
   width: 236px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
 }
@@ -101,8 +109,11 @@
   transition: opacity 140ms ease, max-width 220ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 .proto-body:not(.proto-rail-pinned) .proto-sidebar:hover .proto-nav-label,
-.proto-body:not(.proto-rail-pinned) .proto-sidebar:focus-within .proto-nav-label,
 .proto-body.proto-rail-pinned .proto-nav-label {
+  max-width: 170px;
+  opacity: 1;
+}
+.proto-body:not(.proto-rail-pinned) .proto-sidebar:has(:focus-visible) .proto-nav-label {
   max-width: 170px;
   opacity: 1;
 }

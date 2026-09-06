@@ -612,3 +612,18 @@ def test_the_pin_is_announced_by_the_label_the_operator_reads():
     assert "aria-label" not in pin
     assert "aria-pressed" in pin
     assert "buildNavLabel(doc, 'Pin sidebar')" in pin
+
+
+def test_the_keyboard_opens_the_rail_without_the_mouse_holding_it_open():
+    # Arrange - `:focus-within` fires for a mouse click too, so clicking the
+    # pin to close the rail left it open under the pointer that had just
+    # closed it. Keyboard focus still has to open it.
+    css = (_STATIC / "prototype.css").read_text(encoding="utf-8")
+
+    # Act - the comment above the rule names the pitfall, so read the
+    # selectors rather than the raw file.
+    body = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+
+    # Assert
+    assert ":focus-within" not in body
+    assert ":has(:focus-visible)" in body

@@ -2340,7 +2340,30 @@ function renderMarkoutChart(stats) {
   const plotW = w - padL - padR;
   const plotH = h - padT - padB;
 
-  const maxDisplacement = Math.max(...intervals.map(i => i.displacement_bps || 0), 3.0);
+  // Displacement is signed, and the sign IS the finding: the chart is named
+  // for adverse selection, and adverse selection is the mid falling away from
+  // a fill we just bought -- a NEGATIVE number. Scaling every bar off a
+  // positive-only maximum drew those bars with a negative `height`, which SVG
+  // rejects outright: the bar vanished, the label read `+-51.5 bps`, and the
+  // one measurement this panel exists to show was the one it could not draw.
+  //
+  // So the zero line goes where the data puts it, and a bar hangs below it
+  // when the mid went the wrong way.
+  const values = intervals.map(i => Number(i.displacement_bps) || 0);
+  const hi = Math.max(...values, 0);
+  const lo = Math.min(...values, 0);
+  // A floor on the span, so a run of near-zero horizons is not magnified into
+  // a dramatic curve by its own rounding noise.
+  const span = Math.max(hi - lo, 3.0);
+  const usable = plotH * 0.85;
+  // One-sided data keeps the baseline on the edge it has always sat on: with
+  // nothing adverse the zero line is the floor of the plot, exactly as before
+  // this change, and centring the band would have shifted every favourable
+  // bar up by ~11px for no reason. Only a chart carrying both signs needs the
+  // line somewhere in the middle.
+  const zeroY = lo === 0 ? padT + plotH
+    : hi === 0 ? padT
+    : padT + (plotH - usable) / 2 + (hi / span) * usable;
   const step = plotW / intervals.length;
   const barW = step * 0.55;
 
@@ -2348,32 +2371,43 @@ function renderMarkoutChart(stats) {
   let linePoints = [];
 
   intervals.forEach((item, idx) => {
+    const value = Number(item.displacement_bps) || 0;
+    const adverse = value < 0;
     const x = padL + idx * step + (step - barW) / 2;
-    const barH = ((item.displacement_bps || 0) / maxDisplacement) * plotH * 0.85;
-    const y = padT + plotH - barH;
+    // Magnitude, always positive: SVG has no negative height, and the
+    // direction is carried by which side of the zero line the bar starts on.
+    const barH = Math.abs(value / span) * usable;
+    const y = adverse ? zeroY : zeroY - barH;
+    const fill = adverse ? 'rgba(248, 113, 113, 0.65)' : 'rgba(16, 185, 129, 0.65)';
+    const stroke = adverse ? '#f87171' : '#34d399';
+    // The sign comes from the number, never from a hardcoded `+`.
+    const label = `${value >= 0 ? '+' : ''}${value.toFixed(1)} bps`;
+    // Below the bar when it hangs down, above it when it stands up, so the
+    // text never sits on top of the zero line.
+    const labelY = adverse ? (y + barH + 9) : (y - 4);
 
     barsSvg += `
-      <rect x="${x}" y="${y}" width="${barW}" height="${barH}" rx="3" fill="rgba(16, 185, 129, 0.65)" stroke="#34d399" stroke-width="1">
-        <title>${item.horizon}: +${item.displacement_bps} bps (${item.samples} samples)</title>
+      <rect x="${x}" y="${y}" width="${barW}" height="${barH}" rx="3" fill="${fill}" stroke="${stroke}" stroke-width="1">
+        <title>${item.horizon}: ${label} (${item.samples} samples)</title>
       </rect>
-      <text x="${x + barW / 2}" y="${y - 4}" fill="#34d399" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700" text-anchor="middle">+${item.displacement_bps} bps</text>
+      <text x="${x + barW / 2}" y="${labelY}" fill="${stroke}" font-family="'JetBrains Mono', monospace" font-size="8.5" font-weight="700" text-anchor="middle">${label}</text>
     `;
 
-    linePoints.push(`${x + barW / 2},${y}`);
+    linePoints.push(`${x + barW / 2},${adverse ? y + barH : y}`);
   });
 
   const linePath = linePoints.length > 1 ? `M ${linePoints.join(' L ')}` : '';
 
   container.innerHTML = `
     <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="Adverse Selection Markout Decay">
-      <!-- Zero Baseline -->
-      <line x1="${padL}" y1="${padT + plotH}" x2="${w - padR}" y2="${padT + plotH}" stroke="var(--border-strong)" stroke-width="1.2"/>
+      <!-- Zero Baseline: where zero actually falls, not the floor of the plot -->
+      <line x1="${padL}" y1="${zeroY}" x2="${w - padR}" y2="${zeroY}" stroke="var(--border-strong)" stroke-width="1.2"/>
 
       <!-- Bars -->
       ${barsSvg}
 
       <!-- Trajectory Line -->
-      <path d="${linePath}" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round"/>
+      <path d="${linePath}" fill="none" stroke="${lo < 0 ? '#94a3b8' : '#10b981'}" stroke-width="2" stroke-linecap="round"/>
 
       <!-- X-Axis Labels -->
       ${intervals.map((item, idx) => {
@@ -4414,7 +4448,7 @@ if (typeof module === 'undefined' || !module.exports) {
 // Node-only: lets tests reach the handlers. Browsers have no `module`, so this
 // is dead code in the page.
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { renderPositionDistributionChart, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity,
+  module.exports = { renderPositionDistributionChart, renderMarkoutChart, decisionGatesHtml, decisionGatesRows, gateBadge, typesetMath, renderTrialReadiness, trackerCard, isMergedOrder, isActiveOrder, collapseMergedPair, renderExpandedOrders, renderDbMode, setShadowRun, renderShadowClock, fmtStopwatch, setFilterUptime, renderFilterUptime, fmtUptime, renderServiceCards, fmtLocalTime, connectSSE, marketLink, renderMarkets, groupOrdersByMarket, renderBrokerPortfolioOverview, portfolioEquity,
     statsFilterScope, pruneStatsSubnav, STATS_VIEW_TARGETS,
     OT_VIEWS, OT_COLUMNS, ordersTradesRows, ordersTradesCounts, otHeadHtml,
     activeMarketsRows, openOrdersRows, positionsRows, resolvedMarketsRows,

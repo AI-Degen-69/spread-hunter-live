@@ -119,7 +119,7 @@ def test_round_rules_no_longer_ban_the_handle_outright():
 
     # Act / Assert
     assert "must not appear anywhere" not in rules
-    assert "four places only" in rules
+    assert "five places only" in rules
 
 
 def test_round_rules_still_enforce_one_push_and_one_summary():
@@ -129,4 +129,18 @@ def test_round_rules_still_enforce_one_push_and_one_summary():
     # Assert — the round discipline the autofix loop rides on is unchanged.
     assert "ONE commit and push ONCE" in rules
     assert "ONE summary comment per round" in rules
-    assert "Never post `@coderabbitai review`" in rules
+    assert "Never post `@coderabbitai full review`" in rules
+def test_round_rules_tell_the_agent_to_fire_the_manual_trigger():
+    """CodeRabbit does not review this repo on its own (under 10 stars).
+
+    The reminder must say so and name the trigger, or the agent reads the
+    "Trigger review" notice as CodeRabbit being unavailable and merges a pull
+    request nobody reviewed.
+    """
+    # Arrange / Act
+    rules = guard.ROUND_RULES
+
+    # Assert
+    assert "Reviews do NOT fire on their own here" in rules
+    assert "`@coderabbitai review`" in rules
+    assert "Trigger BEFORE" in rules

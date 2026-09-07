@@ -25,6 +25,11 @@ Journeys under test:
    a third entry point onto the same store is a third way to open it.
 8. As the Owner, leagues stay apart, because Dota and LoL measured opposite
    signs and one pooled number is true of neither.
+9. As the Owner, twelve jumps inside ONE match are one observation and not
+   twelve, because dividing the error by the square root of twelve reports a
+   certainty the tape never earned.
+10. As the Owner, certainty is measured across matches, so a single game that
+    ran away cannot carry a cell over the bar on its own.
 """
 from __future__ import annotations
 
@@ -33,6 +38,7 @@ from pathlib import Path
 
 import pytest
 
+from core_brain.price_tape import SIGNIFICANCE_T
 from core_brain.reversion_sweep import (
     DEFAULT_HORIZONS,
     DEFAULT_JUMPS,
@@ -118,8 +124,8 @@ def test_a_signal_clear_of_the_crossings_reads_tradable():
 
 
 def test_a_drift_that_cannot_be_told_from_noise_reads_no_signal():
-    outcomes = [_outcome(drift=jitter, spread=1.0)
-                for jitter in (12.0, -11.0) * 20]
+    outcomes = [_outcome(drift=jitter, spread=1.0, slug=f"lol-m{index}-x")
+                for index, jitter in enumerate((12.0, -11.0) * 20)]
     cell = summarise_cell(outcomes, jump=0.03, horizon=300)
     assert cell["trades"] == 40
     assert cell["verdict"] == "NO_SIGNAL"
@@ -219,13 +225,55 @@ def _sample(*, drift: float, spread: float, size: int = 40):
     The jitter is deliberate: a sample with no variance at all has no standard
     error either, which is a fixture rather than anything the venue produces.
     """
-    return [_outcome(drift=drift + (0.5 if index % 2 else -0.5), spread=spread)
+    return [_outcome(drift=drift + (0.5 if index % 2 else -0.5), spread=spread,
+                     slug=f"lol-m{index}-x")
             for index in range(size)]
 
 
-def _outcome(*, drift: float, spread: float):
+def _outcome(*, drift: float, spread: float, slug: str = "lol-a-b"):
     from core_brain.reversion_sweep import Outcome
-    return Outcome(slug="lol-a-b", league="lol", ts=0, move_c=4.0,
+    return Outcome(slug=slug, league=slug.split("-")[0], ts=0, move_c=4.0,
                    spread_c=spread, entry_mid=0.50,
                    fade_c=-drift - 2 * spread, follow_c=drift - 2 * spread,
                    drift_c=drift)
+
+
+# 9 -------------------------------------------------------------------------
+def test_many_moves_inside_one_match_do_not_count_as_many_trades():
+    """Twelve reads of one game are one observation, not twelve.
+
+    A single CS2 match produced twelve qualifying 5c jumps on the recorded
+    tape. Scoring them as twelve independent samples divides the standard
+    error by the square root of twelve and reports a certainty the tape never
+    earned. The cell has to count MATCHES.
+    """
+    outcomes = [_outcome(drift=6.0 + index * 0.1, spread=1.0, slug="cs2-a-b")
+                for index in range(12)]
+    cell = summarise_cell(outcomes, jump=0.05, horizon=300)
+    assert cell["trades"] == 12
+    assert cell["matches"] == 1
+    assert cell["verdict"] == "THIN"
+
+
+def test_certainty_is_measured_across_matches_not_across_moves():
+    # Ten matches. Nine are flat; one runs away with twenty big moves.
+    outcomes = [_outcome(drift=0.2, spread=1.0, slug=f"cs2-m{index}-x")
+                for index in range(9)]
+    outcomes += [_outcome(drift=12.0, spread=1.0, slug="cs2-runaway-y")
+                 for _ in range(20)]
+    cell = summarise_cell(outcomes, jump=0.05, horizon=300)
+    assert cell["matches"] == 10
+    # Per move the runaway match is most of the sample and the mean looks sure.
+    assert cell["drift_t_moves"] > SIGNIFICANCE_T
+    # Per match it is one observation out of ten, and the cell says so.
+    assert cell["drift_t"] < SIGNIFICANCE_T
+    assert cell["verdict"] == "NO_SIGNAL"
+
+
+def test_a_cell_spread_over_enough_matches_still_reaches_tradable():
+    outcomes = [_outcome(drift=6.0 + (0.5 if index % 2 else -0.5),
+                         spread=1.0, slug=f"cs2-m{index}-x")
+                for index in range(12)]
+    cell = summarise_cell(outcomes, jump=0.05, horizon=300)
+    assert cell["matches"] == 12
+    assert cell["verdict"] == "TRADABLE"

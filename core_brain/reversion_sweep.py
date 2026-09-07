@@ -227,16 +227,36 @@ def _sureness(values: list[float]) -> Optional[float]:
     return abs(statistics.fmean(values)) / (spread / math.sqrt(len(values)))
 
 
+def _match_means(outcomes: Iterable[Outcome]) -> list[float]:
+    """One drift per match, because jumps inside one match are not independent.
+
+    A single CS2 game produced twelve qualifying 5c jumps on the recorded tape,
+    and half a cell's sample came from that one match. Counting them as twelve
+    observations divides the standard error by the square root of twelve and
+    reports a certainty the tape never earned: the twelve share a scoreboard, a
+    map and the same two teams, so they move together by construction.
+
+    Collapsing each match to its own mean first is the cheapest honest fix. It
+    costs sample size, which is the point -- the sample really is that small.
+    """
+    grouped: dict[str, list[float]] = {}
+    for done in outcomes:
+        grouped.setdefault(done.slug, []).append(done.drift_c)
+    return [statistics.fmean(values) for values in grouped.values()]
+
+
 def _verdict(drift: float, cost: float, sureness: Optional[float],
-             trades: int) -> str:
+             matches: int) -> str:
     """What one cell says, in the order the objections have to be cleared.
 
     Sample size first, then whether the drift is distinguishable from noise,
     and only then whether it is bigger than the two crossings. A cell that
     fails an earlier question is not asked the later one, because a mean read
-    off four trades is not evidence that anything was paid away.
+    off four matches is not evidence that anything was paid away.
+
+    The size that gates this is MATCHES, not moves. `_match_means` says why.
     """
-    if trades < MIN_GROUP_TRADES:
+    if matches < MIN_GROUP_TRADES:
         return "THIN"
     if sureness is None or sureness < SIGNIFICANCE_T:
         return "NO_SIGNAL"
@@ -253,23 +273,29 @@ def summarise_cell(outcomes: list[Outcome], *, jump: float,
     fades = [done.fade_c for done in outcomes]
     follows = [done.follow_c for done in outcomes]
     costs = [done.cost_c for done in outcomes]
+    per_match = _match_means(outcomes)
     drift = statistics.fmean(drifts) if drifts else 0.0
     cost = statistics.median(costs) if costs else 0.0
-    sureness = _sureness(drifts)
+    sureness = _sureness(per_match)
     continued = (100.0 * sum(1 for x in drifts if x > 0) / trades
                  if trades else 0.0)
     return {
         "jump_c": jump * 100.0,
         "horizon_s": horizon,
         "trades": trades,
+        "matches": len(per_match),
         "drift_c": drift,
         "drift_median_c": statistics.median(drifts) if drifts else 0.0,
+        # The certainty the verdict is decided on: one observation per match.
         "drift_t": sureness,
+        # The same number counted per move, kept only so the gap between the
+        # two is visible on the page rather than argued about.
+        "drift_t_moves": _sureness(drifts),
         "continued_pct": continued,
         "cost_c": cost,
         "fade_c": statistics.fmean(fades) if fades else 0.0,
         "follow_c": statistics.fmean(follows) if follows else 0.0,
-        "verdict": _verdict(drift, cost, sureness, trades),
+        "verdict": _verdict(drift, cost, sureness, len(per_match)),
     }
 
 
@@ -286,12 +312,15 @@ def _by_league(outcomes: Iterable[Outcome]) -> list[dict[str, Any]]:
     rows = []
     for league, group in grouped.items():
         drifts = [done.drift_c for done in group]
+        per_match = _match_means(group)
         rows.append({
             "league": league,
             "trades": len(group),
+            "matches": len(per_match),
             "drift_c": statistics.fmean(drifts),
             "drift_median_c": statistics.median(drifts),
-            "drift_t": _sureness(drifts),
+            "drift_t": _sureness(per_match),
+            "drift_t_moves": _sureness(drifts),
             "cost_c": statistics.median([done.cost_c for done in group]),
             "follow_c": statistics.fmean([done.follow_c for done in group]),
             "fade_c": statistics.fmean([done.fade_c for done in group]),
@@ -361,6 +390,11 @@ def sweep(path: str | Path, *, jumps: Iterable[float] = DEFAULT_JUMPS,
     }
 
 
+def _t(sureness: Optional[float]) -> str:
+    """A certainty for the table, or a dash when the sample cannot carry one."""
+    return "--" if sureness is None else f"{sureness:.2f}"
+
+
 def _main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=str(DEFAULT_DB),
@@ -385,13 +419,15 @@ def _main(argv: Optional[list[str]] = None) -> int:
     if report["state"] != "READY":
         return 0
 
-    print(f"\n{'jump':>6}{'hold':>7}{'n':>6}{'drift':>9}{'med':>8}{'t':>7}"
-          f"{'cont':>7}{'cost':>7}{'fade':>8}{'follow':>8}  verdict")
+    print(f"\n{'jump':>6}{'hold':>7}{'n':>6}{'games':>7}{'drift':>9}{'med':>8}"
+          f"{'t':>7}{'t/move':>8}{'cont':>7}{'cost':>7}{'fade':>8}"
+          f"{'follow':>8}  verdict")
     for cell in report["cells"]:
-        sureness = "  --  " if cell["drift_t"] is None else f"{cell['drift_t']:>6.2f}"
         print(f"{cell['jump_c']:>5.0f}c{cell['horizon_s']:>7}{cell['trades']:>6}"
+              f"{cell['matches']:>7}"
               f"{cell['drift_c']:>+9.2f}{cell['drift_median_c']:>+8.2f}"
-              f"{sureness}{cell['continued_pct']:>6.0f}%{cell['cost_c']:>7.2f}"
+              f"{_t(cell['drift_t']):>7}{_t(cell['drift_t_moves']):>8}"
+              f"{cell['continued_pct']:>6.0f}%{cell['cost_c']:>7.2f}"
               f"{cell['fade_c']:>+8.2f}{cell['follow_c']:>+8.2f}"
               f"  {cell['verdict']}")
 
@@ -403,13 +439,18 @@ def _main(argv: Optional[list[str]] = None) -> int:
              else "Largest cell (none reached the sample bar)")
     print(f"\n{label}: jump {best['jump_c']:.0f}c, hold "
           f"{best['horizon_s']}s, {best['trades']} moves -- {best['verdict']}")
-    print(f"{'league':<8}{'n':>6}{'drift':>9}{'med':>8}{'t':>7}{'cost':>7}"
-          f"{'follow':>8}")
+    print(f"{'league':<8}{'n':>6}{'games':>7}{'drift':>9}{'med':>8}{'t':>7}"
+          f"{'t/move':>8}{'cost':>7}{'follow':>8}")
     for row in report["by_league"]:
-        sureness = "  --  " if row["drift_t"] is None else f"{row['drift_t']:>6.2f}"
-        print(f"{row['league']:<8}{row['trades']:>6}{row['drift_c']:>+9.2f}"
-              f"{row['drift_median_c']:>+8.2f}{sureness}{row['cost_c']:>7.2f}"
-              f"{row['follow_c']:>+8.2f}")
+        print(f"{row['league']:<8}{row['trades']:>6}{row['matches']:>7}"
+              f"{row['drift_c']:>+9.2f}{row['drift_median_c']:>+8.2f}"
+              f"{_t(row['drift_t']):>7}{_t(row['drift_t_moves']):>8}"
+              f"{row['cost_c']:>7.2f}{row['follow_c']:>+8.2f}")
+    print("\nt is measured across GAMES, not across moves: jumps inside one "
+          "match share\na scoreboard and move together, so counting them "
+          "separately overstates certainty.")
+    print(f"A cell needs {MIN_GROUP_TRADES} games and t >= {SIGNIFICANCE_T} "
+          f"before it is anything but THIN.")
     return 0
 
 

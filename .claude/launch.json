@@ -8,7 +8,8 @@
         "-m",
         "dashboard.server"
       ],
-      "port": 8799
+      "port": 8799,
+      "autoPort": true
     }
   ]
 }

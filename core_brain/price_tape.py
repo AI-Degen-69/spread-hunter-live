@@ -25,6 +25,7 @@ losing a market is a gap in one tape, and aborting is a gap in all of them.
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import logging
 import math
@@ -218,6 +219,13 @@ MIN_CELL_SAMPLES = 5
 #: A market with less tape than this cannot host a full horizon, so asking it
 #: anything only adds noise.
 MIN_TAPE_TICKS = 200
+
+#: How far from a window's endpoint a tick may sit and still answer for it.
+#: A cell names minutes, so it must measure minutes; but the tape's own
+#: spacing wanders (57-62s between neighbours is normal) and the venue skips
+#: minutes outright, so an exact match would discard nearly every sample.
+#: 90 seconds admits the wander and refuses a real gap.
+ENDPOINT_TOLERANCE_SEC = 90
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -631,6 +639,29 @@ def refresh_resolutions(
     return stamped
 
 
+def _price_at(
+    tape: Sequence[tuple[int, float]],
+    times: Sequence[int],
+    target: int,
+) -> Optional[float]:
+    """The price at `target`, or None when the tape has no tick near it.
+
+    The venue skips minutes and `parse_history` drops points it mangled, so a
+    tape is not one row per minute and its timestamps are not evenly spaced --
+    measured gaps of 57 to 62 seconds are normal. Requiring an exact match
+    would discard almost every sample, so the nearest tick within
+    `ENDPOINT_TOLERANCE_SEC` answers and anything further away is a hole.
+    """
+    idx = bisect.bisect_left(times, target)
+    best: Optional[tuple[int, float]] = None
+    for j in (idx - 1, idx):
+        if 0 <= j < len(times):
+            distance = abs(times[j] - target)
+            if distance <= ENDPOINT_TOLERANCE_SEC and (best is None or distance < best[0]):
+                best = (distance, tape[j][1])
+    return None if best is None else best[1]
+
+
 def signed_forward_returns(
     tape: Sequence[tuple[int, float]],
     cell: DriftCell,
@@ -647,28 +678,36 @@ def signed_forward_returns(
     move anything could have traded against.
     """
     out: list[float] = []
-    n = len(tape)
-    i = cell.lookback
-    while i + cell.horizon < n:
-        price_now = tape[i][1]
+    times = [ts for ts, _ in tape]
+    lookback_sec = cell.lookback * 60
+    horizon_sec = cell.horizon * 60
+    next_allowed_ts = -1
+    for ts, price_now in tape:
+        if ts < next_allowed_ts:
+            continue
         if price_now <= DECIDED_LO or price_now >= DECIDED_HI:
-            i += cell.horizon
+            next_allowed_ts = ts + horizon_sec
             continue
-        move = price_now - tape[i - cell.lookback][1]
+        past = _price_at(tape, times, ts - lookback_sec)
+        if past is None:
+            continue
+        move = price_now - past
         if abs(move) < cell.trigger:
-            i += 1
             continue
-        forward = tape[i + cell.horizon][1] - price_now
-        out.append(math.copysign(1.0, move) * forward)
-        i += cell.horizon
+        forward = _price_at(tape, times, ts + horizon_sec)
+        if forward is None:
+            continue
+        out.append(math.copysign(1.0, move) * (forward - price_now))
+        next_allowed_ts = ts + horizon_sec
     return out
 
 
 def summarise(values: Sequence[float]) -> CellStat:
     """Sample size, mean, and the t-statistic against a mean of zero.
 
-    A sample too thin to have a spread reports t=0 rather than a number: with
-    two observations any t is an artefact of having two observations.
+    The spread is the SAMPLE standard deviation. A sample too thin to have one
+    reports t=0 rather than a number: with two observations any t is an artefact
+    of having two observations.
     """
     n = len(values)
     if n == 0:
@@ -676,7 +715,10 @@ def summarise(values: Sequence[float]) -> CellStat:
     mean = statistics.fmean(values)
     if n < MIN_CELL_SAMPLES:
         return CellStat(n=n, mean=mean, t=0.0)
-    sd = statistics.pstdev(values)
+    # Sample sd, not population: these are a sample of the tape's moments, and
+    # dividing by n instead of n-1 understates the standard error and overstates
+    # t -- which on a grid read against a fixed bar is a manufactured signal.
+    sd = statistics.stdev(values)
     if sd == 0.0:
         return CellStat(n=n, mean=mean, t=0.0)
     return CellStat(n=n, mean=mean, t=mean / (sd / math.sqrt(n)))

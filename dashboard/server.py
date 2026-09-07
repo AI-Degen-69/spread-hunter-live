@@ -2200,11 +2200,39 @@ def index():
 
 
 
+def resolve_port(explicit: int | None) -> int:
+    """Which port to bind: the flag, then `PORT`, then the operator's default.
+
+    8799 is a real address, not a placeholder: the operator's live stack serves
+    the control surface there, START button and all. Anything else that wants to
+    run this app -- a preview harness, a second copy for research -- has to be
+    able to take another port without being handed a flag, or it collides with
+    the live one.
+
+    A `PORT` that is not a usable port raises rather than falling through to the
+    default, because falling through would land the process on 8799 beside the
+    live stack, which is the one outcome this exists to prevent.
+    """
+    if explicit is not None:
+        return explicit
+    raw = os.environ.get("PORT")
+    if raw is None:
+        return DEFAULT_PORT
+    try:
+        port = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"PORT={raw!r} is not a port number") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError(f"PORT={raw!r} is outside 1-65535")
+    return port
+
+
 def main():
     import uvicorn
 
     parser = argparse.ArgumentParser(description="Spread Hunter Live Execution Monitor")
-    parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="Port to bind (default: 8799)")
+    parser.add_argument("--port", type=int, default=None,
+                        help="Port to bind (default: $PORT, else 8799)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host interface (default: 127.0.0.1)")
     parser.add_argument("--db", type=str, default=None, help="Path to orders.db SQLite file")
     args = parser.parse_args()
@@ -2212,16 +2240,18 @@ def main():
     if args.db:
         set_db_override(args.db)
 
-    global _ACTIVE_PORT
-    _ACTIVE_PORT = args.port
+    port = resolve_port(args.port)
 
-    print(f"Starting Live Execution Dashboard on http://{args.host}:{args.port}")
+    global _ACTIVE_PORT
+    _ACTIVE_PORT = port
+
+    print(f"Starting Live Execution Dashboard on http://{args.host}:{port}")
     # Best-effort initial snapshot so the dashboard opens with fresh live balance
     try:
         _capture_starting_capital()
     except Exception:
         pass
-    uvicorn.run(app, host=args.host, port=args.port)
+    uvicorn.run(app, host=args.host, port=port)
 
 
 if __name__ == "__main__":

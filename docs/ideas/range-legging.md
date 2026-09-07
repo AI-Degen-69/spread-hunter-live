@@ -360,3 +360,40 @@ numbers are believed -- not enough to quantify the correction in advance.
 
 Settling it properly still wants the larger resolved cohort the recorder is
 collecting. The bar stays **|t| > 3.0**.
+
+---
+
+# Correction: the walk counted rows, not minutes
+
+Every drift figure above was produced by a walk that took `lookback` and
+`horizon` as **row offsets**. That equals minutes only on a tape with no gaps,
+and these tapes have gaps: the venue skips minutes, and `parse_history` drops
+points it mangled. A cell labelled `60m` therefore measured however long 60
+rows happened to span. The same walk also divided by a **population** standard
+deviation, which understates the standard error and overstates t.
+
+`core_brain.price_tape.signed_forward_returns` now selects both endpoints by
+timestamp -- `ts - lookback*60` and `ts + horizon*60`, nearest tick within 90
+seconds or the candidate is skipped -- and `summarise` uses the sample standard
+deviation. Re-run on the same 111 markets and 2.8M ticks:
+
+| cell | was | now |
+|---|---|---|
+| 3c 60m -> 60m | -0.711c, t=-3.33 | **-0.827c, t=-3.55** |
+| 3c 240m -> 60m | -0.377c, t=-3.13 | -0.401c, t=-3.15 |
+| 5c 60m -> 60m | -1.689c, t=-3.91 | -1.320c, t=-3.12 |
+| 5c 240m -> 60m | -0.656c, t=-2.97 | **-0.739c, t=-3.16** |
+| 5c 60m -> 1440m | -3.949c, t=-3.24 | -3.457c, t=-2.82 |
+
+Still four cells clear |t| >= 3.0, but not the same four: `5c/60m/1440m` falls
+below the bar and `5c/240m/60m` rises above it. Every surviving cell is now a
+**60-minute horizon**, which is a cleaner reading than the old mix.
+
+**Nothing above changes its conclusion.** All 18 cells remain negative, the
+direction is unchanged, and the survivorship argument compares two samples under
+the same estimator, so a bias in that estimator applies to both sides of the
+comparison. The figures quoted for the live-market grid earlier in this document
+are superseded by the table here.
+
+The resolved-market figures are affected only by the standard-deviation change,
+which at n in the hundreds moves t by well under 1%: `sqrt(738/737) = 1.0007`.

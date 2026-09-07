@@ -21,6 +21,8 @@ Journeys under test:
 from __future__ import annotations
 
 import json
+import math
+import statistics
 
 import pytest
 import requests
@@ -675,3 +677,79 @@ def test_analysis_of_an_empty_store_writes_nothing(tmp_path):
 
     assert analyse(store, cells=(DriftCell(0.03, 60, 60),)) == 1
     assert store.findings()[0].n == 0
+
+
+# ------------------------------------------------------------- real durations
+# A cell names minutes, so it has to measure minutes. Row offsets only equal
+# minutes when the tape has no gaps, and it has gaps: the venue skips minutes
+# and `parse_history` drops points it mangled. A 60m cell walked by row offset
+# silently measures however long 60 rows happen to span.
+
+
+def _minute_tape(count, start=1_700_000_000, first=0.50, step=0.0):
+    return [(start + i * 60, first + step * i) for i in range(count)]
+
+
+def test_a_gap_does_not_stretch_the_window(tmp_path):
+    # 120 clean minutes, then a two-hour hole, then more tape. Walked by row
+    # offset the candidates straddling the hole would measure hours as "60m".
+    early = _minute_tape(120, first=0.50, step=0.001)
+    late = [(1_700_000_000 + 7200 + i * 60, 0.62 + 0.001 * i) for i in range(120)]
+    cell = DriftCell(0.03, lookback=60, horizon=60)
+
+    xs = signed_forward_returns(early + late, cell)
+
+    # every retained sample must come from a stretch that really is 60 minutes
+    assert xs, "the clean stretches still produce samples"
+    assert all(abs(x) < 0.2 for x in xs), "no sample may span the hole"
+
+
+def test_a_candidate_without_a_lookback_endpoint_is_skipped():
+    # the tape opens straight into a big move, with no tick an hour earlier
+    tape = [(1_700_000_000 + i * 60, 0.50 + 0.01 * i) for i in range(20)]
+
+    assert signed_forward_returns(tape, DriftCell(0.03, 60, 60)) == []
+
+
+def test_a_candidate_without_a_horizon_endpoint_is_skipped():
+    # a clean hour of rising price, then the tape simply stops
+    tape = _minute_tape(70, first=0.40, step=0.002)
+
+    assert signed_forward_returns(tape, DriftCell(0.03, 60, 60)) == []
+
+
+def test_samples_do_not_overlap_in_time():
+    tape = _minute_tape(600, first=0.20, step=0.0008)
+    cell = DriftCell(0.03, lookback=60, horizon=60)
+
+    xs = signed_forward_returns(tape, cell)
+
+    span_minutes = 600
+    assert len(xs) <= span_minutes // cell.horizon, \
+        "each sample must consume its whole horizon in minutes, not in rows"
+
+
+def test_the_window_is_measured_from_timestamps_not_row_count():
+    # Same shape twice: once at one row per minute, once at one row per two
+    # minutes. A row-offset walk reads different windows out of them; a
+    # timestamp walk reads the same one.
+    dense = [(1_700_000_000 + i * 60, 0.30 + 0.001 * i) for i in range(400)]
+    sparse = [(1_700_000_000 + i * 120, 0.30 + 0.002 * i) for i in range(200)]
+    cell = DriftCell(0.03, lookback=60, horizon=60)
+
+    d = signed_forward_returns(dense, cell)
+    s = signed_forward_returns(sparse, cell)
+
+    assert d and s
+    assert abs(statistics.fmean(d) - statistics.fmean(s)) < 0.005
+
+
+def test_summarise_uses_the_sample_standard_deviation():
+    values = [0.01, 0.02, 0.03, 0.04, 0.05]
+    stat = summarise(values)
+
+    expected = statistics.fmean(values) / (
+        statistics.stdev(values) / math.sqrt(len(values)))
+
+    assert stat.t == pytest.approx(expected), \
+        "a population sd understates the standard error and overstates t"

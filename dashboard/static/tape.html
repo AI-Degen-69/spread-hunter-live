@@ -554,10 +554,15 @@
       state === "OFFLINE" ? "אין חיבור" : "אין מאגר";
   }
 
+  // The message can carry the `?db=` value straight back from the API's refusal,
+  // so it is attacker-shaped text. Build the node instead of interpolating it.
   function fail(msg) {
     var box = $("error-box");
     box.hidden = false;
-    box.innerHTML = "<b>לא הצלחתי לקרוא את המאגר.</b> " + msg;
+    box.replaceChildren();
+    var label = document.createElement("b");
+    label.textContent = "לא הצלחתי לקרוא את המאגר.";
+    box.append(label, document.createTextNode(" " + String(msg)));
   }
 
   function load() {

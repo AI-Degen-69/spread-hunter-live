@@ -60,7 +60,16 @@ def resolve_tape_db(custom: str | Path | None = None) -> Path:
 
 
 def _read_only(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    """Open a store read-only, with the path escaped into the URI rather than
+    pasted into it.
+
+    `f"file:{path}?mode=ro"` is string concatenation into a URI, and a path
+    holding `#` re-parses: the fragment swallows `mode=ro`, SQLite drops the
+    read-only flag, and it then happily CREATES the truncated file it thinks it
+    was asked for. `as_uri()` percent-encodes those characters, so the query
+    survives whatever the file is called.
+    """
+    conn = sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 

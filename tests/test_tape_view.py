@@ -182,3 +182,37 @@ def test_an_explicit_store_wins_over_the_default(tmp_path):
     path = tmp_path / "other_tape.db"
 
     assert resolve_tape_db(path) == Path(path)
+
+
+# ------------------------------------------------------------------ URI safety
+# `file:{path}?mode=ro` is string concatenation into a URI. A path holding `#`
+# or `?` re-parses: the fragment swallows `mode=ro`, SQLite drops read-only,
+# and it will happily create the truncated file it thinks it was asked for.
+
+
+def test_a_store_whose_name_holds_a_fragment_is_still_read_only(tmp_path):
+    store = TapeStore(tmp_path / "tape#v2.db")
+    store.record_market(_market())
+    store.append_ticks("tok-up", [(1_700_000_060, 0.47)])
+
+    status = tape_status(store.path)
+
+    assert status["state"] == "READY"
+    assert status["ticks"] == 1
+
+
+def test_a_read_only_open_never_creates_a_store(tmp_path):
+    missing = tmp_path / "tape#nope.db"
+
+    assert tape_status(missing)["state"] == "MISSING"
+    assert not missing.exists(), "a read must not bring the file into being"
+
+
+def test_a_store_whose_name_holds_a_query_marker_still_reads(tmp_path):
+    store = TapeStore(tmp_path / "tape?v3.db") if os.name != "nt" else None
+    if store is None:
+        pytest.skip("Windows forbids '?' in a file name")
+    store.record_market(_market())
+    store.append_ticks("tok-up", [(1_700_000_060, 0.47)])
+
+    assert tape_status(store.path)["ticks"] == 1

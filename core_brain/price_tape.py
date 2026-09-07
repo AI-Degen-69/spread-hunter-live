@@ -27,8 +27,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import math
 import os
 import sqlite3
+import statistics
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -99,6 +101,18 @@ _SCHEMA = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS ticks_by_token ON ticks (token_id, ts)",
+    """
+    CREATE TABLE IF NOT EXISTS findings (
+        label       TEXT PRIMARY KEY,
+        trigger     REAL NOT NULL,
+        lookback_m  INTEGER NOT NULL,
+        horizon_m   INTEGER NOT NULL,
+        n           INTEGER NOT NULL,
+        mean        REAL NOT NULL,
+        t_stat      REAL NOT NULL,
+        computed_at INTEGER NOT NULL
+    )
+    """,
 )
 
 
@@ -136,6 +150,74 @@ class PollResult:
     markets: int
     ticks: int
     failures: int
+
+
+@dataclass(frozen=True)
+class DriftCell:
+    """One question asked of the tape.
+
+    "After price moved at least `trigger` over the last `lookback` minutes, what
+    did it do over the next `horizon` minutes?"
+    """
+
+    trigger: float
+    lookback: int
+    horizon: int
+
+    @property
+    def label(self) -> str:
+        return (f"{self.trigger * 100:.0f}c/{self.lookback}m/{self.horizon}m")
+
+
+@dataclass(frozen=True)
+class CellStat:
+    """A cell's answer: how many samples, the mean, and how sure."""
+
+    n: int
+    mean: float
+    t: float
+
+
+@dataclass(frozen=True)
+class Finding:
+    """One stored cell answer, as the dashboard reads it."""
+
+    label: str
+    trigger: float
+    lookback_min: int
+    horizon_min: int
+    n: int
+    mean: float
+    t: float
+    computed_at: int
+
+
+#: The grid the analysis answers. Three trigger sizes against three horizons,
+#: seen from two lookbacks -- wide enough that a real effect shows up in
+#: neighbouring cells rather than in one, which is what tells a signal from a
+#: multiple-testing artefact.
+DEFAULT_CELLS: tuple[DriftCell, ...] = tuple(
+    DriftCell(trigger, lookback, horizon)
+    for trigger in (0.03, 0.05, 0.10)
+    for lookback in (60, 240)
+    for horizon in (60, 240, 1440)
+)
+
+#: Once price is this close to an end the market is decided, and the remaining
+#: move is the resolution rather than anything a quote could have traded.
+DECIDED_LO, DECIDED_HI = 0.03, 0.97
+
+#: p<0.05 after Bonferroni across the grid, fixed before any of it was run so
+#: the bar cannot be moved to fit an answer.
+SIGNIFICANCE_T = 3.0
+
+#: Below this a cell reports no t-statistic: with a handful of observations
+#: any t says more about the sample size than about the tape.
+MIN_CELL_SAMPLES = 5
+
+#: A market with less tape than this cannot host a full horizon, so asking it
+#: anything only adds noise.
+MIN_TAPE_TICKS = 200
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -245,6 +327,60 @@ class TapeStore:
         except sqlite3.Error as exc:
             raise TapeStoreError(f"Cannot list tracked markets: {exc}") from exc
         return [row["token_id"] for row in rows]
+
+    def tape_for(self, token_id: str) -> list[tuple[int, float]]:
+        """One market's ticks, oldest first."""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT ts, price FROM ticks WHERE token_id = ? ORDER BY ts",
+                    (token_id,)).fetchall()
+        except sqlite3.Error as exc:
+            raise TapeStoreError(f"Cannot read the tape for {token_id}: {exc}") from exc
+        return [(row["ts"], row["price"]) for row in rows]
+
+    def tick_tokens(self) -> list[str]:
+        """Every token that has at least one tick."""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT DISTINCT token_id FROM ticks ORDER BY token_id").fetchall()
+        except sqlite3.Error as exc:
+            raise TapeStoreError(f"Cannot list recorded tokens: {exc}") from exc
+        return [row["token_id"] for row in rows]
+
+    def replace_findings(self, findings: Iterable[Finding]) -> int:
+        """Store the analysis as a snapshot: the previous one is replaced.
+
+        A findings log would need a reader to work out which run it is looking
+        at, and there is only ever one current answer.
+        """
+        rows = [(f.label, f.trigger, f.lookback_min, f.horizon_min,
+                 f.n, f.mean, f.t, f.computed_at) for f in findings]
+        try:
+            with self._connect() as conn:
+                conn.execute("DELETE FROM findings")
+                conn.executemany(
+                    "INSERT INTO findings (label, trigger, lookback_m, horizon_m, "
+                    "n, mean, t_stat, computed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    rows)
+        except sqlite3.Error as exc:
+            raise TapeStoreError(f"Cannot store findings: {exc}") from exc
+        return len(rows)
+
+    def findings(self) -> list[Finding]:
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT label, trigger, lookback_m, horizon_m, n, mean, "
+                    "t_stat, computed_at FROM findings "
+                    "ORDER BY trigger, lookback_m, horizon_m").fetchall()
+        except sqlite3.Error as exc:
+            raise TapeStoreError(f"Cannot read findings: {exc}") from exc
+        return [Finding(label=r["label"], trigger=r["trigger"],
+                        lookback_min=r["lookback_m"], horizon_min=r["horizon_m"],
+                        n=r["n"], mean=r["mean"], t=r["t_stat"],
+                        computed_at=r["computed_at"]) for r in rows]
 
     def summary(self) -> TapeSummary:
         try:
@@ -495,6 +631,87 @@ def refresh_resolutions(
     return stamped
 
 
+def signed_forward_returns(
+    tape: Sequence[tuple[int, float]],
+    cell: DriftCell,
+) -> list[float]:
+    """What price did next, signed by the direction it had just moved.
+
+    A positive value means the move continued, a negative one that it came back.
+    Samples are taken NON-OVERLAPPING -- each consumes its whole horizon --
+    because overlapping windows share most of their price path and would inflate
+    the t-statistic computed from them without adding information.
+
+    A sample never starts once price has left [DECIDED_LO, DECIDED_HI]: past
+    that the market is decided and the rest of the path is resolution, not a
+    move anything could have traded against.
+    """
+    out: list[float] = []
+    n = len(tape)
+    i = cell.lookback
+    while i + cell.horizon < n:
+        price_now = tape[i][1]
+        if price_now <= DECIDED_LO or price_now >= DECIDED_HI:
+            i += cell.horizon
+            continue
+        move = price_now - tape[i - cell.lookback][1]
+        if abs(move) < cell.trigger:
+            i += 1
+            continue
+        forward = tape[i + cell.horizon][1] - price_now
+        out.append(math.copysign(1.0, move) * forward)
+        i += cell.horizon
+    return out
+
+
+def summarise(values: Sequence[float]) -> CellStat:
+    """Sample size, mean, and the t-statistic against a mean of zero.
+
+    A sample too thin to have a spread reports t=0 rather than a number: with
+    two observations any t is an artefact of having two observations.
+    """
+    n = len(values)
+    if n == 0:
+        return CellStat(n=0, mean=0.0, t=0.0)
+    mean = statistics.fmean(values)
+    if n < MIN_CELL_SAMPLES:
+        return CellStat(n=n, mean=mean, t=0.0)
+    sd = statistics.pstdev(values)
+    if sd == 0.0:
+        return CellStat(n=n, mean=mean, t=0.0)
+    return CellStat(n=n, mean=mean, t=mean / (sd / math.sqrt(n)))
+
+
+def analyse(
+    store: TapeStore,
+    *,
+    cells: Sequence[DriftCell] = DEFAULT_CELLS,
+    min_ticks: int = MIN_TAPE_TICKS,
+) -> int:
+    """Answer every cell against the recorded tape and store the answers.
+
+    Reads each market's tape once and asks every cell of it, because loading the
+    store is the expensive part -- 2.8M ticks took 33 seconds on 2026-09-07,
+    which is why this is an explicit pass and not something a page does.
+    """
+    pooled: dict[str, list[float]] = {cell.label: [] for cell in cells}
+    for token_id in store.tick_tokens():
+        tape = store.tape_for(token_id)
+        if len(tape) < min_ticks:
+            continue
+        for cell in cells:
+            pooled[cell.label].extend(signed_forward_returns(tape, cell))
+    computed_at = int(time.time())
+    findings = []
+    for cell in cells:
+        stat = summarise(pooled[cell.label])
+        findings.append(Finding(
+            label=cell.label, trigger=cell.trigger, lookback_min=cell.lookback,
+            horizon_min=cell.horizon, n=stat.n, mean=stat.mean, t=stat.t,
+            computed_at=computed_at))
+    return store.replace_findings(findings)
+
+
 def _main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=str(DEFAULT_TAPE_PATH),
@@ -515,6 +732,9 @@ def _main(argv: Optional[list[str]] = None) -> int:
                         help="record a single pass and exit")
     parser.add_argument("--status", action="store_true",
                         help="print what has been collected and exit")
+    parser.add_argument("--analyse", action="store_true",
+                        help="answer the drift grid against the recorded tape, "
+                             "store the answers, and exit")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -525,6 +745,17 @@ def _main(argv: Optional[list[str]] = None) -> int:
         span = "" if s.first_ts is None else \
             f"  span {(s.last_ts - s.first_ts) / 86400.0:.1f}d"
         print(f"markets {s.markets} ({s.resolved} resolved)  ticks {s.ticks:,}{span}")
+        return 0
+
+    if args.analyse:
+        written = analyse(store)
+        print(f"{'cell':<16}{'n':>8}{'mean':>10}{'t':>8}   verdict")
+        print("-" * 54)
+        for f in store.findings():
+            verdict = ("continues" if f.t >= SIGNIFICANCE_T else
+                       "comes back" if f.t <= -SIGNIFICANCE_T else "no signal")
+            print(f"{f.label:<16}{f.n:>8}{f.mean * 100:>9.3f}c{f.t:>8.2f}   {verdict}")
+        print(f"\n{written} cells stored. Bar for a signal: |t| >= {SIGNIFICANCE_T}")
         return 0
 
     session = _new_session()

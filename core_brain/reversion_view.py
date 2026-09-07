@@ -1,0 +1,183 @@
+"""A read-only window onto the reversion forward test, for the dashboard.
+
+`core_brain.reversion_watch` runs for hours and answers one question of the
+venue: after a jump, does an esports match-winner market come back at prices you
+could actually have traded at? The recording half is a terminal program, so
+between the moment it starts and the moment someone remembers to read the store
+there is nothing to look at.
+
+This module is that reading, served while the watch is still running:
+
+* `reversion_status` -- how much has been collected: markets watched, jumps
+  seen, how many are scored and how many are still waiting out their fifteen
+  minutes.
+* `reversion_results` -- realised cents per share, split by league and by price
+  band, with the same significance bar the backward measurement was held to.
+
+The split is the point. Dota jumps often and the jumps stick; LoL jumps often
+and they come back; the 0.35-0.65 band held 82% of the measured events. A page
+that pooled them would report one number that is true of nothing.
+
+READ-ONLY, AND OUTSIDE THE MONEY PATH. Every store is opened `mode=ro`, and
+`data/orders.db` is refused by name at every layer including the environment --
+an operator exporting `SHL_REVERSION_DB=data/orders.db` to "see the real
+numbers" is the exact mistake the refusal exists for. The production registry
+has a different schema, so pointing this at it would not fail loudly, it would
+report that the test found nothing.
+"""
+from __future__ import annotations
+
+import math
+import os
+import sqlite3
+import statistics
+from pathlib import Path
+from typing import Any, Optional
+
+from core_brain.price_tape import SIGNIFICANCE_T
+from core_brain.reversion_watch import DEFAULT_DB, MID_HI, MID_LO
+
+#: Store names this viewer will never open, matched as a substring of the file
+#: name so `data/orders.db` and a copy called `orders.db.bak` are both refused.
+REFUSED_STORES = ("orders.db",)
+
+#: Below this a group reports no certainty: with a handful of trades any such
+#: number says more about the sample size than about the venue.
+MIN_GROUP_TRADES = 10
+
+
+class RefusedStore(ValueError):
+    """The named store is not a reversion test and will not be opened."""
+
+
+def resolve_reversion_db(custom: str | Path | None = None) -> Path:
+    """Which store to read: the argument, `SHL_REVERSION_DB`, or the default."""
+    raw = custom or os.environ.get("SHL_REVERSION_DB") or DEFAULT_DB
+    path = Path(raw)
+    lowered = path.name.lower()
+    for refused in REFUSED_STORES:
+        if refused in lowered:
+            raise RefusedStore(
+                f"{path} is a live order registry, not a reversion test; "
+                f"this viewer reads recorded paper trades only")
+    return path
+
+
+def _read_only(path: Path) -> sqlite3.Connection:
+    """Open a store read-only, with the path escaped into the URI.
+
+    `f"file:{path}?mode=ro"` is string concatenation into a URI, and a path
+    holding `#` re-parses: the fragment swallows `mode=ro`, SQLite drops the
+    read-only flag, and it then happily CREATES the truncated file it thinks it
+    was asked for. `as_uri()` percent-encodes those characters, so the query
+    survives whatever the file is called.
+    """
+    conn = sqlite3.connect(f"{path.absolute().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def reversion_status(path: str | Path) -> dict[str, Any]:
+    """How much the watch has collected. A store not there yet is a state."""
+    path = Path(path)
+    empty: dict[str, Any] = {
+        "db": str(path), "exists": path.exists(), "state": "MISSING",
+        "markets": 0, "events": 0, "scored": 0, "pending": 0,
+        "quotes": 0, "first_ts": None, "last_ts": None, "hours": 0.0,
+    }
+    if not path.exists():
+        return empty
+    try:
+        with _read_only(path) as conn:
+            events, scored = conn.execute(
+                "SELECT COUNT(*), COUNT(pnl_c) FROM events").fetchone()
+            markets, quotes, first_ts, last_ts = conn.execute(
+                "SELECT COUNT(DISTINCT slug), COUNT(*), MIN(ts), MAX(ts) "
+                "FROM quotes").fetchone()
+    except sqlite3.Error:
+        # A store this viewer cannot read is NOT an empty one. Reporting "no
+        # trades yet" for a file with the wrong schema is the silent failure
+        # the whole read-only path exists to avoid: the operator would watch a
+        # page say zero for hours while a healthy watch filled a file nobody
+        # was reading.
+        return {**empty, "state": "UNREADABLE"}
+    if not quotes:
+        return {**empty, "state": "EMPTY"}
+    return {
+        "db": str(path), "exists": True, "state": "READY",
+        "markets": markets, "events": events, "scored": scored,
+        "pending": events - scored, "quotes": quotes,
+        "first_ts": first_ts, "last_ts": last_ts,
+        "hours": (last_ts - first_ts) / 3600.0,
+    }
+
+
+def _verdict(mean: float, sureness: Optional[float]) -> str:
+    """What a group of trades says, against the bar fixed before the run."""
+    if sureness is None or sureness < SIGNIFICANCE_T:
+        return "NO_SIGNAL"
+    return "PAYS" if mean > 0 else "LOSES"
+
+
+def _summarise(values: list[float]) -> dict[str, Any]:
+    """Trades, mean cents per share, and how sure that mean is of its sign."""
+    count = len(values)
+    mean = statistics.fmean(values) if count else 0.0
+    sureness: Optional[float] = None
+    if count >= MIN_GROUP_TRADES:
+        # Sample sd, not population: these are a sample of the venue's moments,
+        # and dividing by n overstates certainty on a fixed bar.
+        spread = statistics.stdev(values)
+        if spread:
+            sureness = abs(mean) / (spread / math.sqrt(count))
+    return {"trades": count, "cents": mean, "sureness": sureness,
+            "verdict": _verdict(mean, sureness)}
+
+
+def reversion_results(path: str | Path) -> dict[str, Any]:
+    """Realised cents per share, split by league and by price band."""
+    path = Path(path)
+    empty: dict[str, Any] = {
+        "db": str(path), "state": "MISSING", "groups": [], "overall": None,
+        "significance_t": SIGNIFICANCE_T, "mid_band": [MID_LO, MID_HI],
+        "in_game": [], "pending": 0,
+    }
+    if not path.exists():
+        return empty
+    try:
+        with _read_only(path) as conn:
+            rows = conn.execute(
+                "SELECT league, band, in_game, pnl_c, spread_c FROM events "
+                "WHERE pnl_c IS NOT NULL").fetchall()
+            pending = conn.execute(
+                "SELECT COUNT(*) FROM events WHERE pnl_c IS NULL").fetchone()[0]
+    except sqlite3.Error:
+        return {**empty, "state": "UNREADABLE"}
+    if not rows:
+        return {**empty, "state": "NOT_SCORED", "pending": pending}
+
+    by_group: dict[tuple[str, str], list[float]] = {}
+    by_phase: dict[str, list[float]] = {}
+    spreads: list[float] = []
+    for row in rows:
+        key = (row["league"] or "?", row["band"] or "?")
+        by_group.setdefault(key, []).append(row["pnl_c"])
+        phase = {1: "in_game", 0: "pre_game"}.get(row["in_game"], "unstamped")
+        by_phase.setdefault(phase, []).append(row["pnl_c"])
+        if row["spread_c"] is not None:
+            spreads.append(row["spread_c"])
+
+    groups = []
+    for (league, band), values in sorted(
+            by_group.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        groups.append({"league": league, "band": band, **_summarise(values)})
+
+    return {
+        "db": str(path), "state": "READY", "groups": groups,
+        "overall": _summarise([row["pnl_c"] for row in rows]),
+        "in_game": [{"phase": phase, **_summarise(values)}
+                    for phase, values in sorted(by_phase.items())],
+        "median_spread_c": statistics.median(spreads) if spreads else None,
+        "significance_t": SIGNIFICANCE_T, "mid_band": [MID_LO, MID_HI],
+        "pending": pending,
+    }

@@ -2110,11 +2110,53 @@ def get_tape_findings(db: str | None = None):
     return JSONResponse(tape_findings(_tape_store(db)))
 
 
+def _reversion_store(db: str | None):
+    """Resolve the reversion store a request names, or refuse it.
+
+    A `?db=` is how a watch still running out of a scratch directory gets read
+    before it is moved into `data/`; the refusal that comes back for
+    `data/orders.db` is the point of routing every read through one resolver.
+    """
+    from core_brain.reversion_view import RefusedStore, resolve_reversion_db
+    try:
+        return resolve_reversion_db(db)
+    except RefusedStore as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/reversion/status")
+def get_reversion_status(db: str | None = None):
+    """How much the reversion forward test has collected so far.
+
+    Read-only, and pointed at the watch's own store -- never at the live
+    registry, which `resolve_reversion_db` refuses by name. A store that does
+    not exist yet is a 200 that says MISSING: the page it feeds is opened WHILE
+    the watch runs, and a watch that has not seen its first jump yet is a state,
+    not an error.
+    """
+    from core_brain.reversion_view import reversion_status
+    return JSONResponse(reversion_status(_reversion_store(db)))
+
+
+@app.get("/api/reversion/results")
+def get_reversion_results(db: str | None = None):
+    """Realised cents per share, split by league and by price band.
+
+    Split, never pooled: Dota's jumps stick where LoL's come back, and the
+    0.35-0.65 band held 82% of the measured events on a book about a cent wide.
+    One pooled average over those groups would be true of none of them.
+    """
+    from core_brain.reversion_view import reversion_results
+    return JSONResponse(reversion_results(_reversion_store(db)))
+
+
 # PAGE_HTML: backward-compat shim for tests that reference the constant.
 # The actual HTML now lives in dash/static/index.html. Tests that assert on
 # specific HTML strings should read from the static file directly.
 _PAGE_HTML_FILE = Path(__file__).resolve().parent / "static" / "index.html"
 _TAPE_HTML_FILE = Path(__file__).resolve().parent / "static" / "tape.html"
+_REVERSION_HTML_FILE = (Path(__file__).resolve().parent / "static"
+                        / "reversion.html")
 
 def _load_page_html() -> str:
     """Read the static HTML file, or return empty string if missing."""
@@ -2145,6 +2187,29 @@ def tape_page():
     except OSError as exc:
         raise HTTPException(status_code=404,
                             detail="tape page not built") from exc
+    return HTMLResponse(html, headers={
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    })
+
+
+@app.get("/reversion", response_class=HTMLResponse)
+def reversion_page():
+    """What the reversion forward test has found, watched live.
+
+    Its own path and its own document rather than a tab on `/`: this dashboard
+    is the control surface for a loop that places real orders, and a research
+    page that reads a paper watch's store has no business sharing a poll loop,
+    a control token, or a layout with it. Nothing here can start, stop, or
+    price anything -- there is no control token on this page because it has
+    nothing to authorize.
+    """
+    try:
+        html = _REVERSION_HTML_FILE.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404,
+                            detail="reversion page not built") from exc
     return HTMLResponse(html, headers={
         "Cache-Control": "no-cache, no-store, must-revalidate",
         "Pragma": "no-cache",

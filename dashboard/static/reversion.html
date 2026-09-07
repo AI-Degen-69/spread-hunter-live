@@ -39,7 +39,7 @@
       background: var(--bg-surface); border: 1px solid var(--border-subtle);
       border-radius: 14px; padding: 20px 22px; margin-bottom: 18px;
     }
-    .strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px; }
+    .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
     @media (max-width: 760px) { .strip { grid-template-columns: repeat(2, 1fr); } }
     .stat .v {
       font-family: var(--mono); font-size: 24px; font-weight: 700;
@@ -105,6 +105,7 @@
       <div class="stat"><div class="v" id="s-scored">—</div><div class="k">עסקאות שנסגרו</div></div>
       <div class="stat"><div class="v" id="s-pending">—</div><div class="k">ממתינות ל-15 דקות</div></div>
       <div class="stat"><div class="v" id="s-hours">—</div><div class="k">שעות מעקב</div></div>
+      <div class="stat" id="s-unscorable-cell" hidden><div class="v" id="s-unscorable">—</div><div class="k">לא ניתנות לחישוב</div></div>
     </div>
   </div>
 
@@ -224,6 +225,11 @@
     document.getElementById("s-scored").textContent = comma(s.scored);
     document.getElementById("s-pending").textContent = comma(s.pending);
     document.getElementById("s-hours").textContent = num(s.hours, 1);
+    // Rows an old store recorded before the token: never scored, never coming.
+    // Shown only when they exist, so a clean store stays a clean strip.
+    var stale = s.unscorable || 0;
+    document.getElementById("s-unscorable").textContent = comma(stale);
+    document.getElementById("s-unscorable-cell").hidden = stale === 0;
     document.getElementById("n-db").textContent = s.db || "—";
   }
 

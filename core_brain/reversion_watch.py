@@ -87,12 +87,21 @@ def resolve_store_path(custom: str | Path | None = None) -> Path:
     """
     raw = custom or os.environ.get("SHL_REVERSION_DB") or DEFAULT_DB
     path = Path(raw)
-    lowered = path.name.lower()
+    # The name alone is not the file. SQLite follows a symbolic link, so a link
+    # innocently called `reversion.db` pointing at the registry would open the
+    # registry -- and the writer would create its tables inside it. Both the
+    # name given and the name it resolves to have to clear the refusal.
+    names = {path.name.lower()}
+    try:
+        names.add(path.resolve().name.lower())
+    except OSError:                         # an unresolvable path is not a link
+        pass
     for refused in REFUSED_STORES:
-        if refused in lowered:
+        if any(refused in name for name in names):
             raise RefusedStore(
-                f"{path} is a live order registry, not a reversion test; "
-                f"this feature reads and writes recorded paper trades only")
+                f"{path} is, or points at, a live order registry rather than a "
+                f"reversion test; this feature reads and writes recorded paper "
+                f"trades only")
     return path
 
 
@@ -150,10 +159,17 @@ def pending_trades(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     leave that jump unscored for good: the trade lived in memory, the process
     exited, and nothing on disk said what still owed an exit. Reading them back
     makes the store the record rather than the loop.
+
+    A row written before the token was recorded is NOT returned. `ALTER TABLE`
+    cannot invent the token those rows never carried, and nothing in this repo
+    can authoritatively map a slug back to the token it traded on months later.
+    Such a row is unscorable, not pending: leaving it in this list would park it
+    in `settle` for the life of every future run and count it forever on the
+    page as a trade about to land.
     """
     rows = conn.execute(
         "SELECT id, slug, token_id, direction, entry_px, ts FROM events "
-        "WHERE pnl_c IS NULL ORDER BY ts").fetchall()
+        "WHERE pnl_c IS NULL AND token_id IS NOT NULL ORDER BY ts").fetchall()
     return [{"id": row[0], "slug": row[1], "token": row[2],
              "direction": row[3], "entry_px": row[4], "due": row[5] + FORWARD}
             for row in rows]

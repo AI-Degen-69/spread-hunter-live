@@ -80,15 +80,17 @@ def reversion_status(path: str | Path) -> dict[str, Any]:
     path = resolve_store_path(path)
     empty: dict[str, Any] = {
         "db": str(path), "exists": path.exists(), "state": "MISSING",
-        "markets": 0, "events": 0, "scored": 0, "pending": 0,
+        "markets": 0, "events": 0, "scored": 0, "pending": 0, "unscorable": 0,
         "quotes": 0, "first_ts": None, "last_ts": None, "hours": 0.0,
     }
     if not path.exists():
         return empty
     try:
         with _read_only(path) as conn:
-            events, scored = conn.execute(
-                "SELECT COUNT(*), COUNT(pnl_c) FROM events").fetchone()
+            events, scored, unscorable = conn.execute(
+                "SELECT COUNT(*), COUNT(pnl_c), "
+                "SUM(pnl_c IS NULL AND token_id IS NULL) FROM events"
+            ).fetchone()
             markets, quotes, first_ts, last_ts = conn.execute(
                 "SELECT COUNT(DISTINCT slug), COUNT(*), MIN(ts), MAX(ts) "
                 "FROM quotes").fetchone()
@@ -101,11 +103,15 @@ def reversion_status(path: str | Path) -> dict[str, Any]:
         return {**empty, "state": "UNREADABLE"}
     if not quotes:
         return {**empty, "state": "EMPTY"}
+    # Unscorable rows are neither scored nor waiting: they were recorded
+    # before the token was, so no run can ever fetch their exit quote. Counting
+    # them as pending would promise a result that is not coming.
+    unscorable = unscorable or 0
     return {
         "db": str(path), "exists": True, "state": "READY",
         "markets": markets, "events": events, "scored": scored,
-        "pending": events - scored, "quotes": quotes,
-        "first_ts": first_ts, "last_ts": last_ts,
+        "pending": events - scored - unscorable, "unscorable": unscorable,
+        "quotes": quotes, "first_ts": first_ts, "last_ts": last_ts,
         "hours": (last_ts - first_ts) / 3600.0,
     }
 
@@ -141,7 +147,7 @@ def reversion_results(path: str | Path) -> dict[str, Any]:
     empty: dict[str, Any] = {
         "db": str(path), "state": "MISSING", "groups": [], "overall": None,
         "significance_t": SIGNIFICANCE_T, "mid_band": [MID_LO, MID_HI],
-        "in_game": [], "pending": 0,
+        "in_game": [], "pending": 0, "unscorable": 0,
     }
     if not path.exists():
         return empty
@@ -150,12 +156,16 @@ def reversion_results(path: str | Path) -> dict[str, Any]:
             rows = conn.execute(
                 "SELECT league, band, in_game, pnl_c, spread_c FROM events "
                 "WHERE pnl_c IS NOT NULL").fetchall()
-            pending = conn.execute(
-                "SELECT COUNT(*) FROM events WHERE pnl_c IS NULL").fetchone()[0]
+            pending, unscorable = conn.execute(
+                "SELECT SUM(pnl_c IS NULL AND token_id IS NOT NULL), "
+                "SUM(pnl_c IS NULL AND token_id IS NULL) FROM events"
+            ).fetchone()
+            pending, unscorable = pending or 0, unscorable or 0
     except sqlite3.Error:
         return {**empty, "state": "UNREADABLE"}
     if not rows:
-        return {**empty, "state": "NOT_SCORED", "pending": pending}
+        return {**empty, "state": "NOT_SCORED", "pending": pending,
+                "unscorable": unscorable}
 
     by_group: dict[tuple[str, str], list[float]] = {}
     by_phase: dict[str, list[float]] = {}
@@ -180,5 +190,5 @@ def reversion_results(path: str | Path) -> dict[str, Any]:
                     for phase, values in sorted(by_phase.items())],
         "median_spread_c": statistics.median(spreads) if spreads else None,
         "significance_t": SIGNIFICANCE_T, "mid_band": [MID_LO, MID_HI],
-        "pending": pending,
+        "pending": pending, "unscorable": unscorable,
     }

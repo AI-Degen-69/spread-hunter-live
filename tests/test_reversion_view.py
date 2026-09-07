@@ -18,6 +18,11 @@ Journeys under test:
    happens to call first.
 8. As the Owner, a jump caught minutes before the watch ends is settled by
    the next run rather than lost, because the store is the record.
+9. As the Owner, a store name that merely POINTS at the registry is refused
+   too, because SQLite follows a symbolic link and the writer would then
+   create its tables inside the registry.
+10. As the Owner, a row too old to ever be scored is counted as unscorable
+    rather than as pending, because pending promises a result that is coming.
 """
 from __future__ import annotations
 
@@ -60,10 +65,10 @@ def _store(tmp_path, rows=(), quotes=6):
     for index, (league, band, in_game, pnl) in enumerate(rows):
         conn.execute(
             "INSERT INTO events (ts,slug,league,band,in_game,direction,"
-            "mid_before,mid_now,entry_px,entry_size,spread_c,exit_ts,exit_px,"
-            "exit_size,pnl_c) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "mid_before,mid_now,entry_px,entry_size,spread_c,token_id,exit_ts,"
+            "exit_px,exit_size,pnl_c) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (1_700_000_000 + index, f"{league}-a-b", league, band, in_game,
-             "up", 0.40, 0.44, 0.44, 500.0, 1.0,
+             "up", 0.40, 0.44, 0.44, 500.0, 1.0, f"tok-{index}",
              None if pnl is None else 1_700_000_900 + index,
              None if pnl is None else 0.42, 500.0, pnl))
     conn.commit()
@@ -338,3 +343,70 @@ def test_a_store_written_before_the_token_column_is_migrated(tmp_path):
     columns = {row[1] for row in migrated.execute("PRAGMA table_info(events)")}
     assert "token_id" in columns
     migrated.close()
+
+def test_a_symlink_pointing_at_the_registry_is_refused(tmp_path):
+    # The name alone is not the file: SQLite follows the link, so a link called
+    # `reversion.db` would hand the writer the production registry.
+    registry = tmp_path / "orders.db"
+    registry.write_bytes(b"")
+    alias = tmp_path / "reversion.db"
+    try:
+        alias.symlink_to(registry)
+    except (OSError, NotImplementedError):
+        pytest.skip("this platform will not create symbolic links unprivileged")
+
+    with pytest.raises(RefusedStore):
+        resolve_reversion_db(alias)
+    with pytest.raises(RefusedStore):
+        open_store(alias)
+    with pytest.raises(RefusedStore):
+        reversion_status(alias)
+
+
+def test_a_row_recorded_before_the_token_is_unscorable_not_pending(tmp_path):
+    # ALTER TABLE cannot invent the token these rows never carried, and nothing
+    # here can map a slug back to the token it traded on. Calling them pending
+    # would park them in settle forever and promise a result that never lands.
+    path = tmp_path / "reversion.db"
+    conn = open_store(path)
+    conn.execute("INSERT INTO quotes VALUES (?,?,?,?)",
+                 ("lol-a-b", 1_700_000_000, 0.44, 0.45))
+    conn.execute(
+        "INSERT INTO events (ts,slug,league,band,in_game,direction,mid_before,"
+        "mid_now,entry_px,entry_size,spread_c,token_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (1_700_000_000, "lol-a-b", "lol", "mid", 1, "up", 0.40, 0.44, 0.44,
+         500.0, 1.0, None))
+    conn.execute(
+        "INSERT INTO events (ts,slug,league,band,in_game,direction,mid_before,"
+        "mid_now,entry_px,entry_size,spread_c,token_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (1_700_000_100, "lol-c-d", "lol", "mid", 1, "up", 0.40, 0.44, 0.44,
+         500.0, 1.0, "tok-live"))
+    conn.commit()
+
+    assert [t["token"] for t in pending_trades(conn)] == ["tok-live"]
+
+    status = reversion_status(path)
+    assert status["events"] == 2
+    assert status["pending"] == 1
+    assert status["unscorable"] == 1
+    assert reversion_results(path)["unscorable"] == 1
+    conn.close()
+
+
+def test_an_unscorable_row_is_never_parked_in_settlement(tmp_path):
+    conn = open_store(tmp_path / "reversion.db")
+    conn.execute(
+        "INSERT INTO events (ts,slug,league,band,in_game,direction,mid_before,"
+        "mid_now,entry_px,entry_size,spread_c,token_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (1_700_000_000, "lol-a-b", "lol", "mid", 1, "up", 0.40, 0.44, 0.44,
+         500.0, 1.0, None))
+    conn.commit()
+
+    venue = _OneBook()
+    assert settle(conn, pending_trades(conn), session=venue,
+                  now=1_700_000_000 + FORWARD * 10) == []
+    assert venue.reads == 0
+    conn.close()

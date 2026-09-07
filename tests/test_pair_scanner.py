@@ -185,7 +185,7 @@ def test_unparseable_book_levels_do_not_take_the_scan_down():
 # ---------------------------------------------------------------- rank
 
 
-def _quote(cid, edge, queue, volume, leg_spread=None):
+def _quote(cid, edge, queue, volume, leg_spread=None, one_snapshot=True):
     spread = edge if leg_spread is None else leg_spread
     return PairQuote(
         condition_id=cid,
@@ -200,6 +200,7 @@ def _quote(cid, edge, queue, volume, leg_spread=None):
         queue_ahead_usd=queue,
         leg_spread_up=spread,
         leg_spread_down=spread,
+        one_snapshot=one_snapshot,
     )
 
 
@@ -224,6 +225,26 @@ def test_a_pair_cheaper_than_either_leg_spread_is_a_dislocation():
     cand = parse_candidate(_row())
 
     # The DOWN book has come apart: its bid sits far under the UP book's mirror.
+    # Both legs carry the same venue timestamp, so the two prices were true at
+    # one instant and the claim is supportable.
+    q = build_quote(
+        cand,
+        {**_book(bids=[(0.60, 100)], asks=[(0.61, 100)]), "timestamp": "1788793591776"},
+        {**_book(bids=[(0.30, 100)], asks=[(0.31, 100)]), "timestamp": "1788793591776"},
+    )
+
+    assert q is not None
+    assert q.edge_per_pair == pytest.approx(0.10)
+    assert q.leg_spread_up == pytest.approx(0.01)
+    assert q.dislocation == pytest.approx(0.09)
+
+
+def test_the_same_prices_without_a_shared_snapshot_are_not_a_dislocation():
+    # Identical numbers to the test above. Only the evidence differs: two books
+    # with no shared timestamp were read at two different moments, so the pair
+    # may never have existed.
+    cand = parse_candidate(_row())
+
     q = build_quote(
         cand,
         _book(bids=[(0.60, 100)], asks=[(0.61, 100)]),
@@ -232,8 +253,7 @@ def test_a_pair_cheaper_than_either_leg_spread_is_a_dislocation():
 
     assert q is not None
     assert q.edge_per_pair == pytest.approx(0.10)
-    assert q.leg_spread_up == pytest.approx(0.01)
-    assert q.dislocation == pytest.approx(0.09)
+    assert q.dislocation == 0.0
 
 
 def test_float_residue_under_half_a_tick_is_not_a_dislocation():
@@ -557,42 +577,34 @@ def test_importing_the_scanner_survives_a_trial_knob_in_the_environment():
     assert proc.returncode == 0, proc.stderr[-600:]
 
 
-# ------------------------------------------------- dislocation must be confirmed
+# ------------------------------------------------ dislocation needs one snapshot
 
 
-class _MovingSession:
-    """Serves one set of books on the first read of a token, another on the next.
+def _snap(book, ts, asset_id):
+    """A /books entry: a book plus the venue metadata that dates it."""
+    return {**book, "timestamp": ts, "asset_id": asset_id}
 
-    Models the real hazard: `scan` fetches the UP book and the DOWN book in two
-    separate HTTP calls, so a market that moves between them yields a pair that
-    never existed at any single instant.
-    """
 
-    def __init__(self, rows, first, second):
+class _BatchSession:
+    """Serves `POST /books`, the venue's atomic both-legs read."""
+
+    def __init__(self, rows, books):
         self.rows = rows
-        self.first = first
-        self.second = second
-        self.seen: dict[str, int] = {}
+        self.books = books
+        self.posts = 0
+        self.gets: list[str] = []
 
     def get(self, url, params=None, timeout=None):
         params = params or {}
         if "/markets" in url:
             return _FakeResponse(self.rows)
-        tok = params.get("token_id")
-        n = self.seen.get(tok, 0)
-        self.seen[tok] = n + 1
-        book = self.first if n == 0 else self.second
-        return _FakeResponse(book[tok])
+        self.gets.append(params.get("token_id"))
+        return _FakeResponse(None)
 
-
-_DISLOCATED = {
-    "d-up": _book(bids=[(0.60, 100)], asks=[(0.61, 100)]),
-    "d-down": _book(bids=[(0.30, 100)], asks=[(0.31, 100)]),
-}
-_MIRRORED = {
-    "d-up": _book(bids=[(0.60, 100)], asks=[(0.61, 100)]),
-    "d-down": _book(bids=[(0.39, 100)], asks=[(0.40, 100)]),
-}
+    def post(self, url, json=None, timeout=None):
+        self.posts += 1
+        tokens = [entry["token_id"] for entry in (json or [])]
+        return _FakeResponse([self.books[t] for t in tokens if t in self.books])
 
 
 def _disloc_rows():
@@ -600,17 +612,30 @@ def _disloc_rows():
                  clobTokenIds=json.dumps(["d-up", "d-down"]))]
 
 
-def test_a_dislocation_that_does_not_survive_a_second_read_is_not_reported():
-    session = _MovingSession(_disloc_rows(), _DISLOCATED, _MIRRORED)
-
-    out = scan(min_volume_24h=1000.0, limit=10, session=session)
-
-    assert len(out) == 1
-    assert out[0].dislocation == 0.0
+_UP_BOOK = _book(bids=[(0.60, 100)], asks=[(0.61, 100)])
+_DOWN_DISLOCATED = _book(bids=[(0.30, 100)], asks=[(0.31, 100)])
+_DOWN_MIRRORED = _book(bids=[(0.39, 100)], asks=[(0.40, 100)])
 
 
-def test_a_dislocation_that_survives_a_second_read_is_reported():
-    session = _MovingSession(_disloc_rows(), _DISLOCATED, _DISLOCATED)
+def test_both_legs_come_from_one_batch_call_not_two_serial_reads():
+    # Two serial GETs can straddle a venue move no matter how often they are
+    # repeated, so the scan must not use them for the primary read.
+    session = _BatchSession(_disloc_rows(), {
+        "d-up": _snap(_UP_BOOK, "1788793591776", "d-up"),
+        "d-down": _snap(_DOWN_MIRRORED, "1788793591776", "d-down"),
+    })
+
+    scan(min_volume_24h=1000.0, limit=10, session=session)
+
+    assert session.posts == 1
+    assert session.gets == []
+
+
+def test_a_dislocation_is_reported_when_both_legs_share_a_timestamp():
+    session = _BatchSession(_disloc_rows(), {
+        "d-up": _snap(_UP_BOOK, "1788793591776", "d-up"),
+        "d-down": _snap(_DOWN_DISLOCATED, "1788793591776", "d-down"),
+    })
 
     out = scan(min_volume_24h=1000.0, limit=10, session=session)
 
@@ -618,17 +643,50 @@ def test_a_dislocation_that_survives_a_second_read_is_reported():
     assert out[0].dislocation > 0.0
 
 
-def test_a_mirrored_market_is_never_re_read():
-    # Confirmation costs two extra HTTP calls; spend them only on the rare
-    # claim that needs them, never on the 70 markets that read zero.
-    rows = [_row(conditionId="0xm", slug="m", volume24hr="90000",
-                 clobTokenIds=json.dumps(["m-up", "m-down"]))]
-    books = {
-        "m-up": _book(bids=[(0.60, 100)], asks=[(0.61, 100)]),
-        "m-down": _book(bids=[(0.39, 100)], asks=[(0.40, 100)]),
-    }
-    session = _FakeSession(rows, books)
+def test_legs_from_different_venue_moments_never_report_a_dislocation():
+    # Same numbers as the test above; only the timestamps differ. The pair
+    # existed at no single instant, so the claim is not supportable.
+    session = _BatchSession(_disloc_rows(), {
+        "d-up": _snap(_UP_BOOK, "1788793591776", "d-up"),
+        "d-down": _snap(_DOWN_DISLOCATED, "1788793598000", "d-down"),
+    })
 
-    scan(min_volume_24h=1000.0, limit=10, session=session)
+    out = scan(min_volume_24h=1000.0, limit=10, session=session)
 
-    assert session.book_calls == ["m-up", "m-down"]
+    assert len(out) == 1
+    assert out[0].dislocation == 0.0
+    assert out[0].edge_per_pair > 0.0      # still ranked for spread capture
+
+
+def test_a_book_with_no_timestamp_never_reports_a_dislocation():
+    session = _BatchSession(_disloc_rows(), {
+        "d-up": {**_UP_BOOK, "asset_id": "d-up"},
+        "d-down": {**_DOWN_DISLOCATED, "asset_id": "d-down"},
+    })
+
+    out = scan(min_volume_24h=1000.0, limit=10, session=session)
+
+    assert len(out) == 1
+    assert out[0].dislocation == 0.0
+
+
+class _NoBatchSession(_FakeSession):
+    """A venue without `POST /books`; the scan must fall back to serial GETs."""
+
+    def post(self, url, json=None, timeout=None):
+        import requests as _rq
+        raise _rq.RequestException("404 Not Found")
+
+
+def test_without_the_batch_endpoint_the_scan_still_ranks_but_claims_no_dislocation():
+    session = _NoBatchSession(_disloc_rows(), {
+        "d-up": _UP_BOOK,
+        "d-down": _DOWN_DISLOCATED,
+    })
+
+    out = scan(min_volume_24h=1000.0, limit=10, session=session)
+
+    assert len(out) == 1
+    assert out[0].dislocation == 0.0       # serial reads cannot support it
+    assert out[0].spread_capture_score > 0.0
+    assert session.book_calls == ["d-up", "d-down"]

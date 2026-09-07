@@ -78,7 +78,7 @@ import logging
 import math
 import os
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, Iterable, Optional, Sequence
 
 import requests
@@ -166,6 +166,10 @@ class PairQuote:
     queue_ahead_usd: float
     leg_spread_up: float = 0.0
     leg_spread_down: float = 0.0
+    # True only when both legs came back in one `POST /books` carrying the same
+    # venue `timestamp`. Two serial reads can straddle a market move no matter
+    # how often they are repeated, so they can never support a dislocation.
+    one_snapshot: bool = False
 
     @property
     def edge_per_pair(self) -> float:
@@ -210,7 +214,18 @@ class PairQuote:
         pair can only be as cheap as the book is wide. A non-zero reading means
         the venue's own mirror invariant broke, and the number is worth acting
         on for that reason rather than as a trade.
+
+        Reads zero unless both legs came from ONE venue snapshot. Fetched
+        serially, the UP response and the DOWN response are two different
+        moments, and a market that moves between them yields a pair that
+        existed at no single instant -- which is staleness wearing the costume
+        of a mispricing. Repeating the pair of reads does not fix it: the
+        second pair can straddle a move exactly like the first. Only the
+        venue's own batch read, where both books carry the same `timestamp`,
+        can support the claim.
         """
+        if not self.one_snapshot:
+            return 0.0
         raw = self.edge_per_pair - min(self.leg_spread_up, self.leg_spread_down)
         return raw if raw >= DISLOCATION_EPS else 0.0
 
@@ -349,6 +364,14 @@ def _touch(book: Any, side: str) -> Optional[tuple[float, float]]:
     return max(parsed) if side == "bids" else min(parsed)
 
 
+def _is_one_snapshot(up_book: Any, down_book: Any) -> bool:
+    """True when both books carry the same non-empty venue `timestamp`."""
+    if not (isinstance(up_book, dict) and isinstance(down_book, dict)):
+        return False
+    stamp = up_book.get("timestamp")
+    return bool(stamp) and stamp == down_book.get("timestamp")
+
+
 def build_quote(
     candidate: Candidate,
     up_book: Any,
@@ -393,6 +416,7 @@ def build_quote(
         queue_ahead_usd=queue_ahead,
         leg_spread_up=up_ask[0] - up_bid[0],
         leg_spread_down=down_ask[0] - down_bid[0],
+        one_snapshot=_is_one_snapshot(up_book, down_book),
     )
 
 
@@ -421,41 +445,54 @@ def _fetch_book(token_id: str, clob_host: str, session: Any) -> Any:
         return None
 
 
-def _confirm_dislocation(
+def _fetch_pair_books(
     candidate: Candidate,
-    quote: PairQuote,
     clob_host: str,
     session: Any,
-) -> PairQuote:
-    """Re-read both books once; drop a dislocation that does not survive.
+) -> tuple[Any, Any]:
+    """Both legs, preferring the venue's atomic batch read.
 
-    The two legs are fetched in two separate HTTP calls, seconds apart, so a
-    market that moves between them yields a pair that existed at no single
-    instant. Measured live on 2026-09-07: `Cassis: Gijs Brouwer vs Matteo
-    Martineau` reported a 1.00c dislocation on a 4.00c pair, and a re-read
-    moments later showed a perfectly mirrored book at a 1.00c spread. Without
-    confirmation, `dislocation` reports staleness -- and because `rank` orders
-    on it first, the stale row lands at the top of the table under a line
-    claiming the venue broke its own mirror invariant.
-
-    Returns the quote with `leg_spread_*` widened to kill the dislocation when
-    the second read does not agree. Everything else is left as first read: the
-    market is still a legitimate spread-capture candidate, it just is not a
-    mispricing.
+    `POST /books` returns every requested book from one server moment: both
+    entries carry the same `timestamp`, which is the only evidence available
+    that the two legs existed together. Falling back to two serial `GET /book`
+    calls still ranks the market for spread capture; it just cannot support a
+    dislocation, and `_is_one_snapshot` sees no matching timestamps and says so.
     """
-    recheck = build_quote(
-        candidate,
-        _fetch_book(candidate.up_token, clob_host, session),
-        _fetch_book(candidate.down_token, clob_host, session),
-    )
-    if recheck is not None and recheck.dislocation > 0.0:
-        return recheck
+    tokens = (candidate.up_token, candidate.down_token)
+    batch = _fetch_books(tokens, clob_host, session)
+    if batch is not None:
+        return batch[tokens[0]], batch[tokens[1]]
+    return (_fetch_book(tokens[0], clob_host, session),
+            _fetch_book(tokens[1], clob_host, session))
 
-    log.debug("dislocation on %s did not survive a re-read; dropping it",
-              candidate.condition_id)
-    return replace(quote,
-                   leg_spread_up=quote.edge_per_pair,
-                   leg_spread_down=quote.edge_per_pair)
+
+def _fetch_books(
+    tokens: Sequence[str],
+    clob_host: str,
+    session: Any,
+) -> Optional[dict[str, Any]]:
+    """Every requested book in one call, keyed by token id, or None."""
+    try:
+        r = session.post(
+            f"{clob_host}/books",
+            json=[{"token_id": t} for t in tokens],
+            timeout=SCAN_TIMEOUT,
+        )
+        r.raise_for_status()
+        payload = r.json()
+    except (requests.RequestException, ValueError, AttributeError, TypeError) as exc:
+        log.debug("batch book read unavailable: %s", exc)
+        return None
+
+    if not isinstance(payload, list):
+        return None
+    books: dict[str, Any] = {}
+    for book in payload:
+        if isinstance(book, dict) and book.get("asset_id"):
+            books[str(book["asset_id"])] = book
+    # A partial batch is not a batch: the missing leg would have to be fetched
+    # separately, and the pair would no longer share a moment.
+    return books if all(t in books for t in tokens) else None
 
 
 def scan(
@@ -495,19 +532,10 @@ def scan(
         candidate = parse_candidate(row)
         if candidate is None or candidate.volume_24h < min_volume_24h:
             continue
-        quote = build_quote(
-            candidate,
-            _fetch_book(candidate.up_token, clob_host, session),
-            _fetch_book(candidate.down_token, clob_host, session),
-        )
-        if quote is None:
-            continue
-        # A dislocation is an extraordinary claim -- the venue broke its own
-        # mirror invariant -- so it pays for a second paired read. Nothing else
-        # does: the 70 markets that read zero are never re-fetched.
-        if quote.dislocation > 0.0:
-            quote = _confirm_dislocation(candidate, quote, clob_host, session)
-        quotes.append(quote)
+        up_book, down_book = _fetch_pair_books(candidate, clob_host, session)
+        quote = build_quote(candidate, up_book, down_book)
+        if quote is not None:
+            quotes.append(quote)
 
     return rank(quotes)
 

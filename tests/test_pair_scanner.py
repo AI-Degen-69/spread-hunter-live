@@ -25,6 +25,7 @@ import json
 import pytest
 
 from core_brain.pair_scanner import (
+    TAKER_FEE_RATE,
     PairQuote,
     build_quote,
     parse_candidate,
@@ -117,7 +118,7 @@ def test_pair_at_or_above_a_dollar_is_dropped():
     assert over_a_dollar is None
 
 
-def test_queue_ahead_is_the_thinner_leg_in_dollars():
+def test_queue_ahead_is_the_thicker_leg_in_dollars():
     cand = parse_candidate(_row())
 
     q = build_quote(
@@ -177,7 +178,8 @@ def _quote(cid, edge, queue, volume, leg_spread=None):
         down_token="d",
         volume_24h=volume,
         bid_pair=1.0 - edge,
-        ask_pair=1.0 + edge,
+        ask_up=(1.0 + edge) / 2.0,
+        ask_down=(1.0 + edge) / 2.0,
         queue_ahead_usd=queue,
         leg_spread_up=spread,
         leg_spread_down=spread,
@@ -325,3 +327,75 @@ def test_scan_skips_books_for_markets_under_the_volume_bar():
 
     assert out == []
     assert session.book_calls == []
+
+
+# ------------------------------------------------------------------ taker fees
+
+
+def test_a_raw_ask_pair_under_a_dollar_is_not_takeable_once_fees_are_charged():
+    # Crossing makes us the taker on BOTH legs, and the venue charges each one
+    # fee_rate * p * (1 - p). Mid-book that is 3.5c a pair -- more than the 1c
+    # this raw ask pair leaves on the table.
+    cand = parse_candidate(_row())
+
+    q = build_quote(
+        cand,
+        _book(bids=[(0.48, 100)], asks=[(0.495, 100)]),
+        _book(bids=[(0.48, 100)], asks=[(0.495, 100)]),
+    )
+
+    assert q is not None
+    assert q.ask_pair == pytest.approx(0.99)          # under $1.00 in shares
+    assert q.taker_fee_per_pair == pytest.approx(
+        TAKER_FEE_RATE * 2 * 0.495 * 0.505)
+    assert q.ask_pair + q.taker_fee_per_pair > 1.0
+    assert q.taker_pair_is_profitable is False
+
+
+def test_an_ask_pair_cheap_enough_to_clear_both_fees_is_takeable():
+    cand = parse_candidate(_row())
+
+    q = build_quote(
+        cand,
+        _book(bids=[(0.40, 100)], asks=[(0.44, 100)]),
+        _book(bids=[(0.40, 100)], asks=[(0.44, 100)]),
+    )
+
+    assert q is not None
+    assert q.ask_pair == pytest.approx(0.88)
+    assert q.ask_pair + q.taker_fee_per_pair < 1.0
+    assert q.taker_pair_is_profitable is True
+
+
+# --------------------------------------------------------- malformed book levels
+
+
+@pytest.mark.parametrize("bad_price", ["NaN", "Infinity", "-0.10", "1.40"])
+def test_a_level_priced_outside_a_binary_share_takes_the_market_out(bad_price):
+    # NaN is the dangerous one: every comparison against it is False, so an
+    # unfiltered NaN bid would pass the `bid_pair >= 1.0` guard and rank a
+    # market that has no price at all.
+    cand = parse_candidate(_row())
+
+    q = build_quote(
+        cand,
+        {"bids": [{"price": bad_price, "size": "100"}],
+         "asks": [{"price": "0.61", "size": "100"}]},
+        _book(bids=[(0.39, 100)], asks=[(0.40, 100)]),
+    )
+
+    assert q is None
+
+
+@pytest.mark.parametrize("bad_size", ["0", "-25", "NaN"])
+def test_a_level_with_no_real_size_takes_the_market_out(bad_size):
+    cand = parse_candidate(_row())
+
+    q = build_quote(
+        cand,
+        {"bids": [{"price": "0.60", "size": bad_size}],
+         "asks": [{"price": "0.61", "size": "100"}]},
+        _book(bids=[(0.39, 100)], asks=[(0.40, 100)]),
+    )
+
+    assert q is None

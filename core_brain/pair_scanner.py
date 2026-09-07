@@ -13,9 +13,12 @@ reachable. Two measurements decide it, and they are not the same thing:
   70 markets with `bid_pair` under $1.00.
 * `ask_pair` -- the two best ASKS summed. This is what CROSSING would cost. The
   same scan found 0 of 25 sampled markets under $1.00 there, median $1.002.
+  Crossing also makes us the taker on both legs, so the venue's
+  `fee_rate * p * (1 - p)` is charged twice -- 3.5c a pair mid-book, wider than
+  most of the spreads ranked here. `taker_pair_is_profitable` charges it.
   Taking a leg is a booked loss on every market that has ever been measured
-  here, which is why `taker_pair_is_profitable` exists: to keep that fact in the
-  output rather than in a comment.
+  here, which is why that property exists: to keep the fact in the output
+  rather than in a comment.
 
 A live measurement on 2026-09-06 settled what `edge_per_pair` actually is. The
 two books of a binary market mirror each other -- `ask_UP == 1 - bid_DOWN` --
@@ -72,12 +75,15 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Optional, Sequence
 
 import requests
+
+from core_brain.config import load as load_cfg
 
 log = logging.getLogger("pair_scanner")
 
@@ -92,6 +98,12 @@ SCAN_TIMEOUT = (3.05, 5.0)
 # residue at 1e-17, and without a floor that residue reads as a dislocation and
 # shuffles the ranking. Anything under half a tick is not a price difference.
 DISLOCATION_EPS = 0.005
+
+# The venue charges the taker `fee_rate * p * (1 - p)` per share and the
+# maker nothing (`crypto_fees_v2: takerOnly=true`). Both numbers are already
+# measured and recorded in `MakerConfig`, so the scanner reads them from
+# there rather than asking the venue for metadata it already has.
+TAKER_FEE_RATE = load_cfg().fee_rate
 
 # Slugs and questions come from the venue and are later printed to a terminal
 # and embedded in reports. Restrict them at the boundary so a hostile value
@@ -129,7 +141,8 @@ class PairQuote:
     down_token: str
     volume_24h: float
     bid_pair: float
-    ask_pair: float
+    ask_up: float
+    ask_down: float
     queue_ahead_usd: float
     leg_spread_up: float = 0.0
     leg_spread_down: float = 0.0
@@ -140,9 +153,28 @@ class PairQuote:
         return 1.0 - self.bid_pair
 
     @property
+    def ask_pair(self) -> float:
+        """What crossing both legs would cost in shares, before fees."""
+        return self.ask_up + self.ask_down
+
+    @property
+    def taker_fee_per_pair(self) -> float:
+        """Match-time taker fee on both legs of a crossed pair.
+
+        Crossing makes us the taker on BOTH legs, and the venue charges each
+        one `fee_rate * p * (1 - p)`. Near the middle of the book that is 3.5c
+        a pair -- larger than most of the spreads this scanner ranks -- so a
+        takeability check that ignores it reports pairs as free money that are
+        not. Merging is gasless, so the fee is the whole cost.
+        """
+        return TAKER_FEE_RATE * sum(
+            price * (1.0 - price) for price in (self.ask_up, self.ask_down)
+        )
+
+    @property
     def taker_pair_is_profitable(self) -> bool:
-        """True only if CROSSING both legs would still assemble under $1.00."""
-        return self.ask_pair < 1.0
+        """True only if CROSSING both legs, fees included, lands under $1.00."""
+        return self.ask_pair + self.taker_fee_per_pair < 1.0
 
     @property
     def queue_turns_per_day(self) -> float:
@@ -243,6 +275,14 @@ def _touch(book: Any, side: str) -> Optional[tuple[float, float]]:
         size = _as_float(level.get("size"))
         if price is None or size is None:
             return None
+        # A binary share is worth between $0.00 and $1.00, and a level with no
+        # size is not a level. NaN is the dangerous one: every comparison
+        # against it is False, so an unfiltered NaN sails through the
+        # `bid_pair >= 1.0` guard below and ranks a market that has no price.
+        if not (math.isfinite(price) and math.isfinite(size)):
+            return None
+        if not 0.0 <= price <= 1.0 or size <= 0.0:
+            return None
         parsed.append((price, size))
 
     # Gamma returns bids ascending and asks descending in places; sort rather
@@ -279,7 +319,8 @@ def build_quote(
         down_token=candidate.down_token,
         volume_24h=candidate.volume_24h,
         bid_pair=bid_pair,
-        ask_pair=up_ask[0] + down_ask[0],
+        ask_up=up_ask[0],
+        ask_down=down_ask[0],
         queue_ahead_usd=queue_ahead,
         leg_spread_up=up_ask[0] - up_bid[0],
         leg_spread_down=down_ask[0] - down_bid[0],
@@ -375,7 +416,8 @@ def _main() -> None:
     real = [q for q in quotes if q.dislocation > 0]
     takeable = [q for q in quotes if q.taker_pair_is_profitable]
     print(f"\n{len(quotes)} markets with a pair under $1.00 at the bid; "
-          f"{len(takeable)} of them are also under $1.00 at the ask.")
+          f"{len(takeable)} of them are still under $1.00 at the ask once "
+          f"both taker fees are charged.")
     print(f"{len(real)} dislocated. A binary market has one book served under "
           f"two token ids, so this reads 0 unless the venue's book invariant "
           f"broke.")

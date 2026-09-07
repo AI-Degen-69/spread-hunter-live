@@ -17,15 +17,36 @@ Journeys under test:
    taking the whole scan down with it.
 7. As the Owner, the scan records what taking both legs would have cost, so the
    maker-only nature of the strategy is visible in the output.
+8. As the Owner, a venue number that is NaN or Infinity is refused at the
+   boundary, because every comparison against NaN is False and one such row
+   walks straight past the volume bar and then sorts above every real market.
+9. As the Owner, a crossed book is refused rather than reported as a
+   dislocation, because a half-stale /book response must not read as the venue
+   breaking its own mirror invariant.
+10. As the Owner, a mangled gamma response ends the scan with a named failure,
+    not a traceback -- the same treatment a mangled book row already gets.
+11. As the Owner, importing this read-only module never raises over a trial knob
+    that only gates order placement.
+12. As the Owner, a dislocation is only ever reported off ONE venue snapshot --
+    both legs from a single `POST /books` carrying the same `timestamp` --
+    because two serial reads can always straddle a market move, however many
+    times they are repeated.
+13. As the Owner, when the batch read is unavailable the scan still ranks
+    markets, it just never claims a dislocation, because serial reads cannot
+    support that claim.
 """
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 
 from core_brain.pair_scanner import (
-    TAKER_FEE_RATE,
+    taker_fee_rate,
     PairQuote,
     build_quote,
     parse_candidate,
@@ -168,7 +189,7 @@ def test_unparseable_book_levels_do_not_take_the_scan_down():
 # ---------------------------------------------------------------- rank
 
 
-def _quote(cid, edge, queue, volume, leg_spread=None):
+def _quote(cid, edge, queue, volume, leg_spread=None, one_snapshot=True):
     spread = edge if leg_spread is None else leg_spread
     return PairQuote(
         condition_id=cid,
@@ -183,6 +204,7 @@ def _quote(cid, edge, queue, volume, leg_spread=None):
         queue_ahead_usd=queue,
         leg_spread_up=spread,
         leg_spread_down=spread,
+        one_snapshot=one_snapshot,
     )
 
 
@@ -207,6 +229,26 @@ def test_a_pair_cheaper_than_either_leg_spread_is_a_dislocation():
     cand = parse_candidate(_row())
 
     # The DOWN book has come apart: its bid sits far under the UP book's mirror.
+    # Both legs carry the same venue timestamp, so the two prices were true at
+    # one instant and the claim is supportable.
+    q = build_quote(
+        cand,
+        {**_book(bids=[(0.60, 100)], asks=[(0.61, 100)]), "timestamp": "1788793591776"},
+        {**_book(bids=[(0.30, 100)], asks=[(0.31, 100)]), "timestamp": "1788793591776"},
+    )
+
+    assert q is not None
+    assert q.edge_per_pair == pytest.approx(0.10)
+    assert q.leg_spread_up == pytest.approx(0.01)
+    assert q.dislocation == pytest.approx(0.09)
+
+
+def test_the_same_prices_without_a_shared_snapshot_are_not_a_dislocation():
+    # Identical numbers to the test above. Only the evidence differs: two books
+    # with no shared timestamp were read at two different moments, so the pair
+    # may never have existed.
+    cand = parse_candidate(_row())
+
     q = build_quote(
         cand,
         _book(bids=[(0.60, 100)], asks=[(0.61, 100)]),
@@ -215,8 +257,7 @@ def test_a_pair_cheaper_than_either_leg_spread_is_a_dislocation():
 
     assert q is not None
     assert q.edge_per_pair == pytest.approx(0.10)
-    assert q.leg_spread_up == pytest.approx(0.01)
-    assert q.dislocation == pytest.approx(0.09)
+    assert q.dislocation == 0.0
 
 
 def test_float_residue_under_half_a_tick_is_not_a_dislocation():
@@ -347,7 +388,7 @@ def test_a_raw_ask_pair_under_a_dollar_is_not_takeable_once_fees_are_charged():
     assert q is not None
     assert q.ask_pair == pytest.approx(0.99)          # under $1.00 in shares
     assert q.taker_fee_per_pair == pytest.approx(
-        TAKER_FEE_RATE * 2 * 0.495 * 0.505)
+        taker_fee_rate() * 2 * 0.495 * 0.505)
     assert q.ask_pair + q.taker_fee_per_pair > 1.0
     assert q.taker_pair_is_profitable is False
 
@@ -399,3 +440,257 @@ def test_a_level_with_no_real_size_takes_the_market_out(bad_size):
     )
 
     assert q is None
+
+
+# ------------------------------------------------------ non-finite venue numbers
+
+
+def test_a_nan_volume_is_refused_at_the_boundary():
+    # `nan < min_volume_24h` is False, so an unfiltered NaN walks past the
+    # volume bar; every score derived from it is then NaN and sorts first.
+    assert parse_candidate(_row(volume24hr="NaN")) is None
+    assert parse_candidate(_row(volume24hr="Infinity")) is None
+    assert parse_candidate(_row(volume24hr="-Infinity")) is None
+
+
+def test_a_missing_volume_is_still_zero_not_a_rejection():
+    absent = parse_candidate(_row(volume24hr=None))
+    unparseable = parse_candidate(_row(volume24hr="n/a"))
+
+    assert absent is not None and absent.volume_24h == 0.0
+    assert unparseable is not None and unparseable.volume_24h == 0.0
+
+
+def test_scan_never_ranks_a_non_finite_market_above_a_real_one():
+    rows = [
+        _row(conditionId="0xnan", slug="nan", volume24hr="NaN",
+             clobTokenIds=json.dumps(["n-up", "n-down"])),
+        _row(conditionId="0xreal", slug="real", volume24hr="500000",
+             clobTokenIds=json.dumps(["r-up", "r-down"])),
+    ]
+    books = {
+        "n-up": _book(bids=[(0.60, 100)], asks=[(0.62, 100)]),
+        "n-down": _book(bids=[(0.38, 100)], asks=[(0.40, 100)]),
+        "r-up": _book(bids=[(0.60, 100)], asks=[(0.62, 100)]),
+        "r-down": _book(bids=[(0.38, 100)], asks=[(0.40, 100)]),
+    }
+    session = _FakeSession(rows, books)
+
+    out = scan(min_volume_24h=1000.0, limit=10, session=session)
+
+    assert [q.condition_id for q in out] == ["0xreal"]
+
+
+# ---------------------------------------------------------------- crossed books
+
+
+def test_a_crossed_book_is_refused_not_reported_as_a_dislocation():
+    # A half-stale /book response (fresh asks, stale bids) crosses the book.
+    # Left unguarded it gives a negative leg spread, which makes `dislocation`
+    # positive and sorts the market to the top of the operator's table.
+    cand = parse_candidate(_row())
+
+    crossed_up = build_quote(
+        cand,
+        _book(bids=[(0.60, 100)], asks=[(0.55, 100)]),
+        _book(bids=[(0.30, 100)], asks=[(0.35, 100)]),
+    )
+    crossed_down = build_quote(
+        cand,
+        _book(bids=[(0.60, 100)], asks=[(0.61, 100)]),
+        _book(bids=[(0.30, 100)], asks=[(0.29, 100)]),
+    )
+
+    assert crossed_up is None
+    assert crossed_down is None
+
+
+def test_a_locked_book_is_refused_too():
+    # ask == bid is a zero-width market, not a free pair.
+    cand = parse_candidate(_row())
+
+    q = build_quote(
+        cand,
+        _book(bids=[(0.60, 100)], asks=[(0.60, 100)]),
+        _book(bids=[(0.30, 100)], asks=[(0.35, 100)]),
+    )
+
+    assert q is None
+
+
+# ------------------------------------------------------- gamma failure handling
+
+
+class _RaisingResponse:
+    def __init__(self, exc):
+        self._exc = exc
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        raise self._exc
+
+
+class _GammaFailureSession:
+    def __init__(self, exc):
+        self._exc = exc
+
+    def get(self, url, params=None, timeout=None):
+        return _RaisingResponse(self._exc)
+
+
+def test_a_mangled_gamma_body_ends_the_scan_cleanly():
+    session = _GammaFailureSession(ValueError("Expecting value: line 1 column 1"))
+
+    assert scan(min_volume_24h=1000.0, limit=10, session=session) == []
+
+
+def test_a_gamma_transport_failure_ends_the_scan_cleanly():
+    import requests
+
+    session = _GammaFailureSession(requests.RequestException("502 Bad Gateway"))
+
+    assert scan(min_volume_24h=1000.0, limit=10, session=session) == []
+
+
+# --------------------------------------------------------------- import safety
+
+
+def test_importing_the_scanner_survives_a_trial_knob_in_the_environment():
+    """A read-only module must not die on a gate that only guards order placement.
+
+    `HUNTER_WIDE_BOOK_TRIAL` is exported to hand to a rehearsal, and
+    `Start-Process` copies the operator's whole environment into every child.
+    A module-scope `config.load()` without `for_display=True` then refuses at
+    import, and the scanner cannot even be loaded -- nor can this test file.
+    """
+    repo_root = Path(__file__).resolve().parent.parent
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+        "HUNTER_WIDE_BOOK_TRIAL": "0.08",
+        "PYTHONPATH": str(repo_root),
+    }
+
+    proc = subprocess.run(
+        [sys.executable, "-c", "import core_brain.pair_scanner"],
+        cwd=str(repo_root), env=env, capture_output=True, text=True, timeout=90,
+    )
+
+    assert proc.returncode == 0, proc.stderr[-600:]
+
+
+# ------------------------------------------------ dislocation needs one snapshot
+
+
+def _snap(book, ts, asset_id):
+    """A /books entry: a book plus the venue metadata that dates it."""
+    return {**book, "timestamp": ts, "asset_id": asset_id}
+
+
+class _BatchSession:
+    """Serves `POST /books`, the venue's atomic both-legs read."""
+
+    def __init__(self, rows, books):
+        self.rows = rows
+        self.books = books
+        self.posts = 0
+        self.gets: list[str] = []
+
+    def get(self, url, params=None, timeout=None):
+        params = params or {}
+        if "/markets" in url:
+            return _FakeResponse(self.rows)
+        self.gets.append(params.get("token_id"))
+        return _FakeResponse(None)
+
+    def post(self, url, json=None, timeout=None):
+        self.posts += 1
+        tokens = [entry["token_id"] for entry in (json or [])]
+        return _FakeResponse([self.books[t] for t in tokens if t in self.books])
+
+
+def _disloc_rows():
+    return [_row(conditionId="0xd", slug="d", volume24hr="90000",
+                 clobTokenIds=json.dumps(["d-up", "d-down"]))]
+
+
+_UP_BOOK = _book(bids=[(0.60, 100)], asks=[(0.61, 100)])
+_DOWN_DISLOCATED = _book(bids=[(0.30, 100)], asks=[(0.31, 100)])
+_DOWN_MIRRORED = _book(bids=[(0.39, 100)], asks=[(0.40, 100)])
+
+
+def test_both_legs_come_from_one_batch_call_not_two_serial_reads():
+    # Two serial GETs can straddle a venue move no matter how often they are
+    # repeated, so the scan must not use them for the primary read.
+    session = _BatchSession(_disloc_rows(), {
+        "d-up": _snap(_UP_BOOK, "1788793591776", "d-up"),
+        "d-down": _snap(_DOWN_MIRRORED, "1788793591776", "d-down"),
+    })
+
+    scan(min_volume_24h=1000.0, limit=10, session=session)
+
+    assert session.posts == 1
+    assert session.gets == []
+
+
+def test_a_dislocation_is_reported_when_both_legs_share_a_timestamp():
+    session = _BatchSession(_disloc_rows(), {
+        "d-up": _snap(_UP_BOOK, "1788793591776", "d-up"),
+        "d-down": _snap(_DOWN_DISLOCATED, "1788793591776", "d-down"),
+    })
+
+    out = scan(min_volume_24h=1000.0, limit=10, session=session)
+
+    assert len(out) == 1
+    assert out[0].dislocation > 0.0
+
+
+def test_legs_from_different_venue_moments_never_report_a_dislocation():
+    # Same numbers as the test above; only the timestamps differ. The pair
+    # existed at no single instant, so the claim is not supportable.
+    session = _BatchSession(_disloc_rows(), {
+        "d-up": _snap(_UP_BOOK, "1788793591776", "d-up"),
+        "d-down": _snap(_DOWN_DISLOCATED, "1788793598000", "d-down"),
+    })
+
+    out = scan(min_volume_24h=1000.0, limit=10, session=session)
+
+    assert len(out) == 1
+    assert out[0].dislocation == 0.0
+    assert out[0].edge_per_pair > 0.0      # still ranked for spread capture
+
+
+def test_a_book_with_no_timestamp_never_reports_a_dislocation():
+    session = _BatchSession(_disloc_rows(), {
+        "d-up": {**_UP_BOOK, "asset_id": "d-up"},
+        "d-down": {**_DOWN_DISLOCATED, "asset_id": "d-down"},
+    })
+
+    out = scan(min_volume_24h=1000.0, limit=10, session=session)
+
+    assert len(out) == 1
+    assert out[0].dislocation == 0.0
+
+
+class _NoBatchSession(_FakeSession):
+    """A venue without `POST /books`; the scan must fall back to serial GETs."""
+
+    def post(self, url, json=None, timeout=None):
+        import requests as _rq
+        raise _rq.RequestException("404 Not Found")
+
+
+def test_without_the_batch_endpoint_the_scan_still_ranks_but_claims_no_dislocation():
+    session = _NoBatchSession(_disloc_rows(), {
+        "d-up": _UP_BOOK,
+        "d-down": _DOWN_DISLOCATED,
+    })
+
+    out = scan(min_volume_24h=1000.0, limit=10, session=session)
+
+    assert len(out) == 1
+    assert out[0].dislocation == 0.0       # serial reads cannot support it
+    assert out[0].spread_capture_score > 0.0
+    assert session.book_calls == ["d-up", "d-down"]

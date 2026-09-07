@@ -103,7 +103,27 @@ DISLOCATION_EPS = 0.005
 # maker nothing (`crypto_fees_v2: takerOnly=true`). Both numbers are already
 # measured and recorded in `MakerConfig`, so the scanner reads them from
 # there rather than asking the venue for metadata it already has.
-TAKER_FEE_RATE = load_cfg().fee_rate
+#
+# Read LAZILY and with `for_display=True`. Both matter:
+#
+# * At module scope, `load()` runs on import, so `import core_brain.pair_scanner`
+#   inherits every refusal on the money path. Nothing else in `core_brain/`
+#   calls `load()` at import time.
+# * Without `for_display=True`, `resolve_wide_book_trial` REFUSES whenever
+#   `HUNTER_WIDE_BOOK_TRIAL` is exported. That knob is handed to a rehearsal,
+#   `Start-Process` copies the operator's environment into every child, and
+#   the refusal then aborts the import of a module that holds no signer and
+#   places no order. `config.load` documents this exact escape hatch for a
+#   read-only consumer.
+_TAKER_FEE_RATE: Optional[float] = None
+
+
+def taker_fee_rate() -> float:
+    """The venue's taker fee rate, read once, never at import."""
+    global _TAKER_FEE_RATE
+    if _TAKER_FEE_RATE is None:
+        _TAKER_FEE_RATE = float(load_cfg(for_display=True).fee_rate)
+    return _TAKER_FEE_RATE
 
 # Slugs and questions come from the venue and are later printed to a terminal
 # and embedded in reports. Restrict them at the boundary so a hostile value
@@ -146,6 +166,10 @@ class PairQuote:
     queue_ahead_usd: float
     leg_spread_up: float = 0.0
     leg_spread_down: float = 0.0
+    # True only when both legs came back in one `POST /books` carrying the same
+    # venue `timestamp`. Two serial reads can straddle a market move no matter
+    # how often they are repeated, so they can never support a dislocation.
+    one_snapshot: bool = False
 
     @property
     def edge_per_pair(self) -> float:
@@ -167,7 +191,7 @@ class PairQuote:
         takeability check that ignores it reports pairs as free money that are
         not. Merging is gasless, so the fee is the whole cost.
         """
-        return TAKER_FEE_RATE * sum(
+        return taker_fee_rate() * sum(
             price * (1.0 - price) for price in (self.ask_up, self.ask_down)
         )
 
@@ -190,7 +214,18 @@ class PairQuote:
         pair can only be as cheap as the book is wide. A non-zero reading means
         the venue's own mirror invariant broke, and the number is worth acting
         on for that reason rather than as a trade.
+
+        Reads zero unless both legs came from ONE venue snapshot. Fetched
+        serially, the UP response and the DOWN response are two different
+        moments, and a market that moves between them yields a pair that
+        existed at no single instant -- which is staleness wearing the costume
+        of a mispricing. Repeating the pair of reads does not fix it: the
+        second pair can straddle a move exactly like the first. Only the
+        venue's own batch read, where both books carry the same `timestamp`,
+        can support the claim.
         """
+        if not self.one_snapshot:
+            return 0.0
         raw = self.edge_per_pair - min(self.leg_spread_up, self.leg_spread_down)
         return raw if raw >= DISLOCATION_EPS else 0.0
 
@@ -213,11 +248,46 @@ def _sanitize_text(text: str) -> str:
 
 
 def _as_float(value: Any) -> Optional[float]:
-    """A venue number -> float, or None when the venue sent something else."""
+    """A venue number -> float, or None when the venue sent something else.
+
+    NaN and Infinity are "something else". `float("NaN")` parses happily, and
+    every comparison against the result is False -- so a NaN volume walks
+    straight past `volume_24h < min_volume_24h`, and every score derived from
+    it is NaN and sorts above every real market. Reject at the boundary, once,
+    rather than guarding each comparison downstream.
+    """
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _parse_volume(raw: Any) -> Optional[float]:
+    """24h volume -> float, or None when the row must be rejected outright.
+
+    Three cases, and collapsing any two of them is the bug this exists to
+    avoid:
+
+    * ABSENT or blank -> 0.0. A market with no measured flow, which the volume
+      bar then filters on its merits.
+    * NOT A NUMBER (a mangled string) -> 0.0. Same treatment: unusable reading,
+      no claim of flow.
+    * NaN or INFINITY -> None, reject the row. These PARSE, so `or 0.0` cannot
+      tell them from the first two, and every comparison against NaN is False
+      -- the row would clear the volume bar and then sort above every real
+      market on a NaN score.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return 0.0
+    parsed = _as_float(raw)
+    if parsed is not None:
+        return parsed
+    try:
+        float(raw)
+    except (TypeError, ValueError):
+        return 0.0      # never a number; no flow claimed
+    return None         # parsed, so it was NaN or Infinity: a venue error
 
 
 def parse_candidate(row: Any) -> Optional[Candidate]:
@@ -249,13 +319,17 @@ def parse_candidate(row: Any) -> Optional[Candidate]:
     if not isinstance(tokens, list) or len(tokens) != 2:
         return None
 
+    volume = _parse_volume(row.get("volume24hr"))
+    if volume is None:
+        return None
+
     return Candidate(
         condition_id=condition_id,
         slug=_sanitize_slug(str(row.get("slug") or "")),
         question=_sanitize_text(str(row.get("question") or "")),
         up_token=str(tokens[0]),
         down_token=str(tokens[1]),
-        volume_24h=_as_float(row.get("volume24hr")) or 0.0,
+        volume_24h=volume,
     )
 
 
@@ -290,6 +364,14 @@ def _touch(book: Any, side: str) -> Optional[tuple[float, float]]:
     return max(parsed) if side == "bids" else min(parsed)
 
 
+def _is_one_snapshot(up_book: Any, down_book: Any) -> bool:
+    """True when both books carry the same non-empty venue `timestamp`."""
+    if not (isinstance(up_book, dict) and isinstance(down_book, dict)):
+        return False
+    stamp = up_book.get("timestamp")
+    return bool(stamp) and stamp == down_book.get("timestamp")
+
+
 def build_quote(
     candidate: Candidate,
     up_book: Any,
@@ -301,6 +383,16 @@ def build_quote(
     up_ask = _touch(up_book, "asks")
     down_ask = _touch(down_book, "asks")
     if not (up_bid and down_bid and up_ask and down_ask):
+        return None
+
+    # A book whose ask sits at or below its bid is crossed or locked, which no
+    # live CLOB serves -- it is a half-stale `/book` response (fresh asks,
+    # stale bids). Left through, the negative leg spread makes `dislocation`
+    # positive, and because `rank` orders on `dislocation` first, a transport
+    # artifact lands at the top of the table under a line claiming the venue
+    # broke its own mirror invariant.
+    if up_ask[0] <= up_bid[0] or down_ask[0] <= down_bid[0]:
+        log.debug("crossed or locked book on %s, skipping", candidate.condition_id)
         return None
 
     bid_pair = up_bid[0] + down_bid[0]
@@ -324,6 +416,7 @@ def build_quote(
         queue_ahead_usd=queue_ahead,
         leg_spread_up=up_ask[0] - up_bid[0],
         leg_spread_down=down_ask[0] - down_bid[0],
+        one_snapshot=_is_one_snapshot(up_book, down_book),
     )
 
 
@@ -352,6 +445,56 @@ def _fetch_book(token_id: str, clob_host: str, session: Any) -> Any:
         return None
 
 
+def _fetch_pair_books(
+    candidate: Candidate,
+    clob_host: str,
+    session: Any,
+) -> tuple[Any, Any]:
+    """Both legs, preferring the venue's atomic batch read.
+
+    `POST /books` returns every requested book from one server moment: both
+    entries carry the same `timestamp`, which is the only evidence available
+    that the two legs existed together. Falling back to two serial `GET /book`
+    calls still ranks the market for spread capture; it just cannot support a
+    dislocation, and `_is_one_snapshot` sees no matching timestamps and says so.
+    """
+    tokens = (candidate.up_token, candidate.down_token)
+    batch = _fetch_books(tokens, clob_host, session)
+    if batch is not None:
+        return batch[tokens[0]], batch[tokens[1]]
+    return (_fetch_book(tokens[0], clob_host, session),
+            _fetch_book(tokens[1], clob_host, session))
+
+
+def _fetch_books(
+    tokens: Sequence[str],
+    clob_host: str,
+    session: Any,
+) -> Optional[dict[str, Any]]:
+    """Every requested book in one call, keyed by token id, or None."""
+    try:
+        r = session.post(
+            f"{clob_host}/books",
+            json=[{"token_id": t} for t in tokens],
+            timeout=SCAN_TIMEOUT,
+        )
+        r.raise_for_status()
+        payload = r.json()
+    except (requests.RequestException, ValueError, AttributeError, TypeError) as exc:
+        log.debug("batch book read unavailable: %s", exc)
+        return None
+
+    if not isinstance(payload, list):
+        return None
+    books: dict[str, Any] = {}
+    for book in payload:
+        if isinstance(book, dict) and book.get("asset_id"):
+            books[str(book["asset_id"])] = book
+    # A partial batch is not a batch: the missing leg would have to be fetched
+    # separately, and the pair would no longer share a moment.
+    return books if all(t in books for t in tokens) else None
+
+
 def scan(
     min_volume_24h: float = 50_000.0,
     limit: int = 70,
@@ -362,14 +505,23 @@ def scan(
     """Live markets ranked by pair economics. Read-only; places no orders."""
     session = session or _SESSION
 
-    r = session.get(
-        f"{gamma_host}/markets",
-        params={"closed": "false", "active": "true", "limit": 500,
-                "order": "volume24hr", "ascending": "false"},
-        timeout=SCAN_TIMEOUT,
-    )
-    r.raise_for_status()
-    rows = r.json()
+    # Guarded the same way `_fetch_book` is. A 502 HTML error page or a
+    # truncated body during a venue outage otherwise leaves `scan` through
+    # `HTTPError` or `ValueError`, and `_main` installs no handler -- the
+    # operator gets a traceback where every other mangled venue response is
+    # a skipped row.
+    try:
+        r = session.get(
+            f"{gamma_host}/markets",
+            params={"closed": "false", "active": "true", "limit": 500,
+                    "order": "volume24hr", "ascending": "false"},
+            timeout=SCAN_TIMEOUT,
+        )
+        r.raise_for_status()
+        rows = r.json()
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("market list unavailable from %s: %s", gamma_host, exc)
+        return []
     if not isinstance(rows, list):
         return []
 
@@ -380,11 +532,8 @@ def scan(
         candidate = parse_candidate(row)
         if candidate is None or candidate.volume_24h < min_volume_24h:
             continue
-        quote = build_quote(
-            candidate,
-            _fetch_book(candidate.up_token, clob_host, session),
-            _fetch_book(candidate.down_token, clob_host, session),
-        )
+        up_book, down_book = _fetch_pair_books(candidate, clob_host, session)
+        quote = build_quote(candidate, up_book, down_book)
         if quote is not None:
             quotes.append(quote)
 

@@ -78,7 +78,7 @@ import logging
 import math
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Optional, Sequence
 
 import requests
@@ -103,7 +103,27 @@ DISLOCATION_EPS = 0.005
 # maker nothing (`crypto_fees_v2: takerOnly=true`). Both numbers are already
 # measured and recorded in `MakerConfig`, so the scanner reads them from
 # there rather than asking the venue for metadata it already has.
-TAKER_FEE_RATE = load_cfg().fee_rate
+#
+# Read LAZILY and with `for_display=True`. Both matter:
+#
+# * At module scope, `load()` runs on import, so `import core_brain.pair_scanner`
+#   inherits every refusal on the money path. Nothing else in `core_brain/`
+#   calls `load()` at import time.
+# * Without `for_display=True`, `resolve_wide_book_trial` REFUSES whenever
+#   `HUNTER_WIDE_BOOK_TRIAL` is exported. That knob is handed to a rehearsal,
+#   `Start-Process` copies the operator's environment into every child, and
+#   the refusal then aborts the import of a module that holds no signer and
+#   places no order. `config.load` documents this exact escape hatch for a
+#   read-only consumer.
+_TAKER_FEE_RATE: Optional[float] = None
+
+
+def taker_fee_rate() -> float:
+    """The venue's taker fee rate, read once, never at import."""
+    global _TAKER_FEE_RATE
+    if _TAKER_FEE_RATE is None:
+        _TAKER_FEE_RATE = float(load_cfg(for_display=True).fee_rate)
+    return _TAKER_FEE_RATE
 
 # Slugs and questions come from the venue and are later printed to a terminal
 # and embedded in reports. Restrict them at the boundary so a hostile value
@@ -167,7 +187,7 @@ class PairQuote:
         takeability check that ignores it reports pairs as free money that are
         not. Merging is gasless, so the fee is the whole cost.
         """
-        return TAKER_FEE_RATE * sum(
+        return taker_fee_rate() * sum(
             price * (1.0 - price) for price in (self.ask_up, self.ask_down)
         )
 
@@ -213,11 +233,46 @@ def _sanitize_text(text: str) -> str:
 
 
 def _as_float(value: Any) -> Optional[float]:
-    """A venue number -> float, or None when the venue sent something else."""
+    """A venue number -> float, or None when the venue sent something else.
+
+    NaN and Infinity are "something else". `float("NaN")` parses happily, and
+    every comparison against the result is False -- so a NaN volume walks
+    straight past `volume_24h < min_volume_24h`, and every score derived from
+    it is NaN and sorts above every real market. Reject at the boundary, once,
+    rather than guarding each comparison downstream.
+    """
     try:
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _parse_volume(raw: Any) -> Optional[float]:
+    """24h volume -> float, or None when the row must be rejected outright.
+
+    Three cases, and collapsing any two of them is the bug this exists to
+    avoid:
+
+    * ABSENT or blank -> 0.0. A market with no measured flow, which the volume
+      bar then filters on its merits.
+    * NOT A NUMBER (a mangled string) -> 0.0. Same treatment: unusable reading,
+      no claim of flow.
+    * NaN or INFINITY -> None, reject the row. These PARSE, so `or 0.0` cannot
+      tell them from the first two, and every comparison against NaN is False
+      -- the row would clear the volume bar and then sort above every real
+      market on a NaN score.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return 0.0
+    parsed = _as_float(raw)
+    if parsed is not None:
+        return parsed
+    try:
+        float(raw)
+    except (TypeError, ValueError):
+        return 0.0      # never a number; no flow claimed
+    return None         # parsed, so it was NaN or Infinity: a venue error
 
 
 def parse_candidate(row: Any) -> Optional[Candidate]:
@@ -249,13 +304,17 @@ def parse_candidate(row: Any) -> Optional[Candidate]:
     if not isinstance(tokens, list) or len(tokens) != 2:
         return None
 
+    volume = _parse_volume(row.get("volume24hr"))
+    if volume is None:
+        return None
+
     return Candidate(
         condition_id=condition_id,
         slug=_sanitize_slug(str(row.get("slug") or "")),
         question=_sanitize_text(str(row.get("question") or "")),
         up_token=str(tokens[0]),
         down_token=str(tokens[1]),
-        volume_24h=_as_float(row.get("volume24hr")) or 0.0,
+        volume_24h=volume,
     )
 
 
@@ -301,6 +360,16 @@ def build_quote(
     up_ask = _touch(up_book, "asks")
     down_ask = _touch(down_book, "asks")
     if not (up_bid and down_bid and up_ask and down_ask):
+        return None
+
+    # A book whose ask sits at or below its bid is crossed or locked, which no
+    # live CLOB serves -- it is a half-stale `/book` response (fresh asks,
+    # stale bids). Left through, the negative leg spread makes `dislocation`
+    # positive, and because `rank` orders on `dislocation` first, a transport
+    # artifact lands at the top of the table under a line claiming the venue
+    # broke its own mirror invariant.
+    if up_ask[0] <= up_bid[0] or down_ask[0] <= down_bid[0]:
+        log.debug("crossed or locked book on %s, skipping", candidate.condition_id)
         return None
 
     bid_pair = up_bid[0] + down_bid[0]
@@ -352,6 +421,43 @@ def _fetch_book(token_id: str, clob_host: str, session: Any) -> Any:
         return None
 
 
+def _confirm_dislocation(
+    candidate: Candidate,
+    quote: PairQuote,
+    clob_host: str,
+    session: Any,
+) -> PairQuote:
+    """Re-read both books once; drop a dislocation that does not survive.
+
+    The two legs are fetched in two separate HTTP calls, seconds apart, so a
+    market that moves between them yields a pair that existed at no single
+    instant. Measured live on 2026-09-07: `Cassis: Gijs Brouwer vs Matteo
+    Martineau` reported a 1.00c dislocation on a 4.00c pair, and a re-read
+    moments later showed a perfectly mirrored book at a 1.00c spread. Without
+    confirmation, `dislocation` reports staleness -- and because `rank` orders
+    on it first, the stale row lands at the top of the table under a line
+    claiming the venue broke its own mirror invariant.
+
+    Returns the quote with `leg_spread_*` widened to kill the dislocation when
+    the second read does not agree. Everything else is left as first read: the
+    market is still a legitimate spread-capture candidate, it just is not a
+    mispricing.
+    """
+    recheck = build_quote(
+        candidate,
+        _fetch_book(candidate.up_token, clob_host, session),
+        _fetch_book(candidate.down_token, clob_host, session),
+    )
+    if recheck is not None and recheck.dislocation > 0.0:
+        return recheck
+
+    log.debug("dislocation on %s did not survive a re-read; dropping it",
+              candidate.condition_id)
+    return replace(quote,
+                   leg_spread_up=quote.edge_per_pair,
+                   leg_spread_down=quote.edge_per_pair)
+
+
 def scan(
     min_volume_24h: float = 50_000.0,
     limit: int = 70,
@@ -362,14 +468,23 @@ def scan(
     """Live markets ranked by pair economics. Read-only; places no orders."""
     session = session or _SESSION
 
-    r = session.get(
-        f"{gamma_host}/markets",
-        params={"closed": "false", "active": "true", "limit": 500,
-                "order": "volume24hr", "ascending": "false"},
-        timeout=SCAN_TIMEOUT,
-    )
-    r.raise_for_status()
-    rows = r.json()
+    # Guarded the same way `_fetch_book` is. A 502 HTML error page or a
+    # truncated body during a venue outage otherwise leaves `scan` through
+    # `HTTPError` or `ValueError`, and `_main` installs no handler -- the
+    # operator gets a traceback where every other mangled venue response is
+    # a skipped row.
+    try:
+        r = session.get(
+            f"{gamma_host}/markets",
+            params={"closed": "false", "active": "true", "limit": 500,
+                    "order": "volume24hr", "ascending": "false"},
+            timeout=SCAN_TIMEOUT,
+        )
+        r.raise_for_status()
+        rows = r.json()
+    except (requests.RequestException, ValueError) as exc:
+        log.warning("market list unavailable from %s: %s", gamma_host, exc)
+        return []
     if not isinstance(rows, list):
         return []
 
@@ -385,8 +500,14 @@ def scan(
             _fetch_book(candidate.up_token, clob_host, session),
             _fetch_book(candidate.down_token, clob_host, session),
         )
-        if quote is not None:
-            quotes.append(quote)
+        if quote is None:
+            continue
+        # A dislocation is an extraordinary claim -- the venue broke its own
+        # mirror invariant -- so it pays for a second paired read. Nothing else
+        # does: the 70 markets that read zero are never re-fetched.
+        if quote.dislocation > 0.0:
+            quote = _confirm_dislocation(candidate, quote, clob_host, session)
+        quotes.append(quote)
 
     return rank(quotes)
 

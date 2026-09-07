@@ -27,9 +27,13 @@ Journeys under test:
     not a traceback -- the same treatment a mangled book row already gets.
 11. As the Owner, importing this read-only module never raises over a trial knob
     that only gates order placement.
-12. As the Owner, a dislocation is confirmed by a second paired read before it is
-    reported, because the two books are fetched seconds apart and a market that
-    moves between the two calls fakes one.
+12. As the Owner, a dislocation is only ever reported off ONE venue snapshot --
+    both legs from a single `POST /books` carrying the same `timestamp` --
+    because two serial reads can always straddle a market move, however many
+    times they are repeated.
+13. As the Owner, when the batch read is unavailable the scan still ranks
+    markets, it just never claims a dislocation, because serial reads cannot
+    support that claim.
 """
 from __future__ import annotations
 

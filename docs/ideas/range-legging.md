@@ -265,3 +265,62 @@ reversion is real and composition explained the earlier grid.
 
 That one does need weeks, and it is the reason the recorder keeps running. The
 bar stays where it was set: **|t| > 3.0**.
+
+---
+
+# Settled: it was survivorship, and it took minutes, not weeks
+
+The addendum above said separating survivorship from composition needed the 103
+recorded markets to resolve first. That was wrong. The counterfactual can be
+built from markets that have **already** resolved, by deleting their endings.
+
+Take the 92 resolved tapes -- endings known -- and cut the last N days off each.
+That manufactures a "still open" sample out of markets whose outcome is in hand.
+Composition is held fixed by construction: same markets, same venue, same
+window. Only the ending moves.
+
+## Pooled across five cells, 92 markets
+
+| tape | n | mean | t |
+|---|---|---|---|
+| full, ending included | 1705 | **+0.712c** | **+2.75** |
+| last 1 day cut | 1328 | -0.135c | -0.63 |
+| last 2 days cut | 1043 | -0.380c | -1.88 |
+| last 3 days cut | 738 | **-0.671c** | **-3.30** |
+
+Monotonic in how much of the ending is removed, and the sign flips. Nothing
+about the markets changed; only whether their last three days are in the sample.
+
+## The number that closes it
+
+    real live-market sample        -0.711c   t = -3.33
+    resolved markets, ending cut   -0.671c   t = -3.30
+
+The live sample behaves exactly like a resolved sample with its ending
+amputated, because that is what it is. Every market in it still has its
+terminal move ahead of it.
+
+The sharpest cell makes the mechanism visible. `3c, 60m -> 60m` reads -0.09c at
+t=-0.46 on full tapes -- nothing at all -- and -0.90c at **t=-6.17** once three
+days are cut. Deleting the ending does not merely weaken the momentum reading,
+it **manufactures** a highly significant reversion reading out of noise.
+
+## The standing trap
+
+**Any backtest run on live, unresolved prediction markets is biased toward
+mean reversion, and the bias is large enough to invent significance that is not
+there.** A binary market's price must end at 0 or 1; a sample of markets that
+have not ended is a sample with that move systematically excluded. The bias is
+not a small correction — here it moved a pooled estimate by 1.4c and flipped
+its sign.
+
+Any future strategy measured on open markets in this repo has to be re-measured
+on resolved ones before its numbers mean anything. The reversion is real in the
+sample and unbankable in life, because every market eventually joins the other
+sample.
+
+## What this does not need
+
+It does not need the recorder to wait for anything. `core_brain/price_tape.py`
+is still worth running -- a bigger resolved sample sharpens every future test --
+but the survivorship question is closed, on data already in hand.

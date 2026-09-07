@@ -265,3 +265,98 @@ reversion is real and composition explained the earlier grid.
 
 That one does need weeks, and it is the reason the recorder keeps running. The
 bar stays where it was set: **|t| > 3.0**.
+
+---
+
+# Testing the survivorship explanation without waiting
+
+The addendum above said separating survivorship from composition needed the 103
+recorded markets to resolve first, and put that at four to eight weeks. That was
+wrong about the waiting: a counterfactual can be built today from markets that
+have **already** resolved, by deleting their endings.
+
+Take the 92 resolved tapes -- endings known -- and cut the last N days off each.
+That manufactures a "still open" sample out of markets whose outcome is in hand,
+holding the cohort fixed while moving only whether the terminal convergence is
+inside it.
+
+## Pooled over observations, 92 markets
+
+| tape | n | mean | t |
+|---|---|---|---|
+| full, ending included | 1705 | +0.712c | +2.75 |
+| last 1 day cut | 1328 | -0.135c | -0.63 |
+| last 2 days cut | 1043 | -0.380c | -1.88 |
+| last 3 days cut | 738 | -0.671c | -3.30 |
+
+Monotonic, and the sign flips. It also lands close to the real live-market
+reading, -0.671c against -0.711c.
+
+**This estimator weights observations equally, not markets.** Cutting terminal
+days removes observations unevenly -- a short tape loses proportionally more --
+so the shift above mixes the terminal effect with a change in which markets
+dominate the average. The pooled table alone cannot separate them.
+
+## Weighting markets equally, on an identical cohort
+
+One mean per market, then an unweighted average across markets, restricted to
+the 31 markets that clear a five-observation floor in **every** variant, so the
+same markets are compared with and without their endings:
+
+| tape | markets | mean of market means | t |
+|---|---|---|---|
+| full, ending included | 31 | +0.398c | +0.64 |
+| last 1 day cut | 31 | -0.262c | -0.45 |
+| last 2 days cut | 31 | -0.391c | -0.98 |
+| last 3 days cut | 31 | -0.704c | -1.75 |
+
+Paired, market by market:
+
+| shift | n | mean shift | t | markets that moved down |
+|---|---|---|---|---|
+| full -> cut 1d | 31 | -0.660c | -1.70 | 14/31 |
+| full -> cut 2d | 31 | -0.789c | -1.59 | 17/31 |
+| full -> cut 3d | 31 | -1.102c | -1.74 | 17/31 |
+
+**The direction survives equal weighting; the significance does not.** Every
+variant points the same way and the ordering is monotonic in how much of the
+ending is removed, but no cell reaches the pre-registered |t| > 3.0 bar, the
+paired shift reads t = -1.74, and only 17 of 31 markets moved down -- barely
+better than a coin flip. Most of the pooled t = -3.30 was observation weighting.
+
+## What this does and does not show
+
+**Shows.** Removing terminal days moves this estimator toward mean reversion,
+consistently in direction under both weightings and monotonically in the amount
+removed, on a fixed cohort where composition cannot explain it.
+
+**Does not show.** That the effect is statistically established once markets are
+weighted equally -- it is not, on 31 markets. That survivorship is the *only*
+explanation for the live-market reading: the live cohort and the resolved cohort
+still differ in composition, the live one holding long-dated politics and crypto
+while the resolved one holds shorter events, and nothing here controls for that.
+The numerical agreement between the cut-tape figure and the live figure is
+suggestive, not proof; two different cohorts can land on the same number.
+
+## What it means for the strategy anyway
+
+The practical conclusion does not rest on settling that question. The live-market
+reversion reading cannot be banked as an edge, for reasons that hold either way:
+
+* a plausible artifact, directionally confirmed here, can produce a reading like
+  it, so the reading is not clean evidence of an exploitable effect;
+* the full-accounting backtest on resolved markets already priced the trade at
+  **-$9.46**, with a stranded leg costing 31c and winning 14% of the time;
+* the reversion on offer is 0.7c to 4c against a 2c cost to cross.
+
+## The trap worth carrying forward
+
+Stated at the strength the evidence supports: **a backtest run on open
+prediction markets can be materially biased toward mean reversion by the
+terminal move it has not yet seen.** Measured here at 1.4c and a sign flip
+pooled, ~1.1c paired and not significant. Enough to require that any strategy
+measured on open markets in this repo be re-measured on resolved ones before its
+numbers are believed -- not enough to quantify the correction in advance.
+
+Settling it properly still wants the larger resolved cohort the recorder is
+collecting. The bar stays **|t| > 3.0**.

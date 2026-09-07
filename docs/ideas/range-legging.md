@@ -191,3 +191,77 @@ only the sample changes.
 The bar to clear is stated in advance so the answer cannot be fitted after the
 fact: **|t| > 3.0**, which is p<0.05 after Bonferroni across the 18-cell grid.
 Anything under that is the same noise this document already records.
+
+---
+
+# Addendum: the drift grid re-run on 1,962 market-days
+
+The first grid ran on 552 market-days because `/prices-history` was only asked
+for a few hours at a time. It serves far more than that for a market that is
+still open: 20 live markets held 438 market-days of minute tape already
+available on 2026-09-07, most long-dated ones serving the full 30 days.
+`core_brain/price_tape.py` now walks the request back a day at a time, and one
+seeding pass collected **103 markets, 2,825,483 minute points, 1,962
+market-days** -- 3.5x the original sample.
+
+## Every cell reversed sign
+
+Same estimator, non-overlapping, on markets that are still **open**:
+
+| trigger | lookback -> horizon | n | mean | t |
+|---|---|---|---|---|
+| 3c | 60m -> 60m | 1401 | -0.711c | **-3.33** |
+| 3c | 240m -> 60m | 2560 | -0.215c | -1.99 |
+| 5c | 60m -> 60m | 730 | -1.186c | -2.99 |
+| 5c | 60m -> 1440m | 167 | -3.949c | **-3.24** |
+| 5c | 240m -> 1440m | 196 | -2.102c | -2.20 |
+| 10c | 60m -> 1440m | 87 | -4.256c | -2.55 |
+
+**All 18 cells negative.** Two clear the pre-registered |t| > 3.0 bar. Mean
+reversion is real, measurable, and present in live markets -- the opposite of
+what the resolved-market grid said.
+
+## Which is the same estimator on the same venue
+
+| cell | live markets | resolved markets |
+|---|---|---|
+| 3c 60m -> 60m | -0.094c... **-0.711c**, t=-3.33 | -0.094c, t=-0.46 |
+| 5c 60m -> 1440m | **-3.949c**, t=-3.24 | **+2.600c**, t=+1.49 |
+| 5c 240m -> 1440m | **-2.102c**, t=-2.20 | **+2.870c**, t=+1.91 |
+
+Identical code, opposite signs. The only difference between the two samples is
+whether the market's ending is inside it.
+
+## What that means, and why it is not a green light
+
+The live sample is every top-volume market that is **still open today**. It
+therefore excludes, by construction, every market that ended during the window
+— which is exactly where the terminal convergence to 0 or 1 lives. Measuring
+reversion on markets that have not yet made their terminal move and calling it
+an edge is survivorship, and the resolved-market backtest already priced what
+that move costs: **-31c per stranded leg, won 14% of the time.**
+
+So the two results are not in conflict. Short-horizon reversion exists at
+roughly 0.7c to 4c. The terminal move costs 31c. Fading the move earns the
+first and eventually pays the second, which is precisely the -$9.46 the full
+accounting measured.
+
+Cost closes what is left. Fading the strongest **significant** cell earns
+3.9c gross against a 2c cross, and the strongest short-horizon cell earns 0.7c
+against the same 2c. One of eighteen cells is both significant and net-positive
+after cost, in the sample that is biased toward saying so.
+
+A second explanation is not excluded: the two samples also differ in
+composition, the live one holding long-dated politics and crypto while the
+resolved one holds short-lived events. Nothing here separates survivorship from
+composition.
+
+## The test that would separate them
+
+Re-run this grid on these same 103 markets **after they resolve**. Same tapes,
+same estimator, terminal move now included. If the sign flips back to the
+resolved-market reading, it was survivorship; if it holds negative, the
+reversion is real and composition explained the earlier grid.
+
+That one does need weeks, and it is the reason the recorder keeps running. The
+bar stays where it was set: **|t| > 3.0**.

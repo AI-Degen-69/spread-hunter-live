@@ -370,3 +370,193 @@ def test_summary_of_an_empty_store_is_not_an_error(tmp_path):
     assert summary.markets == 0
     assert summary.ticks == 0
     assert summary.first_ts is None
+
+
+# ------------------------------------------------------------------ deep backfill
+# The venue honours minute fidelity only inside a bounded window, so reaching
+# back past a day means walking the request back one day at a time. 20 live
+# markets hold 438 market-days of minute tape right now; not pulling it was the
+# reason the drift question looked like it needed weeks of forward recording.
+
+
+def test_backfill_walks_back_one_day_at_a_time(tmp_path):
+    store = _store(tmp_path)
+    store.record_market(_market())
+    session = _Session({"prices-history": {"history": []}})
+
+    backfill(store, "tok-up", session=session, hours=72, now=1_700_000_000)
+
+    windows = [(p["startTs"], p["endTs"]) for _u, p in session.calls]
+    assert windows == [
+        (1_700_000_000 - 86_400, 1_700_000_000),
+        (1_700_000_000 - 172_800, 1_700_000_000 - 86_400),
+        (1_700_000_000 - 259_200, 1_700_000_000 - 172_800),
+    ]
+    assert all(p["fidelity"] == 1 for _u, p in session.calls)
+
+
+def test_backfill_of_under_a_day_stays_one_request(tmp_path):
+    store = _store(tmp_path)
+    store.record_market(_market())
+    session = _Session({"prices-history": {"history": []}})
+
+    backfill(store, "tok-up", session=session, hours=6, now=1_700_000_000)
+
+    assert len(session.calls) == 1
+
+
+def test_backfill_sums_the_ticks_from_every_window(tmp_path):
+    store = _store(tmp_path)
+    store.record_market(_market())
+
+    def history(params):
+        return {"history": [{"t": params["startTs"] + 60, "p": 0.47}]}
+
+    session = _Session({"prices-history": history})
+
+    written = backfill(store, "tok-up", session=session, hours=72, now=1_700_000_000)
+
+    assert written == 3
+
+
+def test_a_failed_window_keeps_the_windows_already_stored(tmp_path):
+    store = _store(tmp_path)
+    store.record_market(_market())
+
+    def history(params):
+        if params["startTs"] < 1_700_000_000 - 172_800:
+            raise requests.ConnectionError("venue dropped it")
+        return {"history": [{"t": params["startTs"] + 60, "p": 0.47}]}
+
+    session = _Session({"prices-history": history})
+
+    with pytest.raises(requests.ConnectionError):
+        backfill(store, "tok-up", session=session, hours=72, now=1_700_000_000)
+
+    assert store.summary().ticks == 2, "the windows fetched before the failure survive"
+
+
+# ------------------------------------------------------------------ bad prices
+# A binary share is worth between $0.00 and $1.00. `float()` happily accepts
+# -1, 2, NaN and inf, and a tape holding one of those silently corrupts every
+# statistic computed from it later.
+
+
+def test_rejects_a_price_outside_the_zero_to_one_range():
+    ticks = parse_history({"history": [
+        {"t": 1_700_000_060, "p": -0.01},
+        {"t": 1_700_000_120, "p": 1.01},
+        {"t": 1_700_000_180, "p": 0.47},
+    ]})
+
+    assert ticks == [(1_700_000_180, 0.47)]
+
+
+def test_rejects_nan_and_infinity():
+    ticks = parse_history({"history": [
+        {"t": 1_700_000_060, "p": "NaN"},
+        {"t": 1_700_000_120, "p": "inf"},
+        {"t": 1_700_000_180, "p": "-inf"},
+        {"t": 1_700_000_240, "p": 0.5},
+    ]})
+
+    assert ticks == [(1_700_000_240, 0.5)]
+
+
+def test_keeps_the_boundary_prices():
+    ticks = parse_history({"history": [{"t": 1, "p": 0.0}, {"t": 2, "p": 1.0}]})
+
+    assert ticks == [(1, 0.0), (2, 1.0)]
+
+
+# ------------------------------------------------------------------ pagination
+# The venue caps a market page at 100 rows however large a limit is asked for.
+# Requesting 500 and reading the reply as the whole universe silently truncates
+# it: a --limit of 250 returned 100 markets on 2026-09-07.
+
+
+class _PagedSession:
+    """Serves market rows a page at a time, honouring `offset`."""
+
+    def __init__(self, rows, page_size=100, other=None):
+        self.rows = rows
+        self.page_size = page_size
+        self.other = other or {}
+        self.calls = []
+
+    def get(self, url, params=None, timeout=None):
+        params = dict(params or {})
+        self.calls.append((url, params))
+        for fragment, payload in self.other.items():
+            if fragment in url:
+                return _Response(payload)
+        offset = int(params.get("offset", 0))
+        return _Response(self.rows[offset:offset + self.page_size])
+
+
+def _rows(count, prefix="m"):
+    return [_row(conditionId=f"0x{prefix}{i}",
+                 clobTokenIds=json.dumps([f"{prefix}-up-{i}", f"{prefix}-dn-{i}"]))
+            for i in range(count)]
+
+
+def test_discovery_reads_past_the_first_page():
+    session = _PagedSession(_rows(250), page_size=100)
+
+    markets = discover_markets(session=session, min_volume=0.0, limit=250)
+
+    assert len(markets) == 250, "the venue caps a page at 100 rows"
+    assert len(session.calls) >= 3
+
+
+def test_discovery_stops_when_a_page_comes_back_empty():
+    session = _PagedSession(_rows(120), page_size=100)
+
+    markets = discover_markets(session=session, min_volume=0.0, limit=500)
+
+    assert len(markets) == 120
+
+
+def test_discovery_does_not_page_past_the_limit():
+    session = _PagedSession(_rows(250), page_size=100)
+
+    markets = discover_markets(session=session, min_volume=0.0, limit=50)
+
+    assert len(markets) == 50
+    assert len(session.calls) == 1, "one page already covered the limit"
+
+
+def test_resolution_finds_a_tracked_market_on_a_later_page(tmp_path):
+    store = _store(tmp_path)
+    store.record_market(_market(token_id="late-up-4", condition_id="0xlate4"))
+    rows = _rows(100, prefix="early") + [
+        _row(conditionId="0xlate4",
+             clobTokenIds=json.dumps(["late-up-4", "late-dn-4"]),
+             closed=True, outcomePrices=json.dumps(["1", "0"]))]
+    session = _PagedSession(rows, page_size=100)
+
+    stamped = refresh_resolutions(store, session=session)
+
+    assert stamped == 1
+    assert store.get_market("late-up-4").up_wins is True
+
+
+def test_resolution_stops_once_every_tracked_market_is_stamped(tmp_path):
+    store = _store(tmp_path)
+    store.record_market(_market(token_id="early-up-0", condition_id="0xearly0"))
+    rows = [_row(conditionId="0xearly0",
+                 clobTokenIds=json.dumps(["early-up-0", "early-dn-0"]),
+                 closed=True, outcomePrices=json.dumps(["1", "0"]))] + _rows(400)
+    session = _PagedSession(rows, page_size=100)
+
+    refresh_resolutions(store, session=session)
+
+    assert len(session.calls) == 1, "nothing tracked is left to look for"
+
+
+def test_resolution_with_nothing_tracked_asks_the_venue_nothing(tmp_path):
+    store = _store(tmp_path)
+    session = _PagedSession(_rows(100))
+
+    assert refresh_resolutions(store, session=session) == 0
+    assert session.calls == []

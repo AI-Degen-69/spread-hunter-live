@@ -41,17 +41,32 @@ log = logging.getLogger(__name__)
 GAMMA_HOST = os.environ.get("GAMMA_HOST", "https://gamma-api.polymarket.com")
 CLOB_HOST = os.environ.get("CLOB_HOST", "https://clob.polymarket.com")
 
-#: The venue serves at most this many market rows in one page.
-DISCOVERY_PAGE = 500
+#: The venue serves at most this many market rows in one page, whatever larger
+#: `limit` is asked for. Measured 2026-09-07: `--limit 250` returned 100
+#: markets. Reading one reply as the whole universe silently truncates it, so
+#: every caller pages instead.
+DISCOVERY_PAGE = 100
+
+#: A stop on the paging loop, so a venue that keeps serving rows cannot spin it.
+MAX_DISCOVERY_PAGES = 40
 
 #: Minute fidelity is the point. A coarser tape smooths away the very moves the
 #: drift test measures, and the venue silently ignores `fidelity` unless the
 #: request carries an explicit `startTs`/`endTs` window.
 TAPE_FIDELITY_MINUTES = 1
 
+#: The venue honours `fidelity` only inside a bounded window, and serves a day
+#: of minutes per request, so a deeper reach is walked back a day at a time.
+CHUNK_SECONDS = 86_400
+
 #: How far back each pass reaches. Comfortably longer than the poll interval so
-#: an late or skipped pass still closes its own gap.
+#: a late or skipped pass still closes its own gap.
 DEFAULT_BACKFILL_HOURS = 6.0
+
+#: How far back the FIRST pass reaches. The tape already exists on the venue for
+#: markets that are still open -- 20 live markets held 438 market-days of it on
+#: 2026-09-07 -- so the opening pass claims it instead of waiting to record it.
+DEFAULT_SEED_DAYS = 30.0
 
 #: Default cadence. The store dedups, so polling more often only costs requests.
 DEFAULT_POLL_SECONDS = 1800.0
@@ -262,7 +277,11 @@ def parse_history(payload: Any) -> list[tuple[int, float]]:
             continue
         ts = _as_int(point.get("t"))
         price = _as_float(point.get("p"))
-        if ts is None or price is None:
+        # A binary share is worth $0.00 to $1.00. `float()` accepts -1, 2,
+        # "NaN" and "inf" happily, and one of those in the tape corrupts every
+        # statistic computed from it later; the range check rejects the
+        # non-finite values too, because no comparison with NaN is ever true.
+        if ts is None or price is None or not 0.0 <= price <= 1.0:
             continue
         ticks.append((ts, price))
     return ticks
@@ -305,6 +324,30 @@ def _new_session() -> requests.Session:
     return session
 
 
+def _iter_market_pages(session: Any, gamma_host: str, params: dict[str, Any]):
+    """Yield gamma market rows a page at a time, advancing `offset`.
+
+    The endpoint caps a page at DISCOVERY_PAGE rows however large a `limit` is
+    asked for, so a single request is a truncated universe, not the whole one.
+    Paging stops on the first empty or short page.
+    """
+    offset = 0
+    for _page in range(MAX_DISCOVERY_PAGES):
+        response = session.get(
+            f"{gamma_host}/markets",
+            params={**params, "limit": DISCOVERY_PAGE, "offset": offset},
+            timeout=HTTP_TIMEOUT,
+        )
+        response.raise_for_status()
+        rows = response.json()
+        if not isinstance(rows, list) or not rows:
+            return
+        yield rows
+        if len(rows) < DISCOVERY_PAGE:
+            return
+        offset += len(rows)
+
+
 def discover_markets(
     *,
     session: Any,
@@ -313,24 +356,21 @@ def discover_markets(
     gamma_host: str = GAMMA_HOST,
 ) -> list[TapeMarket]:
     """Live markets worth recording, most traded first."""
-    response = session.get(
-        f"{gamma_host}/markets",
-        params={"closed": "false", "active": "true", "limit": DISCOVERY_PAGE,
-                "order": "volume24hr", "ascending": "false"},
-        timeout=HTTP_TIMEOUT,
-    )
-    response.raise_for_status()
-    rows = response.json()
-    if not isinstance(rows, list):
-        return []
     markets: list[TapeMarket] = []
-    for row in rows:
+    for rows in _iter_market_pages(
+        session, gamma_host,
+        {"closed": "false", "active": "true",
+         "order": "volume24hr", "ascending": "false"},
+    ):
+        for row in rows:
+            if len(markets) >= limit:
+                return markets
+            market = parse_market_row(row)
+            if market is None or market.volume_24h < min_volume:
+                continue
+            markets.append(market)
         if len(markets) >= limit:
             break
-        market = parse_market_row(row)
-        if market is None or market.volume_24h < min_volume:
-            continue
-        markets.append(market)
     return markets
 
 
@@ -347,17 +387,33 @@ def backfill(
 
     The window is explicit because `interval=max` silently ignores `fidelity`
     and hands back a coarse tape; only `startTs`/`endTs` honours minute detail.
+    That honouring is per bounded window, so reaching back further than a day
+    means walking the request back a day at a time rather than asking once.
+
+    It is worth reaching. Measured 2026-09-07, 20 live markets held 438
+    market-days of minute tape already available, and most long-dated markets
+    served the full 30 days. Pulling only the last few hours is what made the
+    drift question look like it needed weeks of forward recording.
+
+    Each window is stored as it arrives, so a window the venue refuses raises
+    after the earlier ones are already safe on disk.
     """
     end_ts = int(time.time()) if now is None else int(now)
     start_ts = end_ts - int(hours * 3600)
-    response = session.get(
-        f"{clob_host}/prices-history",
-        params={"market": token_id, "startTs": start_ts, "endTs": end_ts,
-                "fidelity": TAPE_FIDELITY_MINUTES},
-        timeout=HTTP_TIMEOUT,
-    )
-    response.raise_for_status()
-    return store.append_ticks(token_id, parse_history(response.json()))
+    written = 0
+    cursor = end_ts
+    while cursor > start_ts:
+        window_start = max(start_ts, cursor - CHUNK_SECONDS)
+        response = session.get(
+            f"{clob_host}/prices-history",
+            params={"market": token_id, "startTs": window_start, "endTs": cursor,
+                    "fidelity": TAPE_FIDELITY_MINUTES},
+            timeout=HTTP_TIMEOUT,
+        )
+        response.raise_for_status()
+        written += store.append_ticks(token_id, parse_history(response.json()))
+        cursor = window_start
+    return written
 
 
 def poll_once(
@@ -405,40 +461,37 @@ def refresh_resolutions(
     tracked = set(store.tracked_tokens())
     if not tracked:
         return 0
-    response = session.get(
-        f"{gamma_host}/markets",
-        params={"closed": "true", "limit": DISCOVERY_PAGE,
-                "order": "endDate", "ascending": "false"},
-        timeout=HTTP_TIMEOUT,
-    )
-    response.raise_for_status()
-    rows = response.json()
-    if not isinstance(rows, list):
-        return 0
     stamped = 0
-    for row in rows:
-        market = parse_market_row(row)
-        if market is None or market.token_id not in tracked:
-            continue
-        if not row.get("closed"):
-            continue
-        raw_prices = row.get("outcomePrices")
-        if isinstance(raw_prices, str):
-            try:
-                prices = json.loads(raw_prices)
-            except (ValueError, TypeError):
+    for rows in _iter_market_pages(
+        session, gamma_host,
+        {"closed": "true", "order": "endDate", "ascending": "false"},
+    ):
+        for row in rows:
+            market = parse_market_row(row)
+            if market is None or market.token_id not in tracked:
                 continue
-        elif isinstance(raw_prices, list):
-            prices = raw_prices
-        else:
-            continue
-        if not isinstance(prices, list) or not prices:
-            continue
-        up_final = _as_float(prices[0])
-        if up_final not in (0.0, 1.0):
-            continue
-        store.mark_resolved(market.token_id, up_final == 1.0)
-        stamped += 1
+            if not row.get("closed"):
+                continue
+            raw_prices = row.get("outcomePrices")
+            if isinstance(raw_prices, str):
+                try:
+                    prices = json.loads(raw_prices)
+                except (ValueError, TypeError):
+                    continue
+            elif isinstance(raw_prices, list):
+                prices = raw_prices
+            else:
+                continue
+            if not isinstance(prices, list) or not prices:
+                continue
+            up_final = _as_float(prices[0])
+            if up_final not in (0.0, 1.0):
+                continue
+            store.mark_resolved(market.token_id, up_final == 1.0)
+            tracked.discard(market.token_id)
+            stamped += 1
+        if not tracked:
+            break       # nothing left to look for; stop paging the venue
     return stamped
 
 
@@ -452,6 +505,10 @@ def _main(argv: Optional[list[str]] = None) -> int:
                         help="stop after this many markets per pass")
     parser.add_argument("--hours", type=float, default=DEFAULT_BACKFILL_HOURS,
                         help="how far back each pass reaches")
+    parser.add_argument("--seed-days", type=float, default=0.0,
+                        help=f"reach back this many days on the FIRST pass and "
+                             f"claim the tape the venue already holds "
+                             f"(try {DEFAULT_SEED_DAYS:.0f})")
     parser.add_argument("--interval", type=float, default=DEFAULT_POLL_SECONDS,
                         help="seconds between passes")
     parser.add_argument("--once", action="store_true",
@@ -471,9 +528,10 @@ def _main(argv: Optional[list[str]] = None) -> int:
         return 0
 
     session = _new_session()
+    hours = args.seed_days * 24.0 if args.seed_days else args.hours
     while True:
         result = poll_once(store, session=session, min_volume=args.min_volume,
-                           limit=args.limit, hours=args.hours)
+                           limit=args.limit, hours=hours)
         stamped = refresh_resolutions(store, session=session)
         s = store.summary()
         log.info("pass: %d markets, +%d ticks, %d failures, %d newly resolved "
@@ -482,6 +540,7 @@ def _main(argv: Optional[list[str]] = None) -> int:
                  s.markets, s.resolved, s.ticks)
         if args.once:
             return 0
+        hours = args.hours          # the deep seed is for the first pass only
         time.sleep(args.interval)
 
 

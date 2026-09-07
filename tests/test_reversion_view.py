@@ -13,8 +13,11 @@ Journeys under test:
    yet" for a file with the wrong schema is a page that lies for hours.
 6. As the Owner, a fade is priced at the quote it would really have traded at,
    never at the mid the move was measured on.
-7. As the Owner, the production registry is refused by name, at every layer
-   including the environment.
+7. As the Owner, the production registry is refused by name at EVERY entry
+   point -- the writer and both readers -- not only at the resolver a route
+   happens to call first.
+8. As the Owner, a jump caught minutes before the watch ends is settled by
+   the next run rather than lost, because the store is the record.
 """
 from __future__ import annotations
 
@@ -32,12 +35,15 @@ from core_brain.reversion_view import (
     reversion_status,
 )
 from core_brain.reversion_watch import (
+    FORWARD,
     band_of,
     fade_entry,
     fade_exit,
     has_started,
     open_store,
+    pending_trades,
     realised_cents,
+    settle,
 )
 
 BOOK = {"bid": 0.44, "bid_size": 900.0, "ask": 0.45, "ask_size": 800.0,
@@ -222,3 +228,113 @@ def test_an_unstamped_game_time_is_neither_before_nor_during():
     assert has_started("", 1_700_000_000) is None
     assert has_started("2020-01-01 00:00:00+00", 1_700_000_000) == 1
     assert has_started("2099-01-01 00:00:00+00", 1_700_000_000) == 0
+
+
+class _OneBook:
+    """A venue that answers every book read with the same two-sided quote."""
+
+    def __init__(self, bid=0.42, ask=0.43):
+        self.quote = {"bids": [{"price": str(bid), "size": "700"}],
+                      "asks": [{"price": str(ask), "size": "600"}]}
+        self.reads = 0
+
+    def get(self, url, params=None, timeout=None):
+        self.reads += 1
+        return self
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self.quote
+
+
+def test_the_writer_refuses_the_order_registry_too(tmp_path):
+    # The refusal used to live only in the resolver the HTTP route called, so
+    # a direct call to the writer walked straight past it and would have
+    # CREATED tables inside the production registry.
+    with pytest.raises(RefusedStore):
+        open_store(tmp_path / "orders.db")
+
+    assert not (tmp_path / "orders.db").exists()
+
+
+def test_both_readers_refuse_the_order_registry_directly(tmp_path):
+    registry = tmp_path / "orders.db"
+    registry.write_bytes(b"")
+
+    with pytest.raises(RefusedStore):
+        reversion_status(registry)
+    with pytest.raises(RefusedStore):
+        reversion_results(registry)
+
+
+def test_a_jump_caught_near_the_deadline_is_settled_by_the_next_run(tmp_path):
+    # The trade lived in memory and the process exited; only the store knows it
+    # is owed an exit. A later run must be able to pick it up and score it.
+    path = tmp_path / "reversion.db"
+    conn = open_store(path)
+    opened_at = 1_700_000_000
+    conn.execute(
+        "INSERT INTO events (ts,slug,league,band,in_game,direction,mid_before,"
+        "mid_now,entry_px,entry_size,spread_c,token_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (opened_at, "lol-a-b", "lol", "mid", 1, "up", 0.40, 0.44, 0.44,
+         500.0, 1.0, "tok-1"))
+    conn.commit()
+    conn.close()
+
+    later = open_store(path)
+    owed = pending_trades(later)
+    assert [t["id"] for t in owed] == [1]
+    assert owed[0]["due"] == opened_at + FORWARD
+
+    venue = _OneBook(bid=0.42, ask=0.43)
+    left = settle(later, owed, session=venue, now=opened_at + FORWARD)
+
+    assert left == []
+    # Faded an up-move at 0.44, bought it back at the 0.43 ask: one cent.
+    row = later.execute(
+        "SELECT pnl_c, exit_px FROM events WHERE id=1").fetchone()
+    assert row[0] == pytest.approx(1.0)
+    assert row[1] == pytest.approx(0.43)
+    later.close()
+
+
+def test_a_trade_still_inside_its_window_is_left_alone(tmp_path):
+    path = tmp_path / "reversion.db"
+    conn = open_store(path)
+    conn.execute(
+        "INSERT INTO events (ts,slug,league,band,in_game,direction,mid_before,"
+        "mid_now,entry_px,entry_size,spread_c,token_id) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        (1_700_000_000, "lol-a-b", "lol", "mid", 1, "up", 0.40, 0.44, 0.44,
+         500.0, 1.0, "tok-1"))
+    conn.commit()
+
+    venue = _OneBook()
+    left = settle(conn, pending_trades(conn), session=venue,
+                  now=1_700_000_000 + FORWARD - 1)
+
+    assert len(left) == 1
+    assert venue.reads == 0
+    assert conn.execute("SELECT pnl_c FROM events").fetchone()[0] is None
+    conn.close()
+
+
+def test_a_store_written_before_the_token_column_is_migrated(tmp_path):
+    path = tmp_path / "reversion.db"
+    with sqlite3.connect(path) as conn:
+        # The shape the first watch wrote: everything except the token.
+        conn.execute(
+            "CREATE TABLE events (id INTEGER PRIMARY KEY, ts INTEGER, "
+            "slug TEXT, league TEXT, band TEXT, in_game INTEGER, "
+            "direction TEXT, mid_before REAL, mid_now REAL, entry_px REAL, "
+            "entry_size REAL, spread_c REAL, exit_ts INTEGER, exit_px REAL, "
+            "exit_size REAL, pnl_c REAL)")
+
+    migrated = open_store(path)
+
+    columns = {row[1] for row in migrated.execute("PRAGMA table_info(events)")}
+    assert "token_id" in columns
+    migrated.close()

@@ -2135,7 +2135,14 @@ def get_reversion_status(db: str | None = None):
     not an error.
     """
     from core_brain.reversion_view import reversion_status
-    return JSONResponse(reversion_status(_reversion_store(db)))
+    # The page polls every 30s with a default fetch, so a browser would
+    # happily re-serve a stale 200 while the watch moved on.
+    return JSONResponse(reversion_status(_reversion_store(db)),
+                        headers={
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    })
 
 
 @app.get("/api/reversion/results")
@@ -2147,7 +2154,12 @@ def get_reversion_results(db: str | None = None):
     One pooled average over those groups would be true of none of them.
     """
     from core_brain.reversion_view import reversion_results
-    return JSONResponse(reversion_results(_reversion_store(db)))
+    return JSONResponse(reversion_results(_reversion_store(db)),
+                        headers={
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    })
 
 
 # PAGE_HTML: backward-compat shim for tests that reference the constant.

@@ -13,8 +13,9 @@ what the trade would really have paid, the spread already taken out of it.
 
 **It sends nothing.** No signer is loaded, no wallet is read, no order is built.
 Two public read endpoints, and its own SQLite file, which is never
-`data/orders.db` -- `reversion_view.resolve_reversion_db` refuses that name and
-this module writes only where it is told.
+`data/orders.db`: `resolve_store_path` below is the one gate every entry point
+on both sides of this feature -- the writer here, and both readers in
+`reversion_view` -- resolves through.
 
 The gates match the backward measurement exactly, because a forward number
 counted over different markets would not be comparable to it: match-winner
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sqlite3
 import time
 from collections import defaultdict, deque
@@ -63,6 +65,37 @@ DEFAULT_LEAGUES = "lol,cs2,dota2"
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB = PROJECT_ROOT / "data" / "reversion.db"
 
+#: Store names neither half of this feature will ever open, matched as a
+#: substring of the file name so `data/orders.db` and a copy called
+#: `orders.db.bak` are both refused. The guard lives here, on the lower module,
+#: so the writer and both readers share ONE gate: a refusal enforced at the
+#: resolver alone is a refusal every direct caller walks straight past.
+REFUSED_STORES = ("orders.db",)
+
+
+class RefusedStore(ValueError):
+    """The named store is not a reversion test and will not be opened."""
+
+
+def resolve_store_path(custom: str | Path | None = None) -> Path:
+    """Which store to use: the argument, `SHL_REVERSION_DB`, or the default.
+
+    Every entry point -- `open_store` on the writing side, `reversion_status`
+    and `reversion_results` on the reading side -- goes through here, so the
+    production registry is refused whether it arrives as an argument, as an
+    environment variable, or as a query parameter.
+    """
+    raw = custom or os.environ.get("SHL_REVERSION_DB") or DEFAULT_DB
+    path = Path(raw)
+    lowered = path.name.lower()
+    for refused in REFUSED_STORES:
+        if refused in lowered:
+            raise RefusedStore(
+                f"{path} is a live order registry, not a reversion test; "
+                f"this feature reads and writes recorded paper trades only")
+    return path
+
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
     id          INTEGER PRIMARY KEY,
@@ -77,6 +110,7 @@ CREATE TABLE IF NOT EXISTS events (
     entry_px    REAL NOT NULL,
     entry_size  REAL,
     spread_c    REAL,
+    token_id    TEXT,
     exit_ts     INTEGER,
     exit_px     REAL,
     exit_size   REAL,
@@ -94,13 +128,63 @@ CREATE TABLE IF NOT EXISTS quotes (
 
 
 def open_store(path: str | Path) -> sqlite3.Connection:
-    """Create or open the recorder's own store."""
-    path = Path(path)
+    """Create or open the recorder's own store, never the order registry."""
+    path = resolve_store_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.executescript(_SCHEMA)
+    # A store written before the token was recorded is migrated rather than
+    # abandoned: it holds real jumps, and the column is what lets a later run
+    # settle the ones this run could not.
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(events)")}
+    if "token_id" not in columns:
+        conn.execute("ALTER TABLE events ADD COLUMN token_id TEXT")
     conn.commit()
     return conn
+
+
+def pending_trades(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Jumps recorded but never scored, ready for any later run to settle.
+
+    A watch that ends within fifteen minutes of its last jump would otherwise
+    leave that jump unscored for good: the trade lived in memory, the process
+    exited, and nothing on disk said what still owed an exit. Reading them back
+    makes the store the record rather than the loop.
+    """
+    rows = conn.execute(
+        "SELECT id, slug, token_id, direction, entry_px, ts FROM events "
+        "WHERE pnl_c IS NULL ORDER BY ts").fetchall()
+    return [{"id": row[0], "slug": row[1], "token": row[2],
+             "direction": row[3], "entry_px": row[4], "due": row[5] + FORWARD}
+            for row in rows]
+
+
+def settle(conn: sqlite3.Connection, trades: list[dict[str, Any]], *,
+           session: Any, now: int) -> list[dict[str, Any]]:
+    """Score every trade whose fifteen minutes are up. Returns the rest."""
+    waiting = []
+    for trade in trades:
+        if now < trade["due"] or not trade.get("token"):
+            waiting.append(trade)
+            continue
+        try:
+            book = read_book(session, trade["token"])
+        except Exception as exc:            # noqa: BLE001 - retry next pass
+            log.debug("exit book unreadable for %s: %s", trade["slug"], exc)
+            waiting.append(trade)
+            continue
+        if book is None:
+            waiting.append(trade)
+            continue
+        exit_px, exit_size = fade_exit(book, trade["direction"])
+        conn.execute(
+            "UPDATE events SET exit_ts=?, exit_px=?, exit_size=?, pnl_c=? "
+            "WHERE id=?",
+            (now, exit_px, exit_size,
+             realised_cents(trade["direction"], trade["entry_px"], exit_px),
+             trade["id"]))
+    conn.commit()
+    return waiting
 
 
 def band_of(mid: float) -> str:
@@ -223,7 +307,12 @@ def watch(conn: sqlite3.Connection, *, session: Any, leagues: set[str],
     log.info("watching %d live match-winner markets in %s",
              len(markets), sorted(leagues))
     history: dict[str, deque] = defaultdict(lambda: deque(maxlen=20))
-    open_trades: list[dict[str, Any]] = []
+    # Jumps a previous run recorded but never scored come back with their
+    # token, so an interrupted watch loses nothing.
+    open_trades: list[dict[str, Any]] = pending_trades(conn)
+    if open_trades:
+        log.info("resuming %d unscored jumps from an earlier run",
+                 len(open_trades))
     deadline = now_fn() + minutes * 60
     opened = 0
 
@@ -261,12 +350,14 @@ def watch(conn: sqlite3.Connection, *, session: Any, leagues: set[str],
             direction, entry_px, entry_size = fade_entry(book, move)
             cursor = conn.execute(
                 "INSERT INTO events (ts,slug,league,band,in_game,direction,"
-                "mid_before,mid_now,entry_px,entry_size,spread_c) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "mid_before,mid_now,entry_px,entry_size,spread_c,token_id) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (now, slug, market["league"], band_of(mid),
                  has_started(market["start_raw"], now), direction, was, mid,
-                 entry_px, entry_size, (book["ask"] - book["bid"]) * 100.0))
-            open_trades.append({"id": cursor.lastrowid, "token": market["token"],
+                 entry_px, entry_size, (book["ask"] - book["bid"]) * 100.0,
+                 market["token"]))
+            open_trades.append({"id": cursor.lastrowid, "slug": slug,
+                                "token": market["token"],
                                 "direction": direction, "entry_px": entry_px,
                                 "due": now + FORWARD})
             opened += 1
@@ -275,30 +366,13 @@ def watch(conn: sqlite3.Connection, *, session: Any, leagues: set[str],
                      slug, band_of(mid), direction, was, mid, entry_px)
         conn.commit()
 
-        pending = []
-        for trade in open_trades:
-            if now_fn() < trade["due"]:
-                pending.append(trade)
-                continue
-            try:
-                book = read_book(session, trade["token"])
-            except Exception as exc:        # noqa: BLE001 - retry next pass
-                log.debug("exit book unreadable: %s", exc)
-                pending.append(trade)
-                continue
-            if book is None:
-                pending.append(trade)
-                continue
-            exit_px, exit_size = fade_exit(book, trade["direction"])
-            conn.execute(
-                "UPDATE events SET exit_ts=?, exit_px=?, exit_size=?, pnl_c=? "
-                "WHERE id=?",
-                (int(now_fn()), exit_px, exit_size,
-                 realised_cents(trade["direction"], trade["entry_px"], exit_px),
-                 trade["id"]))
-        open_trades = pending
-        conn.commit()
+        open_trades = settle(conn, open_trades, session=session,
+                             now=int(now_fn()))
         sleep_fn(max(0.0, POLL - (now_fn() - loop_start)))
+
+    # Anything already due when the deadline lands is scored before exit; what
+    # is still inside its fifteen minutes stays on disk for the next run.
+    settle(conn, open_trades, session=session, now=int(now_fn()))
     return opened
 
 

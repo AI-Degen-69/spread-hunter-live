@@ -28,39 +28,32 @@ report that the test found nothing.
 from __future__ import annotations
 
 import math
-import os
 import sqlite3
 import statistics
 from pathlib import Path
 from typing import Any, Optional
 
 from core_brain.price_tape import SIGNIFICANCE_T
-from core_brain.reversion_watch import DEFAULT_DB, MID_HI, MID_LO
+from core_brain.reversion_watch import (
+    MID_HI,
+    MID_LO,
+    REFUSED_STORES,
+    RefusedStore,
+    resolve_store_path,
+)
 
-#: Store names this viewer will never open, matched as a substring of the file
-#: name so `data/orders.db` and a copy called `orders.db.bak` are both refused.
-REFUSED_STORES = ("orders.db",)
+#: The reader's name for the one shared gate, kept so a caller reading this
+#: module need not know the writer is where it is defined.
+resolve_reversion_db = resolve_store_path
+
+__all__ = [
+    "MIN_GROUP_TRADES", "REFUSED_STORES", "RefusedStore",
+    "resolve_reversion_db", "reversion_results", "reversion_status",
+]
 
 #: Below this a group reports no certainty: with a handful of trades any such
 #: number says more about the sample size than about the venue.
 MIN_GROUP_TRADES = 10
-
-
-class RefusedStore(ValueError):
-    """The named store is not a reversion test and will not be opened."""
-
-
-def resolve_reversion_db(custom: str | Path | None = None) -> Path:
-    """Which store to read: the argument, `SHL_REVERSION_DB`, or the default."""
-    raw = custom or os.environ.get("SHL_REVERSION_DB") or DEFAULT_DB
-    path = Path(raw)
-    lowered = path.name.lower()
-    for refused in REFUSED_STORES:
-        if refused in lowered:
-            raise RefusedStore(
-                f"{path} is a live order registry, not a reversion test; "
-                f"this viewer reads recorded paper trades only")
-    return path
 
 
 def _read_only(path: Path) -> sqlite3.Connection:
@@ -78,8 +71,13 @@ def _read_only(path: Path) -> sqlite3.Connection:
 
 
 def reversion_status(path: str | Path) -> dict[str, Any]:
-    """How much the watch has collected. A store not there yet is a state."""
-    path = Path(path)
+    """How much the watch has collected. A store not there yet is a state.
+
+    The path is re-resolved rather than trusted: this is a public entry
+    point, and a guard only the HTTP route applies is one every other
+    caller walks past.
+    """
+    path = resolve_store_path(path)
     empty: dict[str, Any] = {
         "db": str(path), "exists": path.exists(), "state": "MISSING",
         "markets": 0, "events": 0, "scored": 0, "pending": 0,
@@ -135,8 +133,11 @@ def _summarise(values: list[float]) -> dict[str, Any]:
 
 
 def reversion_results(path: str | Path) -> dict[str, Any]:
-    """Realised cents per share, split by league and by price band."""
-    path = Path(path)
+    """Realised cents per share, split by league and by price band.
+
+    Re-resolves the path for the same reason `reversion_status` does.
+    """
+    path = resolve_store_path(path)
     empty: dict[str, Any] = {
         "db": str(path), "state": "MISSING", "groups": [], "overall": None,
         "significance_t": SIGNIFICANCE_T, "mid_band": [MID_LO, MID_HI],

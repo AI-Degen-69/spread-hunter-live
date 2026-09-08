@@ -176,8 +176,8 @@ def _score(entry: Quote, exit_: Quote, move: float) -> tuple[float, float, float
 
 def replay(tape: dict[str, list[Quote]], *, jump: float, horizon: int,
            look: int = LOOK, max_spread_c: float = MAX_SPREAD_C,
-           price_lo: float = PRICE_LO,
-           price_hi: float = PRICE_HI) -> list[Outcome]:
+           price_lo: float = PRICE_LO, price_hi: float = PRICE_HI,
+           games_from: Optional[int] = None) -> list[Outcome]:
     """Every jump in the tape, scored at one cell of the grid.
 
     The gates are the forward test's own -- price band, spread ceiling,
@@ -187,9 +187,18 @@ def replay(tape: dict[str, list[Quote]], *, jump: float, horizon: int,
     Jumps are separated by at least one `horizon`. A market that grinds a cent
     a minute otherwise re-qualifies on every read, and the same move gets
     counted once per minute it lasts.
+
+    `games_from` scores only games whose FIRST recorded quote is at or after
+    that stamp. Peeking at a growing tape and re-asking whether it crossed the
+    bar is what manufactures a crossing, so a real held-out run needs games
+    nobody has looked at yet. The cut is on the game rather than on the jump
+    because a match that was already running when the cut was taken has
+    already been read, however many of its jumps land after the timestamp.
     """
     outcomes: list[Outcome] = []
     for slug, rows in sorted(tape.items()):
+        if games_from is not None and (not rows or rows[0].ts < games_from):
+            continue
         league = slug.split("-")[0] if "-" in slug else slug
         last_ts = -math.inf
         for index, entry in enumerate(rows):
@@ -347,16 +356,21 @@ def _outranks(cell: dict[str, Any],
 
 
 def sweep(path: str | Path, *, jumps: Iterable[float] = DEFAULT_JUMPS,
-          horizons: Iterable[int] = DEFAULT_HORIZONS) -> dict[str, Any]:
+          horizons: Iterable[int] = DEFAULT_HORIZONS,
+          games_from: Optional[int] = None) -> dict[str, Any]:
     """Score the whole grid off one tape.
 
     A store that is not there yet reports `MISSING` rather than raising: the
     page and the CLI are both opened while the watch is still filling it.
+
+    `games_from` runs the grid over games that started at or after that stamp
+    and reports the cut it used, so a held-out answer cannot be mistaken later
+    for a full-tape one. See `replay` for why the cut is on the game.
     """
     path = resolve_store_path(path)
     empty: dict[str, Any] = {
         "db": str(path), "state": "MISSING", "cells": [], "by_league": [],
-        "best": None, "markets": 0, "quotes": 0,
+        "best": None, "markets": 0, "quotes": 0, "games_from": games_from,
         "significance_t": SIGNIFICANCE_T, "min_trades": MIN_GROUP_TRADES,
     }
     if not path.exists():
@@ -365,6 +379,9 @@ def sweep(path: str | Path, *, jumps: Iterable[float] = DEFAULT_JUMPS,
         tape = load_tape(path)
     except sqlite3.Error:
         return {**empty, "state": "UNREADABLE"}
+    if games_from is not None:
+        tape = {slug: rows for slug, rows in tape.items()
+                if rows and rows[0].ts >= games_from}
     if not tape:
         return {**empty, "state": "NO_TAPE"}
 
@@ -373,7 +390,8 @@ def sweep(path: str | Path, *, jumps: Iterable[float] = DEFAULT_JUMPS,
     best_outcomes: list[Outcome] = []
     for jump in jumps:
         for horizon in horizons:
-            outcomes = replay(tape, jump=jump, horizon=horizon)
+            outcomes = replay(tape, jump=jump, horizon=horizon,
+                              games_from=games_from)
             cell = summarise_cell(outcomes, jump=jump, horizon=horizon)
             cells.append(cell)
             if _outranks(cell, best_cell):
@@ -405,6 +423,9 @@ def _main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--horizons", default=",".join(
         str(horizon) for horizon in DEFAULT_HORIZONS),
         help="hold times in seconds, comma separated")
+    parser.add_argument("--games-from", type=int, default=None, metavar="STAMP",
+                        help="score only games whose first quote is at or "
+                             "after this unix stamp; a held-out run")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO,
@@ -413,9 +434,13 @@ def _main(argv: Optional[list[str]] = None) -> int:
         args.db,
         jumps=[float(part) for part in args.jumps.split(",") if part.strip()],
         horizons=[int(part) for part in args.horizons.split(",")
-                  if part.strip()])
+                  if part.strip()],
+        games_from=args.games_from)
     print(f"{report['db']}  state={report['state']}  "
           f"markets={report['markets']}  quotes={report['quotes']}")
+    if report["games_from"] is not None:
+        print(f"HELD OUT: games whose first quote is at or after "
+              f"{report['games_from']} only.")
     if report["state"] != "READY":
         return 0
 

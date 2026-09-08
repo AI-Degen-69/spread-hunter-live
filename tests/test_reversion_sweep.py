@@ -277,3 +277,42 @@ def test_a_cell_spread_over_enough_matches_still_reaches_tradable():
     cell = summarise_cell(outcomes, jump=0.05, horizon=300)
     assert cell["matches"] == 12
     assert cell["verdict"] == "TRADABLE"
+
+
+# 11 ------------------------------------------------------------------------
+def test_a_held_out_run_excludes_whole_games_not_whole_jumps():
+    """A game already on the tape is excluded entirely, not from the cut on.
+
+    Peeking at a growing sample and re-asking whether it crossed the bar is
+    what manufactures a crossing. The fix is to score only games that started
+    AFTER the question was fixed -- and a game that was already running when
+    the cut was taken is not one of them, however many of its jumps land after
+    the timestamp. Cutting by jump would let a game that was already read
+    contribute to its own held-out test.
+    """
+    early = _rise(start_ts=0)                 # first quote at t=0, jump at 360
+    late = _rise(start_ts=10_000)             # first quote at 10_000
+    tape = {"cs2-early-a": early, "cs2-late-b": late}
+
+    kept = replay(tape, jump=0.03, horizon=300, games_from=10_000)
+    assert [done.slug for done in kept] == ["cs2-late-b"]
+
+    # The early game's own jump lands at t=360, well after a cut of 300, and it
+    # is still excluded: the cut is on the game, not on the moment. Cutting by
+    # jump would have kept it and let a game already read into its own test.
+    still_kept = replay(tape, jump=0.03, horizon=300, games_from=300)
+    assert [done.slug for done in still_kept] == ["cs2-late-b"]
+
+
+def test_without_a_cut_every_game_on_the_tape_is_scored():
+    tape = {"cs2-early-a": _rise(start_ts=0),
+            "cs2-late-b": _rise(start_ts=10_000)}
+    assert len(replay(tape, jump=0.03, horizon=300)) == 2
+
+
+def test_the_report_says_which_cut_it_was_scored_under(tmp_path: Path):
+    path = _store(tmp_path, "cs2-a-b", _rise())
+    report = sweep(path, jumps=(0.03,), horizons=(300,), games_from=10_000)
+    assert report["games_from"] == 10_000
+    assert report["markets"] == 0
+    assert report["state"] == "NO_TAPE"

@@ -315,3 +315,4 @@ class TestTheBarClimbsTheWholeStack:
 
         assert seen.get("max_queue_minutes") == 15.0, (
             "main did not forward the bar -- the same bug one frame up")
+        assert seen.get("min_movement_usd") == fm.MIN_MOVEMENT_USD

@@ -63,6 +63,7 @@ TRADES_API = "https://data-api.polymarket.com/trades"
 MAX_BOOK_SPREAD = _CFG.select_max_book_spread
 
 GAMMA = "https://gamma-api.polymarket.com/markets"
+ORDERING_FALLBACK_PAGES = 5
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -360,7 +361,10 @@ def gamma_universe(session: requests.Session,
     past the first sub-floor row -- enough to audit the volume near-miss tail
     -- and records the truncation in the returned metadata instead of hiding
     it. `full_scan=True` (the operator's `--full-scan`) paginates until Gamma
-    returns nothing, bounded by `max_pages`.
+    returns nothing, bounded by `max_pages`. If the sort is inverted, normal
+    scans switch to per-row filtering for a smaller, separately bounded page
+    budget so qualifying rows are retained without turning every rank into a
+    general maximum-page scan.
 
     Cheap per-row filters (active/closed/archived, order book, accepting
     orders, binary, quoted spread) are applied here, and the rows they refuse
@@ -395,6 +399,7 @@ def gamma_universe(session: requests.Session,
     floor_seen = False
     ordering_violated = False
     boundary_pages_done = 0
+    ordering_fallback_pages_done = 0
 
     def _cheap_reject(kind: str, m: dict) -> None:
         meta["cheap_rejects"][kind] = meta["cheap_rejects"].get(kind, 0) + 1
@@ -506,16 +511,26 @@ def gamma_universe(session: requests.Session,
             page_cap = len(rows)
         if len(rows) < page_cap:
             break
-        if floor_seen and not ordering_violated and not full_scan:
-            if boundary_pages_done >= 1:
+        if floor_seen and not full_scan:
+            if ordering_violated:
+                ordering_fallback_pages_done += 1
+                if ordering_fallback_pages_done >= ORDERING_FALLBACK_PAGES:
+                    # The sort can no longer support a floor cutoff, so keep
+                    # filtering every fetched row but bound the degraded scan
+                    # separately from the general/full-scan page allowance.
+                    meta["truncated"] = True
+                    break
+            elif boundary_pages_done >= 1:
                 # Stopped on POLICY, not because the listing ended -- recorded
                 # as truncation so no reader mistakes the fetch for complete.
                 meta["truncated"] = True
                 break
-            boundary_pages_done += 1
-            # ONE boundary page past the floor: the volume near-miss tail is
-            # fetched and counted so the gate can be tuned from evidence,
-            # then the scan stops. `full_scan` keeps going to exhaustion.
+            else:
+                boundary_pages_done += 1
+                # ONE boundary page past the floor: the volume near-miss tail
+                # is fetched and counted so the gate can be tuned from
+                # evidence, then the scan stops. `full_scan` keeps going to
+                # exhaustion.
     else:
         meta["truncated"] = True            # stopped at max_pages, not exhaustion
     return out, meta
@@ -617,9 +632,10 @@ def evaluate(session: requests.Session, rate: float, m: dict,
              source: str = "spread", *,
              min_depth_usd: Optional[float] = None,
              min_volume_usd: Optional[float] = None,
+             min_movement_usd: Optional[float] = None,
              max_spread: Optional[float] = None,
              max_queue_minutes: Optional[float] = None,
-             queue_minutes_fn=None) -> dict | None:
+             queue_minutes_fn=None) -> dict:
     """Income and capital for one market, from its live book.
 
     `rate` is the market's pot in $/day. In the unified universe every pot is
@@ -681,8 +697,13 @@ def evaluate(session: requests.Session, rate: float, m: dict,
     # proceeds to the book gates and is recorded on the row, never treated
     # as flat, because a failed HTTP call must not empty the universe on one
     # bad minute at the venue.
-    movement_usd = traded_notional(session, m.get("condition_id"))
-    flat, flat_reason = movement_reject(movement_usd)
+    movement_bar = (MIN_MOVEMENT_USD if min_movement_usd is None
+                    else min_movement_usd)
+    movement_usd = traded_notional(
+        session, m.get("condition_id"), window_sec=MOVEMENT_WINDOW_SEC)
+    flat, flat_reason = movement_reject(
+        movement_usd, min_movement_usd=movement_bar,
+        window_sec=MOVEMENT_WINDOW_SEC)
     if flat:
         return _reject_row(source, flat_reason, m, volume_24h,
                            movement_usd=movement_usd,
@@ -809,7 +830,10 @@ def evaluate(session: requests.Session, rate: float, m: dict,
         sides.append(order_score(v, s, n, min_size))
     ours = q_min(sides[0], sides[1])
     if ours <= 0:
-        return None            # cannot score here without overbidding the book
+        return _reject_row(
+            source, "cannot score here without overbidding the book", m,
+            volume_24h, movement_usd=movement_usd,
+            **_book_stats(book_spreads, book_depths))
     income = rate * ours / (ours + theirs)
     capital = n * capital_per_share
 
@@ -1524,6 +1548,7 @@ def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],
                max_workers: int = 12,
                min_depth_usd: Optional[float] = None,
                min_volume_usd: Optional[float] = None,
+               min_movement_usd: Optional[float] = None,
                max_spread: Optional[float] = None,
                max_queue_minutes: Optional[float] = None,
                queue_minutes_fn=None) -> list[dict]:
@@ -1542,6 +1567,7 @@ def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],
                                    source=a[3],
                                    min_depth_usd=min_depth_usd,
                                    min_volume_usd=min_volume_usd,
+                                   min_movement_usd=min_movement_usd,
                                    max_spread=max_spread,
                                    max_queue_minutes=max_queue_minutes,
                                    queue_minutes_fn=queue_minutes_fn),
@@ -1551,9 +1577,9 @@ def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],
     return out
 
 
-def _score_universe(s: requests.Session, universe: list[dict],
-                    *, volume_bar: float,
-                    depth_bar: float, spread_bar: float) -> tuple[list[dict], int]:
+def _score_universe(universe: list[dict], *, volume_bar: float,
+                    movement_bar: float, depth_bar: float,
+                    spread_bar: float) -> tuple[list[dict], int]:
     """Score the unified universe and return (scored rows, attempted count).
 
     One job per candidate: the pot is ALWAYS spread capture --
@@ -1568,13 +1594,13 @@ def _score_universe(s: requests.Session, universe: list[dict],
             for m in universe]
     out = score_pool(jobs, min_depth_usd=depth_bar,
                      min_volume_usd=volume_bar,
+                     min_movement_usd=movement_bar,
                      max_spread=spread_bar,
                      max_queue_minutes=resolve_queue_bar(_CFG))
     return out, len(jobs)
 
 
-def _legacy_reward_candidates(s: requests.Session,
-                              volume_bar: float) -> tuple[list[dict], list[dict], list[tuple[float, dict]], dict[str, float]]:
+def _legacy_reward_candidates(s: requests.Session) -> tuple[list[dict], list[dict], list[tuple[float, dict]], dict[str, float]]:
     """The retired two-path scan, behind `--legacy-rewards`, for comparison.
 
     Returns (the old top-250 reward job list, additional legacy-only spread
@@ -1585,8 +1611,19 @@ def _legacy_reward_candidates(s: requests.Session,
     that actually trade publish clobRewards: 0.
     """
     # LEGACY PATH 1: the old /sampling-markets reward scan, verbatim.
-    data = s.get("https://clob.polymarket.com/sampling-markets",
-                 timeout=30).json()
+    try:
+        data = s.get("https://clob.polymarket.com/sampling-markets",
+                     timeout=30).json()
+    except (requests.Timeout, requests.ConnectionError, ValueError) as exc:
+        print("WARNING: legacy-rewards sampling-markets unavailable "
+              f"({type(exc).__name__}); continuing without legacy markets",
+              file=sys.stderr)
+        return [], [], [], {}
+    if not isinstance(data, dict):
+        print("WARNING: legacy-rewards sampling-markets returned an "
+              "unreadable response; continuing without legacy markets",
+              file=sys.stderr)
+        return [], [], [], {}
     cands = []
     for m in data.get("data") or []:
         if not m.get("accepting_orders") or m.get("closed"):
@@ -1620,6 +1657,7 @@ def main() -> None:
     trial_active = trial_bar != MIN_TOP3_DEPTH_USD
     volume_bar = _effective_volume_bar(args.trial_volume)
     volume_trial_active = volume_bar != MIN_VOLUME_24H
+    movement_bar = MIN_MOVEMENT_USD
     # WIDE-BOOK TRIAL (#145). Resolved here so the bar travels as an argument
     # from this frame down to `pair_books_allowed`, rather than as a module
     # global that a test cannot vary.
@@ -1650,7 +1688,7 @@ def main() -> None:
         print(f"  cheap filters: {summary}")
 
     out, attempted = _score_universe(
-        s, universe, volume_bar=volume_bar,
+        universe, volume_bar=volume_bar, movement_bar=movement_bar,
         depth_bar=trial_bar, spread_bar=spread_bar)
 
     # --legacy-rewards: the retired two-path scan, scored alongside the
@@ -1659,8 +1697,7 @@ def main() -> None:
     # pot/payout-floor treatment of the same books, not extra markets.
     cands: list[tuple[float, dict]] = []
     if args.legacy_rewards:
-        short, legacy_extra, cands, vols = _legacy_reward_candidates(
-            s, volume_bar)
+        short, legacy_extra, cands, vols = _legacy_reward_candidates(s)
         legacy_jobs = [(rate, m, vols.get(m["condition_id"]), "rewards")
                        for rate, m in short]
         legacy_jobs += [(spread_capture_daily(m["_volume_24h"], m["_spread"],
@@ -1669,7 +1706,8 @@ def main() -> None:
                        for m in legacy_extra]
         legacy_out = score_pool(
             legacy_jobs, min_depth_usd=trial_bar,
-            min_volume_usd=volume_bar, max_spread=spread_bar,
+            min_volume_usd=volume_bar, min_movement_usd=movement_bar,
+            max_spread=spread_bar,
             max_queue_minutes=resolve_queue_bar(_CFG))
         out += legacy_out
         attempted += len(legacy_jobs)
@@ -1782,7 +1820,7 @@ def main() -> None:
              f"spread <= {spread_bar:.2f}"
              f"{' (TRIAL)' if spread_trial_active else ''}, "
              f"resolves within {MAX_DAYS_TO_RESOLVE:.0f}d, "
-             f"movement >= ${MIN_MOVEMENT_USD:,.0f}/"
+             f"movement >= ${movement_bar:,.0f}/"
              f"{int(round(MOVEMENT_WINDOW_SEC / 60.0))}m, "
              f"income > 0 (spread; >= ${MIN_PAYOUT * FLOOR_MULTIPLE:.2f}/day "
              f"legacy-rewards only)\n")

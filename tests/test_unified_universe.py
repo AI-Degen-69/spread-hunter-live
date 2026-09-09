@@ -159,10 +159,34 @@ def test_exhaustion_at_the_boundary_is_not_truncation():
     assert meta["truncated"] is False
 
 
+def test_inverted_sort_uses_a_bounded_per_row_fallback():
+    pages = [
+        [_gamma_row("a", 900_000.0), _gamma_row("low-1", 1_000.0),
+         _gamma_row("b", 800_000.0)],
+    ]
+    for i in range(2, 8):
+        pages.append([
+            _gamma_row(f"low-{i}", 1_000.0),
+            _gamma_row(chr(ord("a") + i), 700_000.0 - i),
+            _gamma_row(f"tail-{i}", 500.0),
+        ])
+    s = _FakeSession(pages)
+
+    universe, meta = gamma_universe(
+        s, min_volume_usd=125_000.0, max_pages=20)
+
+    assert meta["ordering_violated"] is True
+    assert meta["pages_fetched"] == fm.ORDERING_FALLBACK_PAGES
+    assert meta["truncated"] is True
+    assert [m["condition_id"] for m in universe] == [
+        "a", "b", "c", "d", "e", "f"]
+    assert s.gamma_calls == fm.ORDERING_FALLBACK_PAGES
+
+
 def test_full_scan_keeps_paginating_to_exhaustion():
     s = _FakeSession([
-        [_gamma_row("a", 900_000.0), _gamma_row("b", 500_000.0),
-         _gamma_row("z", 1_000.0)],
+        [_gamma_row("a", 900_000.0), _gamma_row("z", 1_000.0),
+         _gamma_row("b", 500_000.0)],
         [_gamma_row("c", 10_000.0), _gamma_row("d", 20_000.0),
          _gamma_row("e", 30_000.0)],
         [],
@@ -174,6 +198,7 @@ def test_full_scan_keeps_paginating_to_exhaustion():
     # recorded as NOT truncated (contrast the bounded scan's policy stop).
     assert meta["pages_fetched"] == 2
     assert meta["truncated"] is False
+    assert meta["ordering_violated"] is True
     assert [m["condition_id"] for m in universe] == ["a", "b"]
 
 
@@ -251,6 +276,32 @@ def test_an_eligible_row_carries_movement_and_book_stats():
     assert row["no_spread"] == 0.04
     assert row["yes_depth_usd"] == 2400.0
     assert row["no_depth_usd"] == 2400.0
+
+
+class _ZeroScoreSession:
+    def get(self, url, params=None, timeout=None):
+        if "trades" in url:
+            return _Resp([{"timestamp": _time.time(), "price": 0.5,
+                           "size": 4000.0}])
+        return _Resp({
+            "bids": [{"price": "0.425", "size": "5000"}],
+            "asks": [{"price": "0.475", "size": "5000"}],
+        })
+
+
+def test_a_zero_ours_score_is_retained_as_a_rejection_row():
+    market = _universe_candidate("0xzero")
+    market["rewards"]["max_spread"] = 2.1
+    market["minimum_tick_size"] = 0.001
+
+    row = evaluate(_ZeroScoreSession(), 5.0, market,
+                   volume_24h=250_000.0, source="spread")
+
+    assert row["eligible"] is False
+    assert row["reject_reason"] == (
+        "cannot score here without overbidding the book")
+    assert row["cid"] == "0xzero"
+    assert row["movement_usd"] == pytest.approx(2000.0)
 
 
 def test_a_decided_mid_buckets_as_one_gate():
@@ -334,6 +385,65 @@ def test_the_legacy_reward_scan_runs_only_behind_the_flag(monkeypatch,
     snap = json.loads(
         (tmp_path / "pipeline.json").read_text(encoding="utf-8"))
     assert snap["counts"]["funded"] == 1
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [fm.requests.Timeout("timed out"),
+     fm.requests.ConnectionError("disconnected"),
+     ValueError("invalid json")],
+    ids=["timeout", "connection", "json"],
+)
+def test_unavailable_legacy_sampling_returns_an_empty_result(failure,
+                                                              capsys):
+    class BrokenResponse:
+        def json(self):
+            raise failure
+
+    class BrokenSession:
+        def get(self, url, params=None, timeout=None):
+            if isinstance(failure, ValueError):
+                return BrokenResponse()
+            raise failure
+
+    result = fm._legacy_reward_candidates(BrokenSession())
+
+    assert result == ([], [], [], {})
+    assert "continuing without legacy markets" in capsys.readouterr().err
+
+
+def test_legacy_sampling_failure_preserves_unified_output(monkeypatch,
+                                                           tmp_path):
+    class UnavailableLegacySession(_PagingSession):
+        def get(self, url, params=None, timeout=None):
+            if "sampling" in url:
+                raise fm.requests.Timeout("timed out")
+            return super().get(url, params=params, timeout=timeout)
+
+    unified_row = {
+        "source": "spread", "eligible": False,
+        "reject_reason": "cannot score here without overbidding the book",
+        "volume_24h": 900_000.0, "cid": "a", "title": "Market a",
+        "slug": "mkt-a",
+    }
+
+    def score(jobs, **kwargs):
+        return [unified_row] if jobs and jobs[0][3] == "spread" else []
+
+    monkeypatch.setattr(fm, "RUN", tmp_path)
+    monkeypatch.setattr(fm, "score_pool", score)
+    monkeypatch.setattr(fm.requests, "Session", UnavailableLegacySession)
+    monkeypatch.setattr(sys, "argv", ["filter_markets.py", "--legacy-rewards"])
+
+    fm.main()
+
+    rows = json.loads(
+        (tmp_path / "market_universe.json").read_text(encoding="utf-8"))["rows"]
+    assert rows == [unified_row]
+    pipeline = json.loads(
+        (tmp_path / "pipeline.json").read_text(encoding="utf-8"))
+    assert pipeline["counts"]["scored"] == 1
+    assert pipeline["counts"]["funded"] == 0
 
 
 # --- the universe file -------------------------------------------------------

@@ -253,6 +253,32 @@ def test_evaluate_refuses_a_flat_market_at_the_shipped_bar():
     assert "no movement" in row["reject_reason"]
 
 
+def test_evaluate_uses_the_injected_movement_bar():
+    session = _MarketSession([_trade(1.0, 0.23, 500.0)])
+
+    row = evaluate(session, 5.0, _candidate(), volume_24h=250_000.0,
+                   source="spread", min_movement_usd=0.0)
+
+    assert row["eligible"] is True
+
+
+def test_score_pool_forwards_the_movement_bar(monkeypatch):
+    from scripts import filter_markets as fm
+
+    seen = {}
+
+    def spy(session, rate, market, volume_24h=None, source="spread", **kwargs):
+        seen.update(kwargs)
+        return {"eligible": False, "reject_reason": "test"}
+
+    monkeypatch.setattr(fm, "evaluate", spy)
+    fm.score_pool([(1.0, _candidate(), 250_000.0, "spread")],
+                  session_factory=lambda: object(), max_workers=1,
+                  min_movement_usd=123.0)
+
+    assert seen["min_movement_usd"] == 123.0
+
+
 def test_an_unmeasured_tape_never_refuses_a_liquid_market():
     # Arrange — the tape read fails; the books answer fine. Refusing here
     # would empty the universe on one bad minute at the venue, so the row

@@ -158,6 +158,46 @@ def test_stop_idle_service_is_a_clean_noop(client, no_spawn):
     assert "not running" in res.json()["message"]
 
 
+def test_stop_clears_a_dead_entry_from_the_file(prod_client, no_spawn):
+    procs_file = dash_mod.LIVE_ROOT / "runtime" / "processes.json"
+    procs_file.parent.mkdir(parents=True, exist_ok=True)
+    procs_file.write_text(json.dumps({
+        "filter": {"pid": 99999999, "started_at": 1.0},
+        "starting_account_value": 100.0,
+    }), encoding="utf-8")
+
+    res = prod_client.post("/api/system/service/stop?service=filter", headers=_control())
+    assert res.json()["ok"] is True
+
+    saved = json.loads(procs_file.read_text(encoding="utf-8"))
+    assert "filter" not in saved
+    assert saved["starting_account_value"] == 100.0
+
+
+def test_master_stop_holds_the_ops_lock(client, no_spawn, monkeypatch):
+    procs_file = dash_mod.LIVE_ROOT / "runtime" / "processes.json"
+    procs_file.parent.mkdir(parents=True, exist_ok=True)
+    procs_file.write_text(json.dumps({
+        "starting_account_value": 100.0,
+    }), encoding="utf-8")
+
+    seen_locked = []
+    real_acquire = dash_mod._acquire_ops_lock
+
+    def _spy_acquire():
+        fd, err = real_acquire()
+        if fd is not None:
+            seen_locked.append(True)
+            assert (dash_mod.LIVE_ROOT / "runtime" / ".bot_start.lock").exists()
+        return fd, err
+
+    monkeypatch.setattr(dash_mod, "_acquire_ops_lock", _spy_acquire)
+    res = client.post("/api/system/stop", headers=_control())
+    assert res.json()["ok"] is True
+    assert seen_locked, "stop_bot must take the ops lock"
+    assert not (dash_mod.LIVE_ROOT / "runtime" / ".bot_start.lock").exists()
+
+
 def test_stop_rejects_unknown_service(client, no_spawn):
     res = client.post("/api/system/service/stop?service=watchdog", headers=_control())
     assert res.json()["ok"] is False

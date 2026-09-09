@@ -818,7 +818,8 @@ def stop_service(name: str) -> dict:
 
         info = service_entry(saved_procs, name)
         pid = info.get("pid")
-        if pid and _is_pid_alive(pid, info.get("started_at")):
+        alive = bool(pid and _is_pid_alive(pid, info.get("started_at")))
+        if alive:
             try:
                 if sys.platform == "win32":
                     subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
@@ -826,16 +827,17 @@ def stop_service(name: str) -> dict:
                     os.kill(int(pid), 15)
             except Exception:
                 pass
-            saved_procs.pop(name, None)
-            # A legacy key (screener/engine/fleet) may hold this service's
-            # record when the stack predates the rename; drop it too so the
-            # next status poll does not resurrect the entry.
-            for legacy in ({"filter": ("screener",), "query": ("engine",), "decide": ("fleet",)}[name]):
-                saved_procs.pop(legacy, None)
-            procs_file = runtime_file("processes.json", root=LIVE_ROOT)
-            procs_file.write_text(json.dumps(saved_procs, indent=2), encoding="utf-8")
-            return {"ok": True, "message": f"Service {name} stopped", "status": get_system_status()}
         saved_procs.pop(name, None)
+        # A legacy key (screener/engine/fleet) may hold this service's
+        # record when the stack predates the rename; drop it too so the
+        # next status poll does not resurrect the entry.
+        for legacy in ({"filter": ("screener",), "query": ("engine",), "decide": ("fleet",)}[name]):
+            saved_procs.pop(legacy, None)
+        procs_file = runtime_file("processes.json", root=LIVE_ROOT)
+        procs_file.parent.mkdir(parents=True, exist_ok=True)
+        procs_file.write_text(json.dumps(saved_procs, indent=2), encoding="utf-8")
+        if alive:
+            return {"ok": True, "message": f"Service {name} stopped", "status": get_system_status()}
         return {"ok": True, "message": f"Service {name} was not running", "status": get_system_status()}
     finally:
         _release_ops_lock(lock_fd)
@@ -1048,69 +1050,12 @@ def start_bot() -> dict:
     # button while RUNNING, but a double click in the poll gap, a reload, or a
     # direct POST all bypass button state -- and live_procs.json only remembers
     # the newest PIDs, so stop_bot could never reach the first pair.
-    # Interprocess lock prevents concurrent start_bot calls from racing.
-    lock_file = runtime_file(".bot_start.lock", root=LIVE_ROOT)
-    lock_file.parent.mkdir(parents=True, exist_ok=True)
-
-    # Acquire exclusive lock by atomic file creation.
-    lock_fd = None
-    try:
-        lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        os.write(lock_fd, f"{os.getpid()}\n".encode())
-    except FileExistsError:
-        # Another start_bot call holds the lock; check if it's stale.
-        try:
-            if not lock_file.exists():
-                # Lock file disappeared between FileExistsError and this check; retry acquisition
-                try:
-                    lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                    os.write(lock_fd, f"{os.getpid()}\n".encode())
-                except Exception:
-                    return {
-                        "ok": False,
-                        "message": "Failed to acquire startup lock after retry; another start may be running.",
-                        "status": get_system_status(),
-                    }
-            else:
-                lock_age = time.time() - lock_file.stat().st_mtime
-                if lock_age > 30:  # Stale lock from crashed process
-                    lock_file.unlink()
-                    try:
-                        lock_fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                        os.write(lock_fd, f"{os.getpid()}\n".encode())
-                    except FileExistsError:
-                        # Raced with another process; retry from the top
-                        return {
-                            "ok": False,
-                            "message": "Failed to acquire startup lock after removing stale lock; another start won the race.",
-                            "status": get_system_status(),
-                        }
-                else:
-                    return {
-                        "ok": False,
-                        "message": "Another start_bot request is in progress; refusing concurrent start.",
-                        "status": get_system_status(),
-                    }
-        except Exception:
-            return {
-                "ok": False,
-                "message": "Failed to acquire startup lock; another start may be running.",
-                "status": get_system_status(),
-            }
-    except Exception as e:
-        return {
-            "ok": False,
-            "message": f"Failed to acquire startup lock: {e}",
-            "status": get_system_status(),
-        }
-
-    # Ensure lock_fd is set before proceeding
+    # The ops lock is shared with start_service/stop_service/stop_bot: without
+    # it a master STOP can unlink processes.json while a per-service START
+    # holds it and then rewrites a dead PID back to life.
+    lock_fd, lock_err = _acquire_ops_lock()
     if lock_fd is None:
-        return {
-            "ok": False,
-            "message": "Failed to acquire startup lock",
-            "status": get_system_status(),
-        }
+        return {"ok": False, "message": lock_err, "status": get_system_status()}
 
     launched_procs = []
     try:
@@ -1232,17 +1177,7 @@ def start_bot() -> dict:
             "status": get_system_status(),
         }
     finally:
-        # Release lock on all exit paths, but only if we actually acquired it.
-        if lock_fd is not None:
-            try:
-                os.close(lock_fd)
-            except Exception:
-                pass
-            # Only unlink if we successfully acquired the lock (lock_fd is not None means we own it)
-            try:
-                lock_file.unlink()
-            except Exception:
-                pass
+        _release_ops_lock(lock_fd)
 
 
 def stop_bot() -> dict:
@@ -1251,8 +1186,23 @@ def stop_bot() -> dict:
     Reads through resolve_runtime_file, so a stack recorded in the pre-rename
     run/live_procs.json is still reachable. The loop below walks whatever keys
     the file holds, which covers the old screener/engine/fleet names too.
+
+    Holds the ops lock: without it a concurrent per-service start can write a
+    fresh PID into processes.json between our kill loop and the unlink, and
+    that entry dies with the file while its process keeps running.
     """
     import subprocess
+    lock_fd, lock_err = _acquire_ops_lock()
+    if lock_fd is None:
+        return {"ok": False, "message": lock_err, "status": get_system_status()}
+    try:
+        return _stop_bot_locked(subprocess)
+    finally:
+        _release_ops_lock(lock_fd)
+
+
+def _stop_bot_locked(subprocess) -> dict:
+    """The stop itself; caller must hold the ops lock."""
     procs_file = resolve_runtime_file("processes.json", root=LIVE_ROOT)
     if procs_file.exists():
         try:

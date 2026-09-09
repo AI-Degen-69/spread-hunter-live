@@ -2312,10 +2312,20 @@ def main():
                         help="Port to bind (default: $PORT, else 8799)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host interface (default: 127.0.0.1)")
     parser.add_argument("--db", type=str, default=None, help="Path to orders.db SQLite file")
+    parser.add_argument("--reload", action="store_true",
+                        help="Auto-reload on code changes (dev convenience; reload is off in production)")
     args = parser.parse_args()
 
     if args.db:
         set_db_override(args.db)
+
+    if args.reload and args.db:
+        # In reload mode uvicorn re-imports `dashboard.server` in a child
+        # process, which does NOT inherit this module's globals — the override
+        # set above would be lost and a shadow `--db` launch would silently
+        # fall back to the live database. `resolve_db_path` reads this env var
+        # when no CLI override is set, so the child reaches the same store.
+        os.environ["LIVE_DB_PATH"] = str(Path(args.db))
 
     port = resolve_port(args.port)
 
@@ -2328,7 +2338,13 @@ def main():
         _capture_starting_capital()
     except Exception:
         pass
-    uvicorn.run(app, host=args.host, port=port)
+    uvicorn.run("dashboard.server:app", host=args.host, port=port,
+                reload=args.reload,
+                # Watch only the dashboard's own code. Without this, a reload
+                # watcher rooted at the project restarts the monitor when
+                # core_brain or scripts change -- the observer must never be
+                # restarted by the thing it is observing.
+                reload_dirs=["dashboard"] if args.reload else None)
 
 
 if __name__ == "__main__":

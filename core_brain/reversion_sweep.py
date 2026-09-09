@@ -34,6 +34,7 @@ import math
 import sqlite3
 import statistics
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, NamedTuple, Optional
 
@@ -420,6 +421,29 @@ def _t(sureness: Optional[float]) -> str:
     return "--" if sureness is None else f"{sureness:.2f}"
 
 
+def _games_from(value: str) -> int:
+    """The --games-from cut, as unix seconds.
+
+    Accepts either the raw epoch-seconds integer (what the report prints, so
+    a previous held-out cut can be re-used verbatim) or a date a human
+    naturally types: `2026-09-05`, optionally with a time
+    (`2026-09-05T14:30`, `2026-09-05 14:30`). A bare date means midnight UTC
+    of that day. Anything else is an argparse error naming both forms.
+    """
+    text = value.strip()
+    if text.lstrip("-").isdigit():
+        return int(text)
+    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return int(datetime.strptime(text, fmt)
+                       .replace(tzinfo=timezone.utc).timestamp())
+        except ValueError:
+            continue
+    raise argparse.ArgumentTypeError(
+        f"{value!r} is not a unix stamp (e.g. 1788600000) or a date "
+        f"(YYYY-MM-DD, optionally with HH:MM)")
+
+
 def _main(argv: Optional[list[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--db", default=str(DEFAULT_DB),
@@ -430,9 +454,11 @@ def _main(argv: Optional[list[str]] = None) -> int:
     parser.add_argument("--horizons", default=",".join(
         str(horizon) for horizon in DEFAULT_HORIZONS),
         help="hold times in seconds, comma separated")
-    parser.add_argument("--games-from", type=int, default=None, metavar="STAMP",
+    parser.add_argument("--games-from", type=_games_from, default=None,
+                        metavar="STAMP|YYYY-MM-DD",
                         help="score only games whose first quote is at or "
-                             "after this unix stamp; a held-out run")
+                             "after this unix stamp (or date, YYYY-MM-DD); "
+                             "a held-out run")
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO,

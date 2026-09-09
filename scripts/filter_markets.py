@@ -1614,7 +1614,10 @@ def _legacy_reward_candidates(s: requests.Session) -> tuple[list[dict], list[dic
     try:
         data = s.get("https://clob.polymarket.com/sampling-markets",
                      timeout=30).json()
-    except (requests.Timeout, requests.ConnectionError, ValueError) as exc:
+    except Exception as exc:
+        # The file's fail-soft contract, not a list of expected errors: a
+        # ChunkedEncodingError from a flaky CDN aborts main() just as dead
+        # as a timeout, and by this point a full scored pool is in hand.
         print("WARNING: legacy-rewards sampling-markets unavailable "
               f"({type(exc).__name__}); continuing without legacy markets",
               file=sys.stderr)

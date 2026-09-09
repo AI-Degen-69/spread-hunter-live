@@ -310,6 +310,24 @@ def test_without_a_cut_every_game_on_the_tape_is_scored():
     assert len(replay(tape, jump=0.03, horizon=300)) == 2
 
 
+def test_games_from_accepts_a_date_or_an_epoch_stamp():
+    from core_brain.reversion_sweep import _games_from
+
+    midnight_utc = 1788566400          # 2026-09-05T00:00:00Z
+    assert _games_from("2026-09-05") == midnight_utc
+    assert _games_from("2026-09-05T14:30") == midnight_utc + 14 * 3600 + 30 * 60
+    assert _games_from("2026-09-05 14:30") == midnight_utc + 14 * 3600 + 30 * 60
+    assert _games_from("1788624000") == 1788624000
+
+    import argparse as _argparse
+    try:
+        _games_from("09/05/2026")
+    except _argparse.ArgumentTypeError as exc:
+        assert "unix stamp" in str(exc) and "YYYY-MM-DD" in str(exc)
+    else:
+        raise AssertionError("an unparseable stamp must be an argparse error")
+
+
 def test_the_report_says_which_cut_it_was_scored_under(tmp_path: Path):
     path = _store(tmp_path, "cs2-a-b", _rise())
     report = sweep(path, jumps=(0.03,), horizons=(300,), games_from=10_000)

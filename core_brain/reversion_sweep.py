@@ -120,13 +120,19 @@ def load_tape(path: str | Path) -> dict[str, list[Quote]]:
         return {}
     uri = f"file:{path.as_posix().replace('?', '%3f').replace('#', '%23')}?mode=ro"
     tape: dict[str, list[Quote]] = {}
-    with sqlite3.connect(uri, uri=True) as conn:
+    # sqlite3's connection context manager commits or rolls back a
+    # transaction; it does NOT close the handle on exit. Explicit close so a
+    # long-lived sweep process does not leak one per store it reads.
+    conn = sqlite3.connect(uri, uri=True)
+    try:
         for slug, ts, bid, ask in conn.execute(
                 "SELECT slug, ts, bid, ask FROM quotes "
                 "WHERE bid IS NOT NULL AND ask IS NOT NULL "
                 "ORDER BY slug, ts"):
             tape.setdefault(str(slug), []).append(
                 Quote(int(ts), float(bid), float(ask)))
+    finally:
+        conn.close()
     return tape
 
 
@@ -138,19 +144,20 @@ def _look_back(rows: list[Quote], index: int, look: int) -> Optional[Quote]:
     had in its own deque.
     """
     now = rows[index].ts
-    for earlier in reversed(rows[:index]):
-        age = now - earlier.ts
+    for position in range(index - 1, -1, -1):
+        age = now - rows[position].ts
         if age > look + LOOK_SLACK:
             return None
         if age >= look - POLL:
-            return earlier
+            return rows[position]
     return None
 
 
 def _first_after(rows: list[Quote], index: int, horizon: int) -> Optional[Quote]:
     """The first read a full horizon after this one, or None if the tape ends."""
     due = rows[index].ts + horizon
-    for later in rows[index + 1:]:
+    for position in range(index + 1, len(rows)):
+        later = rows[position]
         if later.ts >= due:
             return later
     return None

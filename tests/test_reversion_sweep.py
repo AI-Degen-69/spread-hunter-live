@@ -316,3 +316,33 @@ def test_the_report_says_which_cut_it_was_scored_under(tmp_path: Path):
     assert report["games_from"] == 10_000
     assert report["markets"] == 0
     assert report["state"] == "NO_TAPE"
+
+
+def test_a_held_out_sweep_with_a_surviving_game_reports_one_market(tmp_path: Path):
+    """The survivor path: the cut removes one game and keeps one.
+
+    replay() drops the early game's outcomes on its own, so the cells would
+    look right even if sweep()'s tape filter were deleted -- but `markets`
+    and `quotes` would then report the FULL tape. Those two numbers are how
+    a reader judges whether a held-out result has any sample behind it, so
+    this test pins them to the cut population. The NO_TAPE test above only
+    covers the every-game-removed case.
+    """
+    path = _store(tmp_path, "cs2-early-a", _rise(start_ts=0))
+    extra = open_store(path)
+    extra.executemany(
+        "INSERT OR IGNORE INTO quotes VALUES (?,?,?,?)",
+        [("cs2-late-b", q.ts, q.bid, q.ask) for q in _rise(start_ts=10_000)])
+    extra.commit()
+    extra.close()
+
+    report = sweep(path, jumps=(0.03,), horizons=(300,), games_from=10_000)
+
+    assert report["state"] == "READY"
+    assert report["markets"] == 1, (
+        "markets must count the CUT population, not the full tape")
+    assert report["quotes"] == len(_rise(start_ts=10_000)), (
+        "quotes must count the CUT population, not the full tape")
+    assert report["games_from"] == 10_000
+    # The kept game's outcome made it into the cell.
+    assert report["cells"][0]["trades"] == 1

@@ -794,7 +794,18 @@ function Open-Dashboard {
         if ($ok) {
             Lsh-Step "Sweeping Polymarket account balance to sync live starting capital..."
             try {
-                & python -m core_brain.order_manager account-sweep --quiet
+                # `python -m` resolves modules against the caller's cwd, and
+                # every Start-Process launch in this script pins
+                # -WorkingDirectory $ProjectPath for exactly that reason. A
+                # direct `& python` call inherits the shell's location, so a
+                # menu launched outside the repo root died here with
+                # ModuleNotFoundError: No module named 'core_brain'.
+                Push-Location $ProjectPath
+                try {
+                    & python -m core_brain.order_manager account-sweep --quiet
+                } finally {
+                    Pop-Location
+                }
                 if ($LASTEXITCODE -ne 0) {
                     Lsh-Warn "Initial account sweep exited with code $LASTEXITCODE; using local registry marks."
                 }
@@ -1820,7 +1831,14 @@ function Reset-Environment {
             Lsh-Ok "Report:   $reportPath"
             if (Start-ShadowDashboard) {
                 Lsh-Step "Running the market ranker before starting the validation loop..."
-                & python -m scripts.rank_markets
+                # Same cwd pin as the live account sweep above: `python -m`
+                # resolves against the caller's location, not the repo.
+                Push-Location $ProjectPath
+                try {
+                    & python -m scripts.rank_markets
+                } finally {
+                    Pop-Location
+                }
                 if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $ProjectPath "runtime/markets.json"))) {
                     Lsh-Fail "Market ranking failed; validation loop was not started. See runtime/rerank.log or ranker output."
                     return $false

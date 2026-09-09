@@ -2113,9 +2113,13 @@ td { font-size: 13px; }
   border-radius: 4px;
   border: 1px solid rgba(255, 255, 255, 0.05);
   margin-top: 8px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* The full launch command must stay readable: wrap onto as many lines
+     as the tile needs instead of cutting off behind an ellipsis. */
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
 }
 
 /* Parameter Bento Card */

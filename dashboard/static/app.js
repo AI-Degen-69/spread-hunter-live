@@ -632,7 +632,7 @@ const SERVICE_DEFS = [
   { key: 'query', name: 'Venue Engine & Order Poller', cmd: 'python -m core_brain.order_manager poll --interval 0.5',
     tag: '0.5s CLOB FEED',
     desc: 'Queries CLOB every 0.5s, reconciles fills, and executes periodic balance sweeps.' },
-  { key: 'decide', name: 'Execution Loop & Maker Quoter', cmd: 'python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5',
+  { key: 'decide', name: 'Execution Loop & Maker Quoter', cmd: 'python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5 --max-markets 1',
     tag: 'SPREAD QUOTER',
     desc: 'Runs the trading loop (dual-sided maker quotes -> merge execution) every 5s across approved markets.' },
 ];
@@ -797,33 +797,38 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
       </div>`;
   }
 
-  // Wire up toggle switches for individual services
+  // Wire up toggle switches for individual services. Each toggle drives
+  // exactly its own service (dashboard/server.py:start_service/stop_service):
+  // flipping Decide starts live quoting alone, never the whole stack.
   document.querySelectorAll('.toggle[data-svc]').forEach(t => {
     t.addEventListener('click', async () => {
       const svc = t.dataset.svc;
       const isOn = t.classList.contains('on');
+      if (!lastDbIsProduction) {
+        alert('This dashboard is not reading the production registry. '
+          + 'Service controls act on the live stack against data/orders.db, whose orders '
+          + 'would not appear on this page. Restart the dashboard without '
+          + '--db / LIVE_DB_PATH first.');
+        return;
+      }
       if (isOn) {
-        // Individual stop - uses per-service control
-        await controlFetch('/api/system/stop');
+        await controlFetch('/api/system/service/stop?service=' + encodeURIComponent(svc));
       } else {
-        // /api/system/start is atomic: it launches Filter, Query AND the live
-        // Decide & Execute loop together. Every toggle therefore starts live
-        // trading, whichever card was clicked, so the typed confirmation sits
-        // outside the service check rather than only on the decide card.
-        // The server refuses this too (dashboard/server.py:start_bot). Checked
-        // here as well so a shadow view never shows the live-order prompt.
-        if (!lastDbIsProduction) {
-          alert('This dashboard is not reading the production registry. '
-            + 'START launches the live stack against data/orders.db, whose orders '
-            + 'would not appear on this page. Restart the dashboard without '
-            + '--db / LIVE_DB_PATH first.');
-          return;
+        // Only Decide rests REAL maker bids, so only it asks for typed
+        // confirmation. Filter scans, Query reconciles -- neither opens risk.
+        // The server refuses shadow/duplicate starts too; this check keeps a
+        // shadow view from ever showing the live-order prompt.
+        if (svc === 'decide') {
+          const confirmed = prompt('This starts live Decide & Execute, which rests REAL maker bids. Type START to confirm:');
+          if (confirmed !== 'START') {
+            return;
+          }
         }
-        const confirmed = prompt('This starts the whole stack, including live Decide & Execute, which rests REAL maker bids. Type START to confirm:');
-        if (confirmed !== 'START') {
-          return;
-        }
-        await controlFetch('/api/system/start');
+        const res = await controlFetch('/api/system/service/start?service=' + encodeURIComponent(svc));
+        try {
+          const data = await res.json();
+          if (!data.ok && data.message) alert(data.message);
+        } catch { /* non-JSON reply: next poll shows the state */ }
       }
       pollStatus();
     });

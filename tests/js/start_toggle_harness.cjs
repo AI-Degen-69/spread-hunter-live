@@ -110,7 +110,11 @@ function snapshot() {
     alerts: log.alerts,
     alertMsg: log.alertMsg,
     starts: log.fetches.filter(
-      (f) => f.method === 'POST' && f.path.indexOf('/api/system/start') !== -1).length,
+      (f) => f.method === 'POST' && f.path.indexOf('/api/system/service/start') !== -1).length,
+    stops: log.fetches.filter(
+      (f) => f.method === 'POST' && f.path.indexOf('/api/system/service/stop') !== -1).length,
+    wholeStackStarts: log.fetches.filter(
+      (f) => f.method === 'POST' && /(^|\/)api\/system\/start(\?|$)/.test(f.path)).length,
   };
 }
 
@@ -134,7 +138,8 @@ function reset() {
   const badgeText = badge.textContent;
   const badgeClass = badge.className;
 
-  // 2. LIVE view, operator types START: the same click goes through.
+  // 2. LIVE view, operator types START: the same click goes through, and
+  // only to its own service endpoint -- never the whole-stack start.
   reset();
   promptReturn = 'START';
   app.renderDbMode({
@@ -144,5 +149,12 @@ function reset() {
   await toggle._click();
   const live = snapshot();
 
-  process.stdout.write(JSON.stringify({ shadow, live, badgeText, badgeClass }));
+  // 3. LIVE view, Market Filter card: starts with no typed prompt.
+  reset();
+  toggle.dataset.svc = 'filter';
+  app.renderServiceCards(STOPPED_STACK, null, null);
+  await toggle._click();
+  const liveFilter = snapshot();
+
+  process.stdout.write(JSON.stringify({ shadow, live, liveFilter, badgeText, badgeClass }));
 })();

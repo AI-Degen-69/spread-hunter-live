@@ -3967,11 +3967,12 @@ function renderMarkets(kpi, state) {
 const BUCKET_DEFS = [
   { key: 'raw', name: '1. Ingestion / Universe', cls: 'raw' },
   { key: 'identity', name: '2. Identity Gate', cls: 'rejected' },
-  { key: 'volume', name: '3. Volume Gate', cls: 'rejected' },
-  { key: 'depth', name: '4. Depth Gate', cls: 'rejected' },
-  { key: 'spread', name: '5. Spread Gate', cls: 'rejected' },
-  { key: 'horizon', name: '6. Horizon & Yield Gate', cls: 'rejected' },
-  { key: 'passed', name: '7. Passed (Quoting)', cls: 'passed' },
+  { key: 'movement', name: '3. Movement Gate', cls: 'rejected' },
+  { key: 'volume', name: '4. Volume Gate', cls: 'rejected' },
+  { key: 'depth', name: '5. Depth Gate', cls: 'rejected' },
+  { key: 'spread', name: '6. Spread Gate', cls: 'rejected' },
+  { key: 'horizon', name: '7. Horizon & Yield Gate', cls: 'rejected' },
+  { key: 'passed', name: '8. Passed (Quoting)', cls: 'passed' },
 ];
 const STAGE_DEFS = BUCKET_DEFS;
 
@@ -4051,6 +4052,11 @@ function categorizeGate(cause) {
   const c = (cause || '').toLowerCase();
   if (c.includes('depth')) return 'depth';
   if (c.includes('spread')) return 'spread';
+  // The movement gate runs BEFORE the book fetches, so its refusals arrive
+  // before any reading a depth/spread check could have produced. Folding
+  // them into identity (the old fallback) made a dead tape read as a
+  // keyword or mid problem.
+  if (c.includes('movement')) return 'movement';
   if (c.includes('volume')) return 'volume';
   if (c.includes('horizon')) return 'horizon';
   if (c.includes('income') || c.includes('payout')) return 'horizon';
@@ -4080,12 +4086,19 @@ function getStageHero(key, funnel) {
     case 'raw':
       return {
         param: 'TEST: CANDIDATE DISCOVERY',
-        value: 'Sampling + Liquid Universe',
+        // One unified Gamma scan since the reward path retired (#185);
+        // "Sampling" listed reward-funded markets only.
+        value: 'Gamma Volume Universe',
       };
     case 'identity':
       return {
         param: 'TEST: CONTRACT & KEYWORDS',
         value: 'Binary · Mid [0.20, 0.80]',
+      };
+    case 'movement':
+      return {
+        param: 'TEST: RECENT TRADED NOTIONAL',
+        value: `≥ $500 / 30m on the tape`,
       };
     case 'volume':
       return {
@@ -4219,6 +4232,7 @@ function renderScreener(kpi, scanState) {
   // Group rejections by canonical gate
   const gateRejections = {
     identity: { count: 0, examples: [], would_fund: 0, traps: 0 },
+    movement: { count: 0, examples: [], would_fund: 0, traps: 0 },
     volume: { count: 0, examples: [], would_fund: 0, traps: 0 },
     depth: { count: 0, examples: [], would_fund: 0, traps: 0 },
     spread: { count: 0, examples: [], would_fund: 0, traps: 0 },
@@ -4250,7 +4264,7 @@ function renderScreener(kpi, scanState) {
   // the first gate would be invented. Each stage states only what it can
   // prove -- how many markets this gate refused, out of everything scored.
   const stageFlow = { raw: { rejected: 0, scored: totalRaw } };
-  const gateOrder = ['identity', 'volume', 'depth', 'spread', 'horizon'];
+  const gateOrder = ['identity', 'movement', 'volume', 'depth', 'spread', 'horizon'];
   for (const k of gateOrder) {
     stageFlow[k] = { rejected: gateRejections[k]?.count || 0, scored: totalRaw };
   }
@@ -4308,10 +4322,27 @@ function renderScreener(kpi, scanState) {
       } else {
         cardsHtml = `<div class="kanban-empty">
           <strong style="color:var(--text-primary)">${totalRaw} Candidate Markets</strong>
-          <div style="margin-top:6px;color:var(--text-secondary)">${fundedN} funded rewards + ${spreadN} liquid spread pairs fetched from venue.</div>
+          <div style="margin-top:6px;color:var(--text-secondary)">${spreadN} tradable binaries scored from the unified Gamma scan.</div>
         </div>`;
       }
-      footerHtml = `<div class="kanban-bucket-footer">${fundedN} Rewards · ${spreadN} Spread pairs</div>`;
+      // Discovery metadata from the unified scan (#185): pages fetched, rows
+      // seen, whether the scan stopped on policy (truncation) rather than
+      // exhaustion, and what the cheap per-row filters refused pre-score.
+      const disc = funnel.discovery;
+      if (disc) {
+        const cheap = Object.entries(disc.cheap_rejects || {})
+          .sort((a, b) => b[1] - a[1])
+          .map(([k, v]) => `${k}: ${v}`).join(' · ');
+        const trunc = disc.truncated
+          ? ' (bounded scan — stopped past the volume floor, not exhaustion)'
+          : ' (full listing exhausted)';
+        footerHtml += `<div class="kanban-bucket-footer" style="display:block">`
+          + `discovery: ${disc.pages_fetched ?? '--'} pages · ${disc.rows_scanned ?? '--'} rows scanned${trunc}`
+          + (cheap ? `<br>pre-score filters — ${esc(cheap)}` : '')
+          + `</div>`;
+      } else {
+        footerHtml = `<div class="kanban-bucket-footer">${spreadN} Spread candidates</div>`;
+      }
 
     } else if (def.key === 'passed') {
       const passCount = graduatedList.length;

@@ -2312,6 +2312,8 @@ def main():
                         help="Port to bind (default: $PORT, else 8799)")
     parser.add_argument("--host", type=str, default="127.0.0.1", help="Host interface (default: 127.0.0.1)")
     parser.add_argument("--db", type=str, default=None, help="Path to orders.db SQLite file")
+    parser.add_argument("--reload", action="store_true",
+                        help="Auto-reload on code changes (dev convenience; reload is off in production)")
     args = parser.parse_args()
 
     if args.db:
@@ -2328,7 +2330,13 @@ def main():
         _capture_starting_capital()
     except Exception:
         pass
-    uvicorn.run(app, host=args.host, port=port)
+    uvicorn.run("dashboard.server:app", host=args.host, port=port,
+                reload=args.reload,
+                # Watch only the dashboard's own code. Without this, a reload
+                # watcher rooted at the project restarts the monitor when
+                # core_brain or scripts change -- the observer must never be
+                # restarted by the thing it is observing.
+                reload_dirs=["dashboard"] if args.reload else None)
 
 
 if __name__ == "__main__":

@@ -1,18 +1,18 @@
 """The Orders & Trades table: four views of the same run.
 
 A market the Market Filter graduated, an order resting on the book, a filled
-leg the account is holding and a market that has settled are four stages of
-one object, and the operator reads them in that order. They are four views of
-one table rather than four panels because only the middle stages have live
-PnL: an order on the book is not a position, and a PnL column beside it
-invites the reading that it is.
+leg the account is holding and a trade that settled with a booked profit or
+loss are four stages of one object, and the operator reads them in that
+order. They are four views of one table rather than four panels because only
+the middle stages have live PnL: an order on the book is not a position, and
+a PnL column beside it invites the reading that it is.
 
 The column sets encode that. ACTIVE MARKETS carries no share count -- nothing
-is owned yet. OPEN ORDERS carries no PnL -- nothing is exposed yet. POSITIONS
-carries both. RESOLVED drops Unrealized and names the outcome instead: the
-market settled, so there is no mark left for the position to move against,
-and a market sitting under POSITIONS with a known winner reads as live
-exposure that no longer exists.
+is owned yet. Orders carries no PnL -- nothing is exposed yet. OPEN POSITIONS
+carries both. CLOSED TRADES reuses the Data & Markets table shape -- Commit,
+Hedge, Realized P&L, Fills, Status -- so a closed trade reads identically in
+both places, and lists only trades where money actually moved: a market that
+settled flat booked nothing, and a row of zeros is not a trade.
 """
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ requires_node = pytest.mark.skipif(shutil.which("node") is None,
 CID_QUOTED = "0xquoted"
 CID_HELD = "0xheld"
 CID_DONE = "0xresolved"
+CID_CLOSED = "0xclosed"
 CID_SETTLED = "0xsettled"
 
 
@@ -84,17 +85,30 @@ def _kpi() -> dict:
                 "total_cost": 0, "pair_cost": None, "realized_pnl": 1.5,
                 "quotes": [],
             },
-            # The case the RESOLVED view exists for: the market settled and the
+            # The case the RESOLVED view existed for: the market settled and the
             # winner is known, but the legs are still on the books because
-            # nothing has merged or redeemed them yet.
+            # nothing has merged or redeemed them yet. It carries a settlement
+            # and non-zero P&L, so it is a closed trade.
             CID_SETTLED: {
                 "condition_id": CID_SETTLED, "title": "Settled Market", "category": "LOL",
                 "days_to_resolve": None, "volume_24h": 51000.0, "resolved": True,
                 "resolution": {"winner": "Dplus KIA", "resolved_ts": 1788526463.068991},
                 "quotes_count": 4, "up_sh": 23, "dn_sh": 23, "total_sh": 46,
                 "up_cost": 15.62, "dn_cost": 6.52, "total_cost": 22.14,
-                "pair_cost": 0.963, "realized_pnl": 1.21,
+                "pair_cost": 0.963,                "realized_pnl": 1.21,
                 "quotes": [],
+                "settlements": [{"method": "single_buy_exit", "pnl": 1.21}],
+            },
+            # Settled with a booked profit, so it is a closed trade even
+            # though nothing is held on it any more.
+            CID_CLOSED: {
+                "condition_id": CID_CLOSED, "title": "Closed Market", "category": "MLB",
+                "days_to_resolve": None, "volume_24h": 77000.0, "resolved": True,
+                "resolution": {"winner": "Away", "resolved_ts": 1788526400.0},
+                "quotes_count": 2, "up_sh": 0, "dn_sh": 0, "total_sh": 0,
+                "total_cost": 0, "pair_cost": None, "realized_pnl": -0.35,
+                "quotes": [],
+                "settlements": [{"method": "venue_sync", "pnl": -0.35}],
             },
         }
     }
@@ -132,7 +146,7 @@ def test_the_four_views_are_the_four_stages_of_a_trade():
 
     # Assert
     assert rendered["views"] == ["active-markets", "open-orders", "positions",
-                                 "resolved"]
+                                 "closed-trades"]
 
 
 @requires_node
@@ -525,8 +539,7 @@ def test_the_width_floor_does_not_target_the_first_cell_by_position():
 
 
 @requires_node
-@pytest.mark.parametrize("view", ["active-markets", "open-orders", "positions",
-                                  "resolved"])
+@pytest.mark.parametrize("view", ["active-markets", "open-orders", "positions"])
 def test_every_view_tags_its_market_cell(view):
     # Arrange — the width floor is keyed off the class now, so a view that
     # forgets it loses the floor and folds the title onto three lines.
@@ -534,6 +547,18 @@ def test_every_view_tags_its_market_cell(view):
 
     # Act / Assert
     assert 'class="ot-market"' in rendered["html"]
+
+
+@requires_node
+def test_closed_trades_renders_the_data_and_markets_row_class():
+    # Arrange — the closed-trades view reuses the Data & Markets row shape,
+    # which carries the market name inside `marketLink` on a `market-row`,
+    # not an `ot-market` cell: the same row class, so the same expand wiring.
+    rendered = _render("closed-trades", _kpi(), _state())
+
+    # Act / Assert
+    assert 'class="market-row' in rendered["html"]
+    assert 'tabindex="0"' in rendered["html"]
 
 
 @requires_node
@@ -615,146 +640,81 @@ def test_positions_says_so_when_nothing_is_held():
     assert "No legs have filled, so nothing is held." in rendered["html"]
 
 
-# ── Resolved ────────────────────────────────────────────────────────────────
+# ── Closed trades ──────────────────────────────────────────────────────────
 
 @requires_node
-def test_a_settled_market_leaves_positions():
-    # Arrange — the market resolved, so the legs are no longer live exposure.
-    # Leaving them on POSITIONS reads as a position that can still move.
-    rendered = _render("positions", _kpi(), _state())
+def test_closed_trades_lists_markets_that_booked_a_profit_or_loss():
+    # Arrange — a closed trade is a settlement with money actually booked,
+    # whatever the account holds now. CID_SETTLED still shows held legs; CID
+    # _CLOSED settled flat but booked a loss.
+    rendered = _render("closed-trades", _kpi(), _state())
+
+    # Act / Assert — one row per closed trade, largest P&L first: the profit
+    # on the settled pair (+$1.21) outranks the booked loss (-$0.35).
+    assert rendered["rows"] == 2
+    assert "Settled Market" in rendered["html"]
+    assert "Closed Market" in rendered["html"]
+    assert rendered["html"].index("Settled Market") < rendered["html"].index("Closed Market")
+
+
+@requires_node
+def test_closed_trades_uses_the_data_and_markets_table_shape():
+    # Arrange — the tab exists so a closed trade reads like the same market
+    # in the Data & Markets table; two shapes for one fact is two reads.
+    rendered = _render("closed-trades", _kpi(), _state())
 
     # Act / Assert
-    assert "Settled Market" not in rendered["html"]
-    assert "Held Market" in rendered["html"]
+    assert rendered["columns"] == ["Market", "Commit ($)", "Hedge",
+                                   "Realized P&L", "Fills", "Status"]
+    assert 'class="market-row"' in rendered["html"]
 
 
 @requires_node
-def test_resolved_lists_the_settled_market_and_names_the_outcome():
-    # Arrange — the operator's question on a settled market is which side won,
-    # not what the pair is marked at.
-    rendered = _render("resolved", _kpi(), _state())
-
-    # Act / Assert — one row per held leg, the market named once across both.
-    assert rendered["rows"] == 2
-    assert rendered["html"].count("Settled Market") == 1
-    assert "Dplus KIA" in rendered["html"]
-
-
-@requires_node
-def test_resolved_excludes_a_market_with_no_legs_held():
-    # Arrange — CID_DONE settled but nothing was ever filled on it. A row with
-    # no shares is a market the account never took a position in.
-    rendered = _render("resolved", _kpi(), _state())
+def test_closed_trades_excludes_a_settled_market_with_no_booked_pnl():
+    # Arrange — CID_DONE settled but booked nothing: no shares, no settlement,
+    # zero P&L. A row of zeros is not a trade.
+    rendered = _render("closed-trades", _kpi(), _state())
 
     # Act / Assert
     assert "Resolved Market" not in rendered["html"]
 
 
 @requires_node
-def test_resolved_drops_unrealized_and_carries_the_outcome():
-    # Arrange — a settled market has no mark left to move against, so an
-    # Unrealized column there is a number that can never change again.
-    rendered = _render("resolved", _kpi(), _state())
-
-    # Act / Assert
-    assert rendered["columns"] == ["Market", "Outcome", "Leg", "Size",
-                                   "Avg Price", "Cost", "Settled Value",
-                                   "Realized"]
-    assert "Unrealized" not in rendered["columns"]
-
-
-@requires_node
-def test_resolved_marks_a_settled_pair_at_par():
-    # Arrange — 23 UP and 23 DOWN merge back into $1.00 each whichever side
-    # won. That is the whole strategy, and it does not depend on the outcome.
-    rendered = _render("resolved", _kpi(), _state())
-
-    # Act / Assert
-    assert "$23.00" in rendered["html"]
-
-
-@requires_node
-def test_resolved_values_a_winning_naked_leg_without_any_quote():
-    """A settled market has no book, and a lone winning leg is still money.
-
-    `positionMarkValue` prices naked shares at the mid. Nobody quotes a race
-    that is over, so it returns null and the operator reads `--` beside five
-    shares that redeem at $5.00.
-    """
-    # Arrange — five UP shares, nothing on the other leg, no quotes at all,
-    # and the sweeper recorded that the UP token won.
+def test_closed_trades_excludes_a_zero_pnl_market_even_with_a_settlement():
+    # Arrange — the settlement arrived, but the trade merged flat and booked
+    # zero. There is no profit or loss to read.
     kpi = _kpi()
-    market = kpi["by_market"][CID_SETTLED]
-    market.update({"up_sh": 5, "dn_sh": 0, "total_sh": 5, "up_cost": 2.40,
-                   "dn_cost": 0.0, "total_cost": 2.40, "pair_cost": None,
-                   "quotes": [], "winning_leg": "up"})
+    kpi["by_market"][CID_SETTLED]["realized_pnl"] = 0
 
     # Act
-    rendered = _render("resolved", kpi, _state())
+    rendered = _render("closed-trades", kpi, _state())
 
     # Assert
-    assert "$5.00" in rendered["html"]
+    assert "Settled Market" not in rendered["html"]
+    assert rendered["rows"] == 1
 
 
 @requires_node
-def test_resolved_values_a_losing_naked_leg_at_nothing():
-    # Arrange — the same five shares on the leg that lost redeem at zero, and
-    # zero is a number the operator needs to see, not a dash.
+def test_closed_trades_excludes_a_market_with_no_settlement():
+    # Arrange — a finished market the settlement sweeper has not written yet
+    # is not a closed trade; the Data & Markets table already covers it.
     kpi = _kpi()
-    market = kpi["by_market"][CID_SETTLED]
-    market.update({"up_sh": 5, "dn_sh": 0, "total_sh": 5, "up_cost": 2.40,
-                   "dn_cost": 0.0, "total_cost": 2.40, "pair_cost": None,
-                   "quotes": [], "winning_leg": "dn"})
+    kpi["by_market"][CID_SETTLED].pop("settlements")
 
     # Act
-    rendered = _render("resolved", kpi, _state())
+    rendered = _render("closed-trades", kpi, _state())
 
     # Assert
-    assert "$0.00" in rendered["html"]
+    assert "Settled Market" not in rendered["html"]
 
 
 @requires_node
-def test_resolved_falls_back_to_quotes_when_no_leg_won():
-    # Arrange — a market that finished without the sweeper naming a token has
-    # nothing to settle against, so the old quote-based mark still stands.
-    kpi = _kpi()
-    market = kpi["by_market"][CID_SETTLED]
-    market.update({"up_sh": 5, "dn_sh": 0, "total_sh": 5, "quotes": []})
-    market.pop("winning_leg", None)
-
-    # Act
-    rendered = _render("resolved", kpi, _state())
-
-    # Assert — no mid for the naked leg means no mark, and it says so.
-    assert "--" in rendered["html"]
-
-
-@requires_node
-def test_resolved_says_resolved_when_no_winner_was_recorded():
-    # Arrange — the ranker's days_to_resolve can go negative before the
-    # resolution sweeper writes a winner. Naming one anyway would be inventing
-    # a venue fact the registry does not hold.
-    kpi = _kpi()
-    market = kpi["by_market"][CID_SETTLED]
-    market.pop("resolution")
-    market["resolved"] = False
-    market["days_to_resolve"] = -0.5
-
-    # Act
-    rendered = _render("resolved", kpi, _state())
-
-    # Assert
-    assert "Settled Market" in rendered["html"]
-    assert "ot-outcome-pending" in rendered["html"]
-
-
-@requires_node
-def test_resolved_says_so_when_nothing_has_settled():
+def test_closed_trades_says_so_when_nothing_has_closed():
     # Arrange / Act
-    rendered = _render("resolved", {"by_market": {}}, {"orders": []})
+    rendered = _render("closed-trades", {"by_market": {}}, {"orders": []})
 
     # Assert
-    assert "No market this run holds legs on has settled yet." in rendered["html"]
+    assert "No closed trades yet" in rendered["html"]
 
 
 # ── Tab counts ──────────────────────────────────────────────────────────────
@@ -770,7 +730,7 @@ def test_each_tab_counts_its_own_rows():
         "active-markets": 2,
         "open-orders": 2,
         "positions": 1,
-        "resolved": 1,
+        "closed-trades": 2,
     }
 
 
@@ -784,7 +744,7 @@ def test_the_panel_is_on_the_served_page():
     assert 'id="orders-trades-card"' in index
     assert 'id="orders-trades-head"' in index
     assert 'id="orders-trades-body"' in index
-    for view in ("active-markets", "open-orders", "positions", "resolved"):
+    for view in ("active-markets", "open-orders", "positions", "closed-trades"):
         assert f'data-ot-view="{view}"' in index
 
 

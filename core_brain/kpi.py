@@ -677,6 +677,7 @@ def _funnel_from_pipeline(
         "snapshot_age": snapshot_age,
         "census": snap.get("census") or "",
         "gates": snap.get("gates") or "",
+        "discovery": snap.get("discovery") or None,
         "depth_gate_usd": snap.get("depth_gate_usd"),
         "volume_gate_usd": snap.get("volume_gate_usd"),
         "trial_depth_usd": snap.get("trial_depth_usd"),

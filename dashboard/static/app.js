@@ -797,33 +797,38 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
       </div>`;
   }
 
-  // Wire up toggle switches for individual services
+  // Wire up toggle switches for individual services. Each toggle drives
+  // exactly its own service (dashboard/server.py:start_service/stop_service):
+  // flipping Decide starts live quoting alone, never the whole stack.
   document.querySelectorAll('.toggle[data-svc]').forEach(t => {
     t.addEventListener('click', async () => {
       const svc = t.dataset.svc;
       const isOn = t.classList.contains('on');
+      if (!lastDbIsProduction) {
+        alert('This dashboard is not reading the production registry. '
+          + 'Service controls act on the live stack against data/orders.db, whose orders '
+          + 'would not appear on this page. Restart the dashboard without '
+          + '--db / LIVE_DB_PATH first.');
+        return;
+      }
       if (isOn) {
-        // Individual stop - uses per-service control
-        await controlFetch('/api/system/stop');
+        await controlFetch('/api/system/service/stop?service=' + encodeURIComponent(svc));
       } else {
-        // /api/system/start is atomic: it launches Filter, Query AND the live
-        // Decide & Execute loop together. Every toggle therefore starts live
-        // trading, whichever card was clicked, so the typed confirmation sits
-        // outside the service check rather than only on the decide card.
-        // The server refuses this too (dashboard/server.py:start_bot). Checked
-        // here as well so a shadow view never shows the live-order prompt.
-        if (!lastDbIsProduction) {
-          alert('This dashboard is not reading the production registry. '
-            + 'START launches the live stack against data/orders.db, whose orders '
-            + 'would not appear on this page. Restart the dashboard without '
-            + '--db / LIVE_DB_PATH first.');
-          return;
+        // Only Decide rests REAL maker bids, so only it asks for typed
+        // confirmation. Filter scans, Query reconciles -- neither opens risk.
+        // The server refuses shadow/duplicate starts too; this check keeps a
+        // shadow view from ever showing the live-order prompt.
+        if (svc === 'decide') {
+          const confirmed = prompt('This starts live Decide & Execute, which rests REAL maker bids. Type START to confirm:');
+          if (confirmed !== 'START') {
+            return;
+          }
         }
-        const confirmed = prompt('This starts the whole stack, including live Decide & Execute, which rests REAL maker bids. Type START to confirm:');
-        if (confirmed !== 'START') {
-          return;
-        }
-        await controlFetch('/api/system/start');
+        const res = await controlFetch('/api/system/service/start?service=' + encodeURIComponent(svc));
+        try {
+          const data = await res.json();
+          if (!data.ok && data.message) alert(data.message);
+        } catch { /* non-JSON reply: next poll shows the state */ }
       }
       pollStatus();
     });
@@ -834,52 +839,11 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
 
 }
 
-/* ── Render: START preflight (what START would launch + why it may refuse) ── */
-let lastStartPreview = null;
-
-function renderStartPreview(status) {
-  const preview = status?.start_preview || null;
-  lastStartPreview = preview;
-  const verdictEl = document.getElementById('start-preflight-verdict');
-  const cmdsEl = document.getElementById('start-preflight-cmds');
-  const blockersEl = document.getElementById('start-preflight-blockers');
-  if (!verdictEl || !cmdsEl || !blockersEl) return;
-  if (!preview) {
-    verdictEl.textContent = 'preflight unavailable';
-    verdictEl.style.color = '';
-    cmdsEl.innerHTML = '';
-    blockersEl.innerHTML = '';
-    return;
-  }
-  const canStart = preview.can_start === true;
-  const creds = `funder ${preview.has_funder ? 'set' : 'MISSING'} · signing key ${preview.has_signing_key ? 'set' : 'MISSING'}`;
-  verdictEl.textContent = (canStart ? 'READY — START will launch 3 processes' : 'BLOCKED — START will refuse') + ` · ${creds}`;
-  verdictEl.style.color = canStart ? '#34d399' : '#f87171';
-  cmdsEl.innerHTML = (preview.commands || []).map(c => `<div>$ ${esc(c)}</div>`).join('');
-  const blockers = preview.blockers || [];
-  blockersEl.innerHTML = blockers.map(b => `<div style="color:#f87171">! ${esc(b)}</div>`).join('');
-  // The server remains the authority (it refuses regardless); this only
-  // explains the refusal before the click. A missing signing key still
-  // launches -- the stack runs and venue calls fail -- so it warns, not blocks.
-  const startBtn = document.getElementById('btn-master-start');
-  if (startBtn && !startBtn.dataset.busy) {
-    startBtn.title = canStart ? 'Launch the 3-process live stack' : blockers.join('; ');
-  }
-}
-
 // Master Start / Stop / Sync Button Handlers
 const masterStartBtn = document.getElementById('btn-master-start');
 if (masterStartBtn && !masterStartBtn.dataset.wired) {
   masterStartBtn.dataset.wired = 'true';
   masterStartBtn.addEventListener('click', async () => {
-    // Preflight mirror of the server gate: explain before firing so a
-    // shadow-view or duplicate START never needs a round-trip to refuse.
-    if (lastStartPreview && lastStartPreview.can_start !== true) {
-      const why = (lastStartPreview.blockers || ['not startable']).join('; ');
-      alert(`START refused: ${why}`);
-      pollStatus();
-      return;
-    }
     try {
       masterStartBtn.innerHTML = `
         <svg class="btn-syncing-spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:inline-block;vertical-align:-2px;margin-right:4px;animation:spin 1s linear infinite"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>
@@ -4632,9 +4596,6 @@ async function pollStatus() {
 
     // Render service cards
     if (status) renderServiceCards(status, guardHealth, guardAlerts);
-
-    // START preflight preview (commands + blockers), from the same payload.
-    if (status) renderStartPreview(status);
 
     // Render exposure bar (DT3)
     if (kpi || lastKpi) renderExposure(kpi || lastKpi);

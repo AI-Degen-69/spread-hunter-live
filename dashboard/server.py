@@ -622,38 +622,223 @@ def _start_stack_commands(sweep_interval_sec: float | None) -> list[list[str]]:
     ]
 
 
-def build_start_preview(
-    *,
-    bot_state: str,
-    db_is_production: bool,
-    db_mode: str,
-    registry_unreadable: bool,
-    sweep_interval_sec: float | None,
-) -> dict:
-    """What START would launch, and whether it is currently allowed.
+SERVICE_NAMES = ("filter", "query", "decide")
+_SERVICE_CWDS = {"filter": "repo", "query": "live", "decide": "live"}
 
-    Credential presence is boolean-only: the page needs to know a signing
-    key or funder is missing before START, never their values.
-    """
-    commands = ["python " + " ".join(argv) for argv in _start_stack_commands(sweep_interval_sec)]
-    blockers: list[str] = []
-    if registry_unreadable or bot_state == "UNKNOWN":
-        blockers.append("process registry unreadable -- refusing until it is readable")
-    elif bot_state == "RUNNING":
-        blockers.append("stack already RUNNING -- STOP first")
-    if not db_is_production:
-        blockers.append(
-            f"reading {db_mode} store, not the production registry -- "
-            "START would trade invisibly here"
+
+def _service_cwd(name: str) -> str:
+    """Working directory a service spawns under, matching `start_bot`."""
+    return str(REPO_ROOT if _SERVICE_CWDS[name] == "repo" else LIVE_ROOT)
+
+
+def _acquire_ops_lock():
+    """Take the interprocess start/stop lock; return (fd, None) or (None, error)."""
+    import time as _time
+
+    lock_file = runtime_file(".bot_start.lock", root=LIVE_ROOT)
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        return fd, None
+    except FileExistsError:
+        pass
+    except Exception as e:
+        return None, f"Failed to acquire startup lock: {e}"
+    try:
+        if not lock_file.exists():
+            try:
+                fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.write(fd, f"{os.getpid()}\n".encode())
+                return fd, None
+            except Exception:
+                return None, "Failed to acquire startup lock after retry; another start may be running."
+        lock_age = _time.time() - lock_file.stat().st_mtime
+        if lock_age > 30:
+            try:
+                lock_file.unlink()
+            except OSError:
+                pass
+            try:
+                fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                os.write(fd, f"{os.getpid()}\n".encode())
+                return fd, None
+            except FileExistsError:
+                return None, "Failed to acquire startup lock after removing stale lock; another start won the race."
+        return None, "Another start/stop request is in progress; refusing concurrent operation."
+    except Exception:
+        return None, "Failed to acquire startup lock; another start may be running."
+
+
+def _release_ops_lock(lock_fd) -> None:
+    """Release a lock taken by `_acquire_ops_lock`; no-op when None."""
+    if lock_fd is None:
+        return
+    lock_file = runtime_file(".bot_start.lock", root=LIVE_ROOT)
+    try:
+        os.close(lock_fd)
+    except Exception:
+        pass
+    try:
+        lock_file.unlink()
+    except Exception:
+        pass
+
+
+def _refuse_unless_live_writable() -> dict | None:
+    """The gates every stack-changing op shares: production DB, readable registry."""
+    db_identity = resolve_db_identity(resolve_db_path(_ACTIVE_DB_OVERRIDE))
+    if not db_identity["is_production"]:
+        from core_brain.order_registry import DEFAULT_DB_PATH
+        return {
+            "ok": False,
+            "message": (
+                f"This dashboard is reading {db_identity['path']} "
+                f"({db_identity['mode']}), not the production registry "
+                f"{DEFAULT_DB_PATH}. Service controls act on the live stack, "
+                f"so running them from here would be invisible. Restart the "
+                f"dashboard without --db / LIVE_DB_PATH first."
+            ),
+            "status": get_system_status(),
+        }
+    current = get_system_status()
+    if current.get("bot_state") == "UNKNOWN":
+        return {
+            "ok": False,
+            "message": (
+                f"Cannot read the process file at {current.get('registry_path')}; "
+                "refusing until it is readable, because a second live stack "
+                "cannot be ruled out."
+            ),
+            "status": current,
+        }
+    return None
+
+
+def _read_saved_procs() -> tuple[dict | None, str | None]:
+    """The recorded stack, or (None, error) when it cannot be read."""
+    procs_file = resolve_runtime_file("processes.json", root=LIVE_ROOT)
+    if not procs_file.exists():
+        return {}, None
+    try:
+        loaded = json.loads(procs_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, (
+            f"Cannot read the process file at {procs_file}; refusing to change "
+            "the stack until it is readable."
         )
-    return {
-        "commands": commands,
-        "sweep_interval_sec": sweep_interval_sec,
-        "has_funder": bool(os.environ.get("POLY_FUNDER")),
-        "has_signing_key": bool(os.environ.get("POLY_PRIVATE_KEY") or os.environ.get("POLY_KEY")),
-        "can_start": not blockers,
-        "blockers": blockers,
-    }
+    if not isinstance(loaded, dict):
+        return None, (
+            f"Cannot read the process file at {procs_file}; refusing to change "
+            "the stack until it is readable."
+        )
+    return loaded, None
+
+
+def start_service(name: str) -> dict:
+    """Launch one stack service (filter, query, or decide) on its own.
+
+    Each dashboard toggle drives exactly one service: starting Decide no
+    longer drags Filter and Query up with it, and starting Filter never
+    rests a bid. The master START RUN (`start_bot`) still launches the
+    whole stack at once.
+    """
+    import subprocess
+
+    if name not in SERVICE_NAMES:
+        return {"ok": False, "message": f"Unknown service {name!r}; expected one of {', '.join(SERVICE_NAMES)}.",
+                "status": get_system_status()}
+    refusal = _refuse_unless_live_writable()
+    if refusal is not None:
+        return refusal
+
+    lock_fd, lock_err = _acquire_ops_lock()
+    if lock_fd is None:
+        return {"ok": False, "message": lock_err, "status": get_system_status()}
+    proc = None
+    try:
+        current = get_system_status()
+        if current.get("services", {}).get(name, {}).get("running"):
+            return {"ok": False, "message": f"Service {name} is already running; refusing a duplicate.",
+                    "status": current}
+
+        saved_procs, read_err = _read_saved_procs()
+        if saved_procs is None:
+            return {"ok": False, "message": read_err, "status": get_system_status()}
+
+        from core_brain.order_registry import get_run_id
+        child_env = {**os.environ, "SH_RUN_ID": get_run_id()}
+        sweep = resolve_sweep_interval()
+        idx = SERVICE_NAMES.index(name)
+        extra = {"sweep_interval_sec": sweep} if name == "query" else {}
+        proc = subprocess.Popen(
+            [sys.executable, *_start_stack_commands(sweep)[idx]],
+            cwd=_service_cwd(name),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=child_env,
+        )
+        saved_procs[name] = {"pid": proc.pid, "started_at": time.time(), **extra}
+        procs_file = runtime_file("processes.json", root=LIVE_ROOT)
+        procs_file.parent.mkdir(parents=True, exist_ok=True)
+        procs_file.write_text(json.dumps(saved_procs, indent=2), encoding="utf-8")
+        _capture_starting_capital()
+        return {"ok": True, "message": f"Service {name} started", "status": get_system_status()}
+    except Exception as e:
+        if proc is not None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+        return {"ok": False, "message": f"Failed to start service {name}: {e}",
+                "status": get_system_status()}
+    finally:
+        _release_ops_lock(lock_fd)
+
+
+def stop_service(name: str) -> dict:
+    """Terminate one stack service, leaving the others and the registry alone."""
+    import subprocess
+
+    if name not in SERVICE_NAMES:
+        return {"ok": False, "message": f"Unknown service {name!r}; expected one of {', '.join(SERVICE_NAMES)}.",
+                "status": get_system_status()}
+
+    lock_fd, lock_err = _acquire_ops_lock()
+    if lock_fd is None:
+        return {"ok": False, "message": lock_err, "status": get_system_status()}
+    try:
+        saved_procs, read_err = _read_saved_procs()
+        if saved_procs is None:
+            return {"ok": False, "message": read_err, "status": get_system_status()}
+
+        info = service_entry(saved_procs, name)
+        pid = info.get("pid")
+        if pid and _is_pid_alive(pid, info.get("started_at")):
+            try:
+                if sys.platform == "win32":
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+                else:
+                    os.kill(int(pid), 15)
+            except Exception:
+                pass
+            saved_procs.pop(name, None)
+            # A legacy key (screener/engine/fleet) may hold this service's
+            # record when the stack predates the rename; drop it too so the
+            # next status poll does not resurrect the entry.
+            for legacy in ({"filter": ("screener",), "query": ("engine",), "decide": ("fleet",)}[name]):
+                saved_procs.pop(legacy, None)
+            procs_file = runtime_file("processes.json", root=LIVE_ROOT)
+            procs_file.write_text(json.dumps(saved_procs, indent=2), encoding="utf-8")
+            return {"ok": True, "message": f"Service {name} stopped", "status": get_system_status()}
+        saved_procs.pop(name, None)
+        return {"ok": True, "message": f"Service {name} was not running", "status": get_system_status()}
+    finally:
+        _release_ops_lock(lock_fd)
 
 
 def get_system_status() -> dict:
@@ -750,13 +935,6 @@ def get_system_status() -> dict:
         "bot_state": _bot_state,
         "registry_path": str(procs_file),
         "registry_unreadable": registry_unreadable,
-        "start_preview": build_start_preview(
-            bot_state=_bot_state,
-            db_is_production=bool(db_identity["is_production"]),
-            db_mode=str(db_identity["mode"]),
-            registry_unreadable=registry_unreadable,
-            sweep_interval_sec=configured_sweep_interval,
-        ),
         # Which store these numbers came from. The page renders identically
         # against the production registry and against a shadow rehearsal, so
         # the mode has to travel with the data rather than live in the operator's
@@ -1246,6 +1424,20 @@ def api_system_stop(request: Request):
     """Stop background bot stack."""
     _authorize_control(request)
     return JSONResponse(stop_bot())
+
+
+@app.post("/api/system/service/start")
+def api_system_service_start(request: Request, service: str | None = None):
+    """Start one stack service (filter, query, or decide) on its own."""
+    _authorize_control(request)
+    return JSONResponse(start_service(service or ""))
+
+
+@app.post("/api/system/service/stop")
+def api_system_service_stop(request: Request, service: str | None = None):
+    """Stop one stack service, leaving the others running."""
+    _authorize_control(request)
+    return JSONResponse(stop_service(service or ""))
 
 
 @app.post("/api/system/sweep-interval")

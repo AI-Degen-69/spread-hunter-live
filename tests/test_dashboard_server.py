@@ -1559,23 +1559,27 @@ def test_app_js_translates_a_failed_market_scan():
     assert "'screener|rerank_error'" in app_js
 
 
-def test_every_toggle_start_asks_for_typed_confirmation():
-    """/api/system/start is atomic: any toggle starts the live Trader.
+def test_only_the_decide_toggle_asks_for_typed_confirmation():
+    """Each toggle drives its own service, and only Decide rests maker bids.
 
-    Gating the typed START prompt on the decide card alone let a click on the
-    Market Filter or Query Polymarket card rest real maker bids with no
-    confirmation at all.
+    Filter scans and Query reconciles -- neither opens risk -- so only the
+    Decide toggle asks for the typed START confirmation.
     """
     app_js = (Path(__file__).resolve().parent.parent
               / "dashboard" / "static" / "app.js").read_text(encoding="utf-8")
 
-    start_block = app_js.split("'/api/system/start'")[0]
-    tail = start_block[start_block.rindex("const isOn"):]
+    toggle_block = app_js.split("querySelectorAll('.toggle[data-svc]')")[1]
+    toggle_block = toggle_block.split("t.addEventListener('keydown'")[0]
 
-    assert "prompt(" in tail, "the start path must ask for confirmation"
-    assert "confirmed !== 'START'" in tail
-    assert "svc === 'decide'" not in tail, (
-        "the confirmation must not be gated on which service card was clicked"
+    assert "/api/system/service/start" in toggle_block
+    assert "/api/system/service/stop" in toggle_block
+    assert "'/api/system/start'" not in toggle_block, (
+        "a card toggle must never fire the whole-stack start"
+    )
+    assert "prompt(" in toggle_block, "the decide path must ask for confirmation"
+    assert "confirmed !== 'START'" in toggle_block
+    assert "svc === 'decide'" in toggle_block, (
+        "the confirmation must sit on the decide card alone"
     )
 
 
@@ -1709,10 +1713,16 @@ def test_shadow_view_toggle_never_prompts_or_posts_a_start():
     assert "SHADOW" in out["badgeText"] and "shadow.db" in out["badgeText"]
     assert "shadow" in out["badgeClass"]
 
-    # Live view: unchanged behaviour, so the assertions above are about the
-    # guard and not about a handler that stopped working.
+    # Live view, Decide card: prompts once and POSTs to its own endpoint,
+    # never the whole-stack start.
     assert out["live"]["prompts"] == 1
     assert out["live"]["starts"] == 1
+    assert out["live"]["wholeStackStarts"] == 0
+
+    # Live view, Market Filter card: starts with no typed prompt.
+    assert out["liveFilter"]["prompts"] == 0
+    assert out["liveFilter"]["starts"] == 1
+    assert out["liveFilter"]["wholeStackStarts"] == 0
 
 
 def test_page_surfaces_the_active_database_mode():

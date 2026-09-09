@@ -919,7 +919,9 @@ def test_start_bot_passes_sweep_interval_to_poll(monkeypatch, tmp_path):
 
     engine_cmd = next(a for a in spawned if "poll" in a)
     assert "--sweep-interval" in engine_cmd
-    assert engine_cmd[engine_cmd.index("--sweep-interval") + 1] == "30.0"
+    # Compact :g formatting from _start_stack_commands (single source for
+    # start_bot and the preflight preview); float("30") == float("30.0").
+    assert engine_cmd[engine_cmd.index("--sweep-interval") + 1] == "30"
 
 
 def test_start_bot_spawns_screener_engine_and_fleet(monkeypatch, tmp_path):

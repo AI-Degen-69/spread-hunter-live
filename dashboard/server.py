@@ -173,7 +173,9 @@ def resolve_sweep_interval() -> float | None:
         value = float(raw)
     except ValueError:
         return None
-    return value if value > 0 else None
+    if not math.isfinite(value) or value <= 0:
+        return None
+    return value
 
 
 def _env_file() -> Path | None:
@@ -601,6 +603,59 @@ def _uptime_sec(started_at: float | None, now: float | None = None) -> float | N
     return max(0.0, elapsed)
 
 
+def _start_stack_commands(sweep_interval_sec: float | None) -> list[list[str]]:
+    """Argv (minus the interpreter) for the three START processes.
+
+    Single source for `start_bot` and the preflight preview: a flag change
+    here moves both, so the preview cannot drift from what START launches.
+    The guardrail watchdog (`scripts.global_stop_loss`) is deliberately
+    absent -- the dashboard never starts it.
+    """
+    query = ["-m", "core_brain.order_manager", "poll", "--interval", "0.5"]
+    if sweep_interval_sec is not None:
+        query += ["--sweep-interval", f"{sweep_interval_sec:g}"]
+    return [
+        ["-m", "scripts.filter_loop"],
+        query,
+        ["-m", "core_brain.trader_loop", "--live",
+         "--no-reconcile", "--no-sweep", "--interval", "5", "--max-markets", "1"],
+    ]
+
+
+def build_start_preview(
+    *,
+    bot_state: str,
+    db_is_production: bool,
+    db_mode: str,
+    registry_unreadable: bool,
+    sweep_interval_sec: float | None,
+) -> dict:
+    """What START would launch, and whether it is currently allowed.
+
+    Credential presence is boolean-only: the page needs to know a signing
+    key or funder is missing before START, never their values.
+    """
+    commands = ["python " + " ".join(argv) for argv in _start_stack_commands(sweep_interval_sec)]
+    blockers: list[str] = []
+    if registry_unreadable or bot_state == "UNKNOWN":
+        blockers.append("process registry unreadable -- refusing until it is readable")
+    elif bot_state == "RUNNING":
+        blockers.append("stack already RUNNING -- STOP first")
+    if not db_is_production:
+        blockers.append(
+            f"reading {db_mode} store, not the production registry -- "
+            "START would trade invisibly here"
+        )
+    return {
+        "commands": commands,
+        "sweep_interval_sec": sweep_interval_sec,
+        "has_funder": bool(os.environ.get("POLY_FUNDER")),
+        "has_signing_key": bool(os.environ.get("POLY_PRIVATE_KEY") or os.environ.get("POLY_KEY")),
+        "can_start": not blockers,
+        "blockers": blockers,
+    }
+
+
 def get_system_status() -> dict:
     """Return live running status for 3 sub-services (Market Filter, Query Polymarket, Decide & Execute) and Telemetry."""
     procs_file = resolve_runtime_file("processes.json", root=LIVE_ROOT)
@@ -653,6 +708,11 @@ def get_system_status() -> dict:
 
     db_identity = resolve_db_identity(resolve_db_path(_ACTIVE_DB_OVERRIDE))
 
+    _bot_state = (
+        "UNKNOWN" if registry_unreadable
+        else ("RUNNING" if bot_running else "STOPPED")
+    )
+
     return {
         "services": {
             "filter": {
@@ -687,12 +747,16 @@ def get_system_status() -> dict:
                 "port": _ACTIVE_PORT,
             },
         },
-        "bot_state": (
-            "UNKNOWN" if registry_unreadable
-            else ("RUNNING" if bot_running else "STOPPED")
-        ),
+        "bot_state": _bot_state,
         "registry_path": str(procs_file),
         "registry_unreadable": registry_unreadable,
+        "start_preview": build_start_preview(
+            bot_state=_bot_state,
+            db_is_production=bool(db_identity["is_production"]),
+            db_mode=str(db_identity["mode"]),
+            registry_unreadable=registry_unreadable,
+            sweep_interval_sec=configured_sweep_interval,
+        ),
         # Which store these numbers came from. The page renders identically
         # against the production registry and against a shadow rehearsal, so
         # the mode has to travel with the data rather than live in the operator's
@@ -897,10 +961,12 @@ def start_bot() -> dict:
         from core_brain.order_registry import get_run_id
         child_env = {**os.environ, "SH_RUN_ID": get_run_id()}
 
+        stack_cmds = _start_stack_commands(resolve_sweep_interval())
+
         # Launch Market Filter (filter_loop) if not running
         if not filter_alive:
             p_scr = subprocess.Popen(
-                [sys.executable, "-m", "scripts.filter_loop"],
+                [sys.executable, *stack_cmds[0]],
                 cwd=str(REPO_ROOT),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -914,11 +980,8 @@ def start_bot() -> dict:
         # Launch Query Polymarket loop if not running
         if not query_alive:
             sweep_interval = resolve_sweep_interval()
-            poll_cmd = [sys.executable, "-m", "core_brain.order_manager", "poll", "--interval", "0.5"]
-            if sweep_interval is not None:
-                poll_cmd += ["--sweep-interval", str(sweep_interval)]
             p_eng = subprocess.Popen(
-                poll_cmd,
+                [sys.executable, *stack_cmds[1]],
                 cwd=str(LIVE_ROOT),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
@@ -933,8 +996,7 @@ def start_bot() -> dict:
         # Launch Decide & Execute loop if not running
         if not decide_alive:
             p_fleet = subprocess.Popen(
-                [sys.executable, "-m", "core_brain.trader_loop", "--live",
-                 "--no-reconcile", "--no-sweep", "--interval", "5", "--max-markets", "1"],
+                [sys.executable, *stack_cmds[2]],
                 cwd=str(LIVE_ROOT),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

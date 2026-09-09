@@ -159,6 +159,16 @@
         </div>
         <div id="runtime-last-sync" class="mono" style="font-size:11px;color:var(--text-muted)">Last poll: just now</div>
       </div>
+
+      <!-- START preflight: the exact stack START would launch + why it may refuse. -->
+      <div id="start-preflight" style="margin-top:10px;padding:10px 14px;background:rgba(2,6,23,0.4);border:1px solid var(--border-subtle);border-radius:8px">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+          <span style="font-size:11px;color:var(--text-muted);font-weight:700;text-transform:uppercase;letter-spacing:0.04em">START PREFLIGHT:</span>
+          <span id="start-preflight-verdict" class="mono" style="font-size:12px">--</span>
+        </div>
+        <div id="start-preflight-cmds" class="mono" style="font-size:11px;color:var(--text-secondary);margin-top:6px;line-height:1.6"></div>
+        <div id="start-preflight-blockers" class="mono" style="font-size:11px;margin-top:4px"></div>
+      </div>
     </div>
 
     <!-- Core Strategy Services Deck (Execution Pipeline Grid) -->

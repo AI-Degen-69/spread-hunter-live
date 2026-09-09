@@ -632,7 +632,7 @@ const SERVICE_DEFS = [
   { key: 'query', name: 'Venue Engine & Order Poller', cmd: 'python -m core_brain.order_manager poll --interval 0.5',
     tag: '0.5s CLOB FEED',
     desc: 'Queries CLOB every 0.5s, reconciles fills, and executes periodic balance sweeps.' },
-  { key: 'decide', name: 'Execution Loop & Maker Quoter', cmd: 'python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5',
+  { key: 'decide', name: 'Execution Loop & Maker Quoter', cmd: 'python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5 --max-markets 1',
     tag: 'SPREAD QUOTER',
     desc: 'Runs the trading loop (dual-sided maker quotes -> merge execution) every 5s across approved markets.' },
 ];
@@ -834,11 +834,52 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
 
 }
 
+/* ── Render: START preflight (what START would launch + why it may refuse) ── */
+let lastStartPreview = null;
+
+function renderStartPreview(status) {
+  const preview = status?.start_preview || null;
+  lastStartPreview = preview;
+  const verdictEl = document.getElementById('start-preflight-verdict');
+  const cmdsEl = document.getElementById('start-preflight-cmds');
+  const blockersEl = document.getElementById('start-preflight-blockers');
+  if (!verdictEl || !cmdsEl || !blockersEl) return;
+  if (!preview) {
+    verdictEl.textContent = 'preflight unavailable';
+    verdictEl.style.color = '';
+    cmdsEl.innerHTML = '';
+    blockersEl.innerHTML = '';
+    return;
+  }
+  const canStart = preview.can_start === true;
+  const creds = `funder ${preview.has_funder ? 'set' : 'MISSING'} · signing key ${preview.has_signing_key ? 'set' : 'MISSING'}`;
+  verdictEl.textContent = (canStart ? 'READY — START will launch 3 processes' : 'BLOCKED — START will refuse') + ` · ${creds}`;
+  verdictEl.style.color = canStart ? '#34d399' : '#f87171';
+  cmdsEl.innerHTML = (preview.commands || []).map(c => `<div>$ ${esc(c)}</div>`).join('');
+  const blockers = preview.blockers || [];
+  blockersEl.innerHTML = blockers.map(b => `<div style="color:#f87171">! ${esc(b)}</div>`).join('');
+  // The server remains the authority (it refuses regardless); this only
+  // explains the refusal before the click. A missing signing key still
+  // launches -- the stack runs and venue calls fail -- so it warns, not blocks.
+  const startBtn = document.getElementById('btn-master-start');
+  if (startBtn && !startBtn.dataset.busy) {
+    startBtn.title = canStart ? 'Launch the 3-process live stack' : blockers.join('; ');
+  }
+}
+
 // Master Start / Stop / Sync Button Handlers
 const masterStartBtn = document.getElementById('btn-master-start');
 if (masterStartBtn && !masterStartBtn.dataset.wired) {
   masterStartBtn.dataset.wired = 'true';
   masterStartBtn.addEventListener('click', async () => {
+    // Preflight mirror of the server gate: explain before firing so a
+    // shadow-view or duplicate START never needs a round-trip to refuse.
+    if (lastStartPreview && lastStartPreview.can_start !== true) {
+      const why = (lastStartPreview.blockers || ['not startable']).join('; ');
+      alert(`START refused: ${why}`);
+      pollStatus();
+      return;
+    }
     try {
       masterStartBtn.innerHTML = `
         <svg class="btn-syncing-spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:inline-block;vertical-align:-2px;margin-right:4px;animation:spin 1s linear infinite"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>
@@ -4591,6 +4632,9 @@ async function pollStatus() {
 
     // Render service cards
     if (status) renderServiceCards(status, guardHealth, guardAlerts);
+
+    // START preflight preview (commands + blockers), from the same payload.
+    if (status) renderStartPreview(status);
 
     // Render exposure bar (DT3)
     if (kpi || lastKpi) renderExposure(kpi || lastKpi);

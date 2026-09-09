@@ -3116,26 +3116,24 @@ function renderExpandedOrders(orders, fills, showCancelled) {
   return html;
 }
 
-/* ── Orders & Trades: three views of the same run ─────────────────────────
+/* ── Orders & Trades: four views of the same run ───────────────────────────
  *
- * One table, three tabs, because they are three stages of the same object and
+ * One table, four tabs, because they are four stages of the same object and
  * the operator reads them in that order:
  *
  *   ACTIVE MARKETS — graduated the Market Filter and currently quoted. What the
  *                    is looking at. No share counts here: nothing is owned yet.
- *   OPEN ORDERS    — resting in the book. Size, price, what it would cost.
+ *   Orders         — resting in the book. Size, price, what it would cost.
  *                    No PnL here: an order in the book is not a position.
- *   POSITIONS      — filled legs on a market that has NOT resolved. This is
+ *   OPEN POSITIONS — filled legs on a market that has NOT resolved. This is
  *                    where PnL exists, because this is the only stage where
  *                    the account is still exposed.
- *   RESOLVED        — the market settled and the outcome is known. The legs
- *                    are still on the books until they are merged or redeemed,
- *                    but nothing about them can move any more, so leaving them
- *                    under POSITIONS reads as live exposure that no longer
- *                    exists.
+ *   CLOSED TRADES  — settled trades that booked profit or loss, in the same
+ *                    shape the Data & Markets table renders a finished
+ *                    market. Nothing here can move any more.
  */
 
-const OT_VIEWS = ['active-markets', 'open-orders', 'positions', 'resolved'];
+const OT_VIEWS = ['active-markets', 'open-orders', 'positions', 'closed-trades'];
 const OT_STORAGE_KEY = 'sh-orders-trades-view';
 let currentOrdersTradesView = 'active-markets';
 
@@ -3143,7 +3141,7 @@ const OT_NOTES = {
   'active-markets': 'Markets that graduated the Market Filter and are being quoted.',
   'open-orders': 'Orders resting on the book. Nothing is held yet, so there is no PnL.',
   'positions': 'Filled legs the account is holding on markets that have not settled.',
-  'resolved': 'Markets that settled. The outcome is known, so nothing here can move.',
+  'closed-trades': 'Settled trades that booked a profit or loss.',
 };
 
 const OT_COLUMNS = {
@@ -3157,11 +3155,9 @@ const OT_COLUMNS = {
   // without inventing a per-leg figure that does not exist.
   'positions': ['Market', 'Leg', 'Size', 'Avg Price', 'Cost',
                 'Mark Value', 'Unrealized', 'Realized'],
-  // No Unrealized column: the market settled, so there is no mark left to
-  // move against. What is held is worth what it settles at, and the only
-  // open question is whether it has been merged or redeemed yet.
-  'resolved': ['Market', 'Outcome', 'Leg', 'Size', 'Avg Price', 'Cost',
-               'Settled Value', 'Realized'],
+  // The Data & Markets table shape, reused so a closed trade reads the same
+  // in both places: commit, hedge state, realized P&L, fills, status.
+  'closed-trades': ['Market', 'Commit ($)', 'Hedge', 'Realized P&L', 'Fills', 'Status'],
 };
 
 /* The quote log writes the down leg as `DOWN`; orders and the pair summary
@@ -3613,57 +3609,40 @@ function heldLegs(m) {
  * side's label. A market can be finished without the resolution sweeper
  * having recorded a winner yet (the ranker's days_to_resolve went negative
  * first), and that is `Resolved` with no name rather than a fabricated one. */
-function outcomeCell(m) {
-  const res = m && m.resolution;
-  if (!res) return '<span class="ot-outcome-pending">Resolved</span>';
-  const when = (res.resolved_ts === null || res.resolved_ts === undefined)
-    ? '' : `<div class="caption-muted">${fmtAgo(res.resolved_ts)}</div>`;
-  if (!res.winner) return `<span class="ot-outcome-pending">Resolved</span>${when}`;
-  return `<div class="ot-outcome mono">${esc(res.winner)}</div>${when}`;
+/* Which settled markets closed with money actually booked.
+ *
+ * A market can settle with the account flat -- a pair merged before
+ * resolution, a leg never filled -- and its realized P&L is zero. That is
+ * not a closed trade: there is no profit or loss to read, and a row of
+ * zeros pushed the trades the tab exists to show below the fold. */
+function closedTradesEntries(kpi) {
+  return Object.entries((kpi && kpi.by_market) || {})
+    .filter(([cid, m]) => (m.settlements || []).length > 0
+                           && Number(m.realized_pnl) !== 0)
+    .sort((a, b) => (Number(b[1].realized_pnl) || 0) - (Number(a[1].realized_pnl) || 0));
 }
 
-function resolvedMarketsRows(kpi) {
-  const entries = heldMarketEntries(kpi, true);
+function closedTradesRows(kpi, state) {
+  const entries = closedTradesEntries(kpi);
 
   if (!entries.length) {
-    return otEmptyRow('resolved', 'No market this run holds legs on has settled yet.');
+    return otEmptyRow('closed-trades', 'No closed trades yet: nothing has settled with a booked profit or loss.');
   }
 
-  return entries.map(([cid, m], marketIndex) => {
-    // A settled pair is worth exactly $1.00 a pair whichever side won -- that
-    // is the whole strategy -- so the mark is the pair count, not a mid. A
-    // naked leg is worth the settlement too, not a quote nobody is posting.
-    const mark = settledMarkValue(m, latestLegMids(m));
-    const status = pairStatus(Number(m.up_sh) || 0, Number(m.dn_sh) || 0);
-    const legs = heldLegs(m);
-    if (!legs.length) return '';
+  const ordersByMarket = groupOrdersByMarket(state && state.orders);
+  const fills = (state && state.fills) || [];
+  const graduatedCids = new Set(((kpi && kpi.funnel && kpi.funnel.graduated) || [])
+    .map(g => g.cid || g.condition_id));
 
-    const pairTags = pairSummary(status, (status === 'unpaired') ? null : m.pair_cost);
-    const span = legs.length;
-
-    return legs.map((entry, legIndex) => {
-      const rowClass = ['ot-pair-row'];
-      if (legIndex === 0) rowClass.push('ot-pair-start');
-      if (marketIndex % 2 === 1) rowClass.push('ot-pair-alt');
-      const avgPrice = entry.size > 0 ? entry.cost / entry.size : null;
-      const pairCells = legIndex === 0
-        ? `<td class="ot-market" rowspan="${span}">${marketCell(m, cid)}${pairTags}</td>
-      <td rowspan="${span}">${outcomeCell(m)}</td>`
-        : '';
-      const pairNumbers = legIndex === 0
-        ? `<td class="mono ot-pair-value" rowspan="${span}">${mark === null ? '--' : fmtUSD(mark)}</td>
-      <td class="mono ot-pair-value" rowspan="${span}">${signedUSD(m.realized_pnl)}</td>`
-        : '';
-      return `<tr class="${rowClass.join(' ')}" data-cid="${esc(cid)}" data-leg="${esc(entry.leg)}">
-      ${pairCells}
-      <td><span class="pill ${entry.leg === 'UP' ? 'active' : 'reconnecting'}">${esc(entry.leg)}</span></td>
-      <td class="mono">${fmtShares(entry.size)}</td>
-      <td class="mono">${fmtPrice(avgPrice)}</td>
-      <td class="mono">${fmtUSD(entry.cost)}</td>
-      ${pairNumbers}
-    </tr>`;
-    }).join('');
-  }).join('');
+  return entries.map(([cid, m]) =>
+    marketRowPairHtml(cid, m, {
+      isExpanded: expandedMarkets.has(cid),
+      hasOrders: ordersByMarket[cid] && ordersByMarket[cid].length > 0,
+      allOrders: ordersByMarket[cid] || [],
+      showCancelled: showCancelledByMarket.has(cid),
+      fills,
+      graduatedCids,
+    })).join('');
 }
 
 function positionsRows(kpi) {
@@ -3721,15 +3700,14 @@ function ordersTradesCounts(kpi, state) {
     'open-orders': ((state && state.orders) || []).filter(isRestingOrder).length,
     'positions': markets.filter(([, m]) => (Number(m.total_sh) || 0) > 0
                                             && !isFinishedMarket(m)).length,
-    'resolved': markets.filter(([, m]) => (Number(m.total_sh) || 0) > 0
-                                          && isFinishedMarket(m)).length,
+    'closed-trades': closedTradesEntries(kpi).length,
   };
 }
 
 function ordersTradesRows(view, kpi, state) {
   if (view === 'open-orders') return openOrdersRows(kpi, state);
   if (view === 'positions') return positionsRows(kpi);
-  if (view === 'resolved') return resolvedMarketsRows(kpi);
+  if (view === 'closed-trades') return closedTradesRows(kpi, state);
   return activeMarketsRows(kpi, state);
 }
 
@@ -3742,6 +3720,13 @@ function renderOrdersTrades(kpi, state) {
     ? currentOrdersTradesView : OT_VIEWS[0];
   head.innerHTML = otHeadHtml(view);
   body.innerHTML = ordersTradesRows(view, kpi, state);
+
+  // The closed-trades view reuses the Data & Markets row shape, so it gets
+  // the same click-to-expand behaviour on its rows.
+  if (view === 'closed-trades') {
+    wireMarketRowExpansion(body, groupOrdersByMarket(state && state.orders),
+      () => renderOrdersTrades(lastKpi, lastState));
+  }
 
   const note = document.getElementById('orders-trades-note');
   if (note) note.textContent = OT_NOTES[view];
@@ -3830,92 +3815,111 @@ function renderMarkets(kpi, state) {
 
   body.innerHTML = '';
   for (const [cid, m] of entries) {
-    const fills_count = m.fills_count || 0;
-    const hedged = m.balance !== null && m.balance !== undefined && m.balance >= 0.99 ? 'Hedged' : 'One-Sided';
-    const isExpanded = expandedMarkets.has(cid);
-    const hasOrders = ordersByMarket[cid] && ordersByMarket[cid].length > 0;
-    const allOrders = hasOrders ? ordersByMarket[cid] : [];
-    // Merged legs are finished, not active: a fully-merged market must not
-    // rank or badge as if it still had resting work.
-    const activeOrders = allOrders.filter(o => isActiveOrder(o));
-    const cancelledCount = allOrders.filter(o => isCancelledStatus(o.status)).length;
-    const showCancelled = showCancelledByMarket.has(cid);
-    // Distinct FINISHED when market is resolved or dropped from current
-    // graduated universe but still has history (shadow retains it for P/L).
-    // Covers: days_to_resolve <0, venue_sync resolved, or simply not in
-    // kpi.funnel.graduated anymore (e.g., Mlb Lad Atl 2026-08-27 past date).
-    // HasFunnel guards: when funnel empty (no scan yet) don't mark everything.
-    const hasFunnel = graduatedCids.size > 0;
-    // FINISHED when the backend recorded the terminal marker (the shadow
-    // resolution sweeper's `resolutions` row, or the ranker's dtr<0), OR the
-    // market left the graduated funnel (the existing universe-left path).
-    // `m.resolved` is the primary, durable signal; the funnel heuristic is
-    // the fallback that still works when no sweeper has run (live runs that
-    // only drop by_mkt via venue_sync, or older shadow dbs pre-sweeper).
-    const isFinished = m.resolved === true
-      || (m.days_to_resolve !== null && m.days_to_resolve < 0)
-      || (hasFunnel && !graduatedCids.has(cid) && hasOrders);
-
-    // Badge: per-status pills same size/style as order pills — OPEN blue, FILLED green, 0 ACTIVE gray
-    // cancelled-count retained as string for test_dashboard_server.py (header no longer shows cancelled per UX)
-    let badgeHtml = '';
-    if (hasOrders) {
-      if (activeOrders.length === 0) {
-        badgeHtml = `<span class="pill stopped" style="font-size:10px; padding:2px 8px; margin-left:4px">0 ACTIVE</span>`;
-      } else {
-        const statusCounts = {};
-        for (const o of activeOrders) {
-          const v = String(o.status||'').toLowerCase();
-          const norm = (v === 'open' || v === 'partial' || v === 'pending') ? 'OPEN' : (v === 'filled' ? 'FILLED' : v.toUpperCase());
-          statusCounts[norm] = (statusCounts[norm] || 0) + 1;
-        }
-        const order = ['OPEN','FILLED'];
-        const keys = Object.keys(statusCounts).sort((a,b) => {
-          const ia = order.indexOf(a), ib = order.indexOf(b);
-          if (ia !== -1 || ib !== -1) return (ia===-1?99:ia) - (ib===-1?99:ib);
-          return a.localeCompare(b);
-        });
-        for (const k of keys) {
-          const cnt = statusCounts[k];
-          const cls = k === 'OPEN' ? 'open' : k === 'FILLED' ? 'filled' : 'reconnecting';
-          badgeHtml += `<span class="pill ${cls}" style="font-size:10px; padding:2px 8px; margin-left:4px">${cnt} ${k}</span>`;
-        }
-      }
-      // cancelled-count — header no longer shows cancelled per UX, kept for expanded toggle only
-    }
-    // Main row — clickable to expand
-    body.innerHTML += `<tr class="market-row${isExpanded ? ' expanded' : ''}" data-cid="${esc(cid)}" tabindex="0" role="button" aria-expanded="${isExpanded}" aria-label="${isExpanded ? 'Collapse' : 'Expand'} market orders for ${esc(m.title || m.slug || cid.slice(0,10))}">
-      <td>
-        <span class="expand-chevron${isExpanded ? ' expanded' : ''}" aria-hidden="true">${hasOrders ? '▶' : ''}</span>
-        ${marketLink(m)}
-        ${badgeHtml}
-      </td>
-      <td class="mono">${fmtUSD(m.total_cost)}</td>
-      <td><span class="pill ${hedged === 'Hedged' ? 'active' : 'reconnecting'}">${hedged}</span></td>
-      <td class="mono">${esc(m.realized_pnl !== null && m.realized_pnl !== undefined ? fmtUSD(m.realized_pnl) : '--')}</td>
-      <td class="mono">${esc(fills_count)}</td>
-      <td>
-        <span class="pill ${isFinished ? 'finished' : (m.quotes_count > 0 ? 'quoting-breathing' : 'stopped')}">${isFinished ? 'FINISHED' : (m.quotes_count > 0 ? 'QUOTING' : 'IDLE')}</span>
-        ${m.resolution ? `<div class="caption-muted" title="resolved ${new Date(m.resolution.resolved_ts * 1000).toLocaleString()}">${m.resolution.winner ? ('Winner: ' + esc(m.resolution.winner)) : 'Resolved'} · ${fmtAgo(m.resolution.resolved_ts)}</div>` : ''}
-      </td>
-    </tr>`;
-
-    // Expanded sub-row with individual orders
-    if (isExpanded && hasOrders) {
-      body.innerHTML += `<tr class="orders-expand-row">
-        <td colspan="6" style="padding:0">
-          <div class="orders-expand-content">
-            ${renderExpandedOrders(ordersByMarket[cid], fills, showCancelled)}
-          </div>
-        </td>
-      </tr>`;
-    }
+    body.innerHTML += marketRowPairHtml(cid, m, {
+      isExpanded: expandedMarkets.has(cid),
+      hasOrders: ordersByMarket[cid] && ordersByMarket[cid].length > 0,
+      allOrders: ordersByMarket[cid] || [],
+      showCancelled: showCancelledByMarket.has(cid),
+      fills: state?.fills || [],
+      graduatedCids,
+    });
   }
 
+  wireMarketRowExpansion(body, ordersByMarket, () => renderMarkets(kpi, state));
+}
+
+/* Build one finished-or-live market's main row and its optional expanded
+ * sub-row, in the Data & Markets table shape. Shared with the Orders &
+ * Trades CLOSED TRADES view so a closed trade reads identically in both
+ * tables. Pure: no DOM reads or writes, everything arrives as arguments. */
+function marketRowPairHtml(cid, m, opts) {
+  const { isExpanded, hasOrders, allOrders, showCancelled, fills, graduatedCids } = opts;
+  const fills_count = m.fills_count || 0;
+  const hedged = m.balance !== null && m.balance !== undefined && m.balance >= 0.99 ? 'Hedged' : 'One-Sided';
+  // Merged legs are finished, not active: a fully-merged market must not
+  // rank or badge as if it still had resting work.
+  const activeOrders = allOrders.filter(o => isActiveOrder(o));
+  // Distinct FINISHED when market is resolved or dropped from current
+  // graduated universe but still has history (shadow retains it for P/L).
+  // Covers: days_to_resolve <0, venue_sync resolved, or simply not in
+  // kpi.funnel.graduated anymore (e.g., Mlb Lad Atl 2026-08-27 past date).
+  // HasFunnel guards: when funnel empty (no scan yet) don't mark everything.
+  const hasFunnel = graduatedCids.size > 0;
+  // FINISHED when the backend recorded the terminal marker (the shadow
+  // resolution sweeper's `resolutions` row, or the ranker's dtr<0), OR the
+  // market left the graduated funnel (the existing universe-left path).
+  // `m.resolved` is the primary, durable signal; the funnel heuristic is
+  // the fallback that still works when no sweeper has run (live runs that
+  // only drop by_mkt via venue_sync, or older shadow dbs pre-sweeper).
+  const isFinished = m.resolved === true
+    || (m.days_to_resolve !== null && m.days_to_resolve < 0)
+    || (hasFunnel && !graduatedCids.has(cid) && hasOrders);
+
+  // Badge: per-status pills same size/style as order pills — OPEN blue, FILLED green, 0 ACTIVE gray
+  // cancelled-count retained as string for test_dashboard_server.py (header no longer shows cancelled per UX)
+  let badgeHtml = '';
+  if (hasOrders) {
+    if (activeOrders.length === 0) {
+      badgeHtml = `<span class="pill stopped" style="font-size:10px; padding:2px 8px; margin-left:4px">0 ACTIVE</span>`;
+    } else {
+      const statusCounts = {};
+      for (const o of activeOrders) {
+        const v = String(o.status||'').toLowerCase();
+        const norm = (v === 'open' || v === 'partial' || v === 'pending') ? 'OPEN' : (v === 'filled' ? 'FILLED' : v.toUpperCase());
+        statusCounts[norm] = (statusCounts[norm] || 0) + 1;
+      }
+      const order = ['OPEN','FILLED'];
+      const keys = Object.keys(statusCounts).sort((a,b) => {
+        const ia = order.indexOf(a), ib = order.indexOf(b);
+        if (ia !== -1 || ib !== -1) return (ia===-1?99:ia) - (ib===-1?99:ib);
+        return a.localeCompare(b);
+      });
+      for (const k of keys) {
+        const cnt = statusCounts[k];
+        const cls = k === 'OPEN' ? 'open' : k === 'FILLED' ? 'filled' : 'reconnecting';
+        badgeHtml += `<span class="pill ${cls}" style="font-size:10px; padding:2px 8px; margin-left:4px">${cnt} ${k}</span>`;
+      }
+    }
+    // cancelled-count — header no longer shows cancelled per UX, kept for expanded toggle only
+  }
+  // Main row — clickable to expand
+  let html = `<tr class="market-row${isExpanded ? ' expanded' : ''}" data-cid="${esc(cid)}" tabindex="0" role="button" aria-expanded="${isExpanded}" aria-label="${isExpanded ? 'Collapse' : 'Expand'} market orders for ${esc(m.title || m.slug || cid.slice(0,10))}">
+    <td>
+      <span class="expand-chevron${isExpanded ? ' expanded' : ''}" aria-hidden="true">${hasOrders ? '▶' : ''}</span>
+      ${marketLink(m)}
+      ${badgeHtml}
+    </td>
+    <td class="mono">${fmtUSD(m.total_cost)}</td>
+    <td><span class="pill ${hedged === 'Hedged' ? 'active' : 'reconnecting'}">${hedged}</span></td>
+    <td class="mono">${esc(m.realized_pnl !== null && m.realized_pnl !== undefined ? fmtUSD(m.realized_pnl) : '--')}</td>
+    <td class="mono">${esc(fills_count)}</td>
+    <td>
+      <span class="pill ${isFinished ? 'finished' : (m.quotes_count > 0 ? 'quoting-breathing' : 'stopped')}">${isFinished ? 'FINISHED' : (m.quotes_count > 0 ? 'QUOTING' : 'IDLE')}</span>
+      ${m.resolution ? `<div class="caption-muted" title="resolved ${new Date(m.resolution.resolved_ts * 1000).toLocaleString()}">${m.resolution.winner ? ('Winner: ' + esc(m.resolution.winner)) : 'Resolved'} · ${fmtAgo(m.resolution.resolved_ts)}</div>` : ''}
+    </td>
+  </tr>`;
+
+  // Expanded sub-row with individual orders
+  if (isExpanded && hasOrders) {
+    html += `<tr class="orders-expand-row">
+      <td colspan="6" style="padding:0">
+        <div class="orders-expand-content">
+          ${renderExpandedOrders(allOrders, fills, showCancelled)}
+        </div>
+      </td>
+    </tr>`;
+  }
+  return html;
+}
+
+/* Attach the click/keyboard expand handlers and the cancelled-toggle
+ * handlers for a market-rows table. Shared with the Orders & Trades
+ * CLOSED TRADES view; `rerender` redraws whichever table owns the body. */
+function wireMarketRowExpansion(body, ordersByMarket, rerender) {
   // Wire up click/keyboard handlers for expandable rows
   body.querySelectorAll('.market-row').forEach(row => {
     const cid = row.dataset.cid;
-    if (!cid || !groupOrdersByMarket(state?.orders)[cid]) return;
+    if (!cid || !ordersByMarket[cid]) return;
 
     row.addEventListener('click', (e) => {
       if (e.target.closest('a')) return;
@@ -3924,7 +3928,7 @@ function renderMarkets(kpi, state) {
       } else {
         expandedMarkets.add(cid);
       }
-      renderMarkets(kpi, state);
+      rerender();
     });
 
     row.addEventListener('keydown', (e) => {
@@ -3951,7 +3955,7 @@ function renderMarkets(kpi, state) {
       } else {
         showCancelledByMarket.add(cid);
       }
-      renderMarkets(kpi, state);
+      rerender();
     });
     btn.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {
@@ -4647,7 +4651,8 @@ if (typeof module !== 'undefined' && module.exports) {
     statsFilterScope, pruneStatsSubnav, STATS_VIEW_TARGETS, applyStatsViewFilter,
     renderPnlCiReadout, renderExecutionFunnel,
     OT_VIEWS, OT_COLUMNS, ordersTradesRows, ordersTradesCounts, otHeadHtml,
-    activeMarketsRows, openOrdersRows, positionsRows, resolvedMarketsRows,
+    activeMarketsRows, openOrdersRows, positionsRows, closedTradesRows,
+    closedTradesEntries, marketRowPairHtml, wireMarketRowExpansion,
     heldMarketEntries, heldLegs, isFinishedMarket, latestLegMids, latestLegQuotes,
     positionMarkValue, settledMarkValue, winningLeg,
     isQuotedMarket, isRestingOrder, tokenLegMap, legForOrder,

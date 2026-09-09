@@ -486,7 +486,10 @@ function Stop-Dashboard {
     $inst = Get-DashInstance
     if ($null -ne $inst) {
         Lsh-Step "Stopping dashboard PID $($inst.pid)..."
-        Stop-Process -Id $inst.pid -Force -ErrorAction SilentlyContinue
+        # Tree kill: with --reload the recorded PID is uvicorn's reloader
+        # parent; the serving child would survive a plain Stop-Process and
+        # keep the port while the pidfile said otherwise.
+        taskkill /T /F /PID $($inst.pid) 2>$null | Out-Null
         $deadline = (Get-Date).AddSeconds(10)
         while ((Get-Date) -lt $deadline -and (Test-Port)) { Start-Sleep -Milliseconds 300 }
     }
@@ -647,7 +650,9 @@ function Stop-ShadowDashboard {
     $stopped = $false
     if ($null -ne $inst) {
         Lsh-Step "Stopping shadow dashboard PID $($inst.pid)..."
-        Stop-Process -Id $inst.pid -Force -ErrorAction SilentlyContinue
+        # Tree kill, same reason as Stop-Dashboard: reload mode leaves the
+        # serving child under the recorded reloader PID.
+        taskkill /T /F /PID $($inst.pid) 2>$null | Out-Null
         $deadline = (Get-Date).AddSeconds(10)
         while ((Get-Date) -lt $deadline -and (Test-Port)) { Start-Sleep -Milliseconds 300 }
         if (Wait-ProcessGone -ProcessId $inst.pid) {

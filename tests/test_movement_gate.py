@@ -1,13 +1,16 @@
-"""Recent movement is measured, and can be required, before quoting (#74).
+"""Recent movement is measured and ENFORCED before quoting (#74).
 
 24h volume says a market traded SOMETIME. It cannot say whether anything is
 happening now: the shadow run sat 4.3 hours on a market at 0.23 with 1,777
 shares ahead and zero traded, inside every existing bar the whole time, tying
 up resting capital that was never going to fill.
 
-The gate ships in RECORD-ONLY mode — `select_min_movement_usd` is 0.0, so every
-scanned market carries its measured `movement_usd` and nothing is refused until
-someone sets a bar from that evidence.
+The gate shipped RECORD-ONLY (`select_min_movement_usd` = 0.0) so the bar could
+be chosen from the recorded `movement_usd` column. The unified-universe redesign
+(2026-09-08) turned it into a real gate: $500 of traded notional per 30-minute
+window, measured BEFORE the two book fetches -- a dead tape costs one request,
+not three. Unmeasured tape stays fail-open: None proceeds and is recorded,
+never treated as flat.
 """
 from __future__ import annotations
 
@@ -167,6 +170,24 @@ class _MarketSession:
         return _Resp()
 
 
+class _UnmeasuredTapeSession:
+    """A tape that always fails, and books that always answer."""
+
+    def get(self, url, params=None, timeout=None):
+        if "trades" in url:
+            raise OSError("tape unreachable")
+        payload = {
+            "bids": [{"price": "0.48", "size": "5000"}],
+            "asks": [{"price": "0.52", "size": "5000"}],
+        }
+
+        class _Resp:
+            def json(self_inner):
+                return payload
+
+        return _Resp()
+
+
 def _candidate() -> dict:
     return {
         "condition_id": "0xliquid",
@@ -189,17 +210,17 @@ def _candidate() -> dict:
 
 
 def test_evaluate_records_the_measured_movement_on_every_row():
-    # Arrange — a market that is trading right now.
+    # Arrange — a market that is trading right now, above the shipped bar.
     import time as _time
-    session = _MarketSession([_trade(_time.time() - 30, 0.50, 400.0)])
+    session = _MarketSession([_trade(_time.time() - 30, 0.50, 2000.0)])
 
     # Act
     row = evaluate(session, 5.0, _candidate(), volume_24h=250_000.0, source="spread")
 
     # Assert — measured and carried, so a bar can be chosen from evidence.
     assert row is not None
-    assert row["movement_usd"] == pytest.approx(200.0)
-    assert row["movement_window_sec"] == 900.0
+    assert row["movement_usd"] == pytest.approx(1000.0)
+    assert row["movement_window_sec"] == 1800.0
     assert session.tape_calls == 1
 
 
@@ -216,6 +237,35 @@ def test_evaluate_refuses_a_flat_market_once_the_bar_is_set(monkeypatch):
     assert row is not None
     assert row["eligible"] is False
     assert "no movement" in row["reject_reason"]
+
+
+def test_evaluate_refuses_a_flat_market_at_the_shipped_bar():
+    # Arrange — nothing has traded in the window; no monkeypatch, the shipped
+    # $500/30m bar does the refusing on its own now.
+    session = _MarketSession([_trade(1.0, 0.23, 500.0)])
+
+    # Act
+    row = evaluate(session, 5.0, _candidate(), volume_24h=250_000.0, source="spread")
+
+    # Assert
+    assert row is not None
+    assert row["eligible"] is False
+    assert "no movement" in row["reject_reason"]
+
+
+def test_an_unmeasured_tape_never_refuses_a_liquid_market():
+    # Arrange — the tape read fails; the books answer fine. Refusing here
+    # would empty the universe on one bad minute at the venue, so the row
+    # proceeds with the unmeasured reading recorded.
+    session = _UnmeasuredTapeSession()
+
+    # Act
+    row = evaluate(session, 5.0, _candidate(), volume_24h=250_000.0, source="spread")
+
+    # Assert — eligible, with None carried as the honest movement figure.
+    assert row is not None
+    assert row["eligible"] is True
+    assert row["movement_usd"] is None
 
 
 def test_non_finite_and_negative_prints_are_skipped():
@@ -245,6 +295,6 @@ def test_non_finite_env_overrides_are_refused(monkeypatch):
     # Act
     cfg = load()
 
-    # Assert — the shipped defaults stand.
-    assert cfg.select_min_movement_usd == 0.0
-    assert cfg.select_movement_window_sec == 900.0
+    # Assert — the shipped defaults stand (now enforced, per the redesign).
+    assert cfg.select_min_movement_usd == 500.0
+    assert cfg.select_movement_window_sec == 1800.0

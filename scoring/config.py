@@ -459,11 +459,18 @@ class MakerConfig:
     # `select_movement_window_sec` is the lookback, `select_min_movement_usd`
     # the notional that must have changed hands inside it.
     #
-    # Ships at 0.0 -- RECORD ONLY. Every scanned market carries its measured
-    # `movement_usd` so the bar can be chosen from evidence rather than
-    # guessed; set HUNTER_MIN_MOVEMENT_USD to enforce.
-    select_movement_window_sec: float = 900.0
-    select_min_movement_usd: float = 0.0
+    # ENFORCED 2026-09-08 (operator directive, unified-universe redesign).
+    # Shipped 2026-08 at 0.0 -- record only -- so the bar could be chosen from
+    # the recorded `movement_usd` column. The unified universe now pays one
+    # tape read per volume-qualified market BEFORE its two book fetches, so a
+    # stale market costs one request instead of three, and a recorded metric
+    # nobody acted on became a real gate. $500/30min is deliberately lenient
+    # against the $125k/24h volume bar -- whose markets average ~$2.6k per 30
+    # minutes -- so it refuses multi-hour stalls, not quiet-but-alive books.
+    # Unmeasured tape stays fail-open: `movement_reject` passes None, because
+    # a failed HTTP call must not empty the universe on one bad minute.
+    select_movement_window_sec: float = 1800.0
+    select_min_movement_usd: float = 500.0
     select_max_book_spread: float = 0.06
     # 30 days admits liquid macro, sports, and political markets while keeping
     # long-dated 2027 markets excluded.

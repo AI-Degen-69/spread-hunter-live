@@ -173,6 +173,31 @@ def test_a_merge_and_a_one_sided_exit_both_retire_their_shares(temp_db):
     assert m["dn_sh"] == pytest.approx(4.0)
 
 
+def test_merge_dust_leaves_no_phantom_unpaired_leg(temp_db):
+    # Arrange -- the exact shape the board got stuck on: the merge close was
+    # written from its own fills, so `shares` carried a floating-point hair
+    # below the sum it retires (5.0 vs 4.999999999999999). The subtraction
+    # left ~1e-15 shares and ~2.5 cents of cost, which the board rendered as a
+    # phantom unpaired UP leg whose avg price was cost divided by ~nothing.
+    # Anything below a billionth of a share is dust, not exposure.
+    reg = OrderRegistry(temp_db)
+    _fill_leg(reg, "o-up", TOK_UP, 5.0, 0.475)
+    _fill_leg(reg, "o-dn", TOK_DN, 4.999999999999999, 0.47)
+    _merge(reg, shares=4.999999999999999, cost_basis=4.75)
+
+    # Act
+    m = _market(temp_db)
+    inv = inventory_from_registry(CID, TOK_UP, TOK_DN, db_path=temp_db)
+
+    # Assert -- the board and the engine both read the account as flat.
+    assert m["up_sh"] == pytest.approx(0.0, abs=1e-9)
+    assert m["dn_sh"] == pytest.approx(0.0, abs=1e-9)
+    assert m["total_cost"] == pytest.approx(0.0, abs=1e-9)
+    assert m["total_sh"] == pytest.approx(0.0, abs=1e-9)
+    assert inv.up_shares == pytest.approx(0.0, abs=1e-9)
+    assert inv.down_shares == pytest.approx(0.0, abs=1e-9)
+
+
 # -- The board and the engine read one store ---------------------------------
 
 def test_the_board_and_the_engine_agree_on_what_is_held(temp_db):

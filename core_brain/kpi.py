@@ -1243,6 +1243,19 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
             else:
                 dn_sh = max(0.0, dn_sh - sh)
                 dn_cost = max(0.0, dn_cost - float(c.get("dn_cost_removed") or 0.0))
+        # Floating-point dust clamp. A merge close written from its own fills
+        # can carry `shares` a hair below the sum it retires (5.0 vs
+        # 4.999999999999999), leaving ~1e-15 shares and a few cents of cost
+        # behind — rendered by the board as a phantom unpaired leg priced at
+        # cost ÷ ~0. Shares below one billionth are dust, not exposure.
+        if up_sh < 1e-9:
+            up_sh = 0.0
+            if up_cost < 1e-9:
+                up_cost = 0.0
+        if dn_sh < 1e-9:
+            dn_sh = 0.0
+            if dn_cost < 1e-9:
+                dn_cost = 0.0
         m_pnl = sum(float(c.get("realized_pnl") or 0.0) for c in m_closes)
 
         # Markout horizons for this market

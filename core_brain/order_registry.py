@@ -2058,6 +2058,17 @@ def inventory_from_registry(
                     inv.up_cost = max(0.0, inv.up_cost - float(up_c))
                 if dn_c is not None:
                     inv.down_cost = max(0.0, inv.down_cost - float(dn_c))
+                # Floating-point dust clamp: a close written from its own fills
+                # can carry `shares` a hair below the sum it retires, leaving
+                # ~1e-15 shares priced as real exposure downstream.
+                if inv.up_shares < 1e-9:
+                    inv.up_shares = 0.0
+                    if inv.up_cost < 1e-9:
+                        inv.up_cost = 0.0
+                if inv.down_shares < 1e-9:
+                    inv.down_shares = 0.0
+                    if inv.down_cost < 1e-9:
+                        inv.down_cost = 0.0
                 continue
     return inv
 

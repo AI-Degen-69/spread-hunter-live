@@ -300,8 +300,14 @@ class TestTheBarClimbsTheWholeStack:
             fm._CFG, enforce_max_queue_minutes=True,
             select_max_queue_minutes=15.0))
         monkeypatch.setattr(fm.requests, "Session", _Session)
-        monkeypatch.setattr(fm, "gamma_volume", lambda *a, **k: {})
-        monkeypatch.setattr(fm, "gamma_spread_universe", lambda *a, **k: [])
+        monkeypatch.setattr(fm, "gamma_universe",
+                            lambda *a, **k: ([], {"volume_bar": 0.0,
+                                                  "pages_fetched": 0,
+                                                  "rows_scanned": 0,
+                                                  "truncated": False,
+                                                  "ordering_violated": False,
+                                                  "cheap_rejects": {},
+                                                  "cheap_examples": {}}))
         monkeypatch.setattr(sys, "argv", ["filter_markets.py"])
 
         with pytest.raises(_StopHere):
@@ -309,3 +315,4 @@ class TestTheBarClimbsTheWholeStack:
 
         assert seen.get("max_queue_minutes") == 15.0, (
             "main did not forward the bar -- the same bug one frame up")
+        assert seen.get("min_movement_usd") == fm.MIN_MOVEMENT_USD

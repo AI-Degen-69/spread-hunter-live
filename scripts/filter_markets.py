@@ -1,7 +1,13 @@
-"""Filter funded and liquid markets by RETURN, and write the winners to runtime/markets.json.
+"""Filter the unified market universe by RETURN, and write the winners to runtime/markets.json.
 
     python -m scripts.filter_markets            # top 20
     python -m scripts.filter_markets --top 40
+    python -m scripts.filter_markets --full-scan    # audit: exhaust Gamma's listing
+
+ONE universe: Gamma /markets ordered by 24h volume, every tradable binary on
+it, reward-funded or not -- the reward/spread split is gone. Scored on spread
+capture, gated on real movement (a 30-minute notional window), and every
+rejected candidate lands in runtime/market_universe.json with its reason.
 """
 from __future__ import annotations
 
@@ -31,7 +37,7 @@ from scoring.config import load as _load_cfg   # noqa: E402
 from scoring.markets import parse_book   # noqa: E402
 from scoring.rewards import score_per_share   # noqa: E402
 from scoring.selector import (identity_allowed, maker_queue_allowed,  # noqa: E402
-                              pair_books_allowed)
+                              pair_books_allowed, top_depth_usd)
 
 RUN = ROOT / "runtime"
 OFFSET = 0.020          # where we intend to quote, in price units
@@ -57,6 +63,7 @@ TRADES_API = "https://data-api.polymarket.com/trades"
 MAX_BOOK_SPREAD = _CFG.select_max_book_spread
 
 GAMMA = "https://gamma-api.polymarket.com/markets"
+ORDERING_FALLBACK_PAGES = 5
 
 
 def _pid_is_running(pid: int) -> bool:
@@ -327,49 +334,62 @@ def gamma_volume(session: requests.Session,
     return out
 
 
-def gamma_spread_universe(session: requests.Session,
-                          pages: int = 2, per_page: int = 100,
-                          min_volume_usd: Optional[float] = None) -> list[dict]:
-    """Liquid short-dated markets that pay NO rewards, shaped like CLOB rows.
+def gamma_universe(session: requests.Session,
+                   per_page: int = 100,
+                   min_volume_usd: Optional[float] = None,
+                   full_scan: bool = False,
+                   max_pages: int = 200) -> tuple[list[dict], dict]:
+    """ONE market universe: every tradable binary Gamma market, rewards or not.
 
-    `/sampling-markets` lists reward-funded markets and nothing else, so the
-    ranker structurally could not see the markets that actually trade. The
-    entire 2026-07-31 universe came from there: 20 markets, 48 tape prints in
-    11.6 hours, nine of them never traded at all, and every `tape_json`
-    recorded in the paper-run database is `{}`.
+    This replaces the two-path scan. `/sampling-markets` listed reward-funded
+    markets and nothing else, so the ranker structurally could not see the
+    markets that actually trade -- the 2026-07-31 universe came from there: 20
+    markets, 48 tape prints in 11.6 hours, nine of them never traded at all.
+    The distinction is gone: discovery is Gamma `/markets` ordered by 24h
+    volume, and reward state is NOT a filter -- `clobRewards` rows are scored
+    on the same spread terms as everything else (their reward config still
+    feeds the score-window width, nothing else).
 
-    Gamma sorts by 24h volume and carries the book summary (`spread`,
-    `bestBid`, `bestAsk`) inline, so the expensive part -- one CLOB round trip
-    per market -- happens only for candidates that already clear volume and
-    horizon.
+    The end-date range is likewise no longer a discovery parameter: long-dated
+    markets are fetched, then refused auditably by the horizon gate in
+    `evaluate`, so the funnel shows how much of the population the 30-day
+    horizon actually removes.
 
-    Reward-funded markets are excluded here rather than merged: they are
-    already sourced, priced and floored by the reward path, and a market
-    scored twice would compete against itself in the water-fill.
+    Cost control: the listing is volume-sorted and the ranker gates on
+    `select_min_volume_24h_usd`, so paginating to exhaustion would fetch
+    thousands of sub-floor rows every rank. The scan stops one BOUNDARY PAGE
+    past the first sub-floor row -- enough to audit the volume near-miss tail
+    -- and records the truncation in the returned metadata instead of hiding
+    it. `full_scan=True` (the operator's `--full-scan`) paginates until Gamma
+    returns nothing, bounded by `max_pages`. If the sort is inverted, normal
+    scans switch to per-row filtering for a smaller, separately bounded page
+    budget so qualifying rows are retained without turning every rank into a
+    general maximum-page scan.
 
-    Returned rows use CLOB field names (`condition_id`, `tokens`, `rewards`)
-    because `evaluate` reads them, plus the two gamma-only figures the spread
-    pot needs.
+    Cheap per-row filters (active/closed/archived, order book, accepting
+    orders, binary, quoted spread) are applied here, and the rows they refuse
+    are COUNTED and SAMPLED in the metadata rather than scored. Returned rows
+    use CLOB field names (`condition_id`, `tokens`, `rewards`) because
+    `evaluate` reads them, plus the gamma-only figures the spread pot needs.
     """
     now = datetime.now(timezone.utc)
     out: list[dict] = []
     volume_bar = MIN_VOLUME_24H if min_volume_usd is None else min_volume_usd
+    meta: dict = {
+        "volume_bar": volume_bar,
+        "pages_fetched": 0,
+        "rows_scanned": 0,
+        "truncated": False,
+        "ordering_violated": False,
+        "cheap_rejects": {},
+        "cheap_examples": {},
+    }
     # ADVANCE BY WHAT THE ENDPOINT ACTUALLY RETURNED, NOT BY WHAT WE ASKED FOR.
-    #
     # Gamma caps a page at 100 rows and ignores a larger `limit` -- measured
-    # 2026-08-02: limit=100, 250 and 500 all return exactly 100. Stepping the
-    # offset by the REQUESTED size therefore jumped a gap: at per_page=250,
-    # page 1 started at offset 250 while the response had ended at 99, so rows
-    # 100-249 were never fetched. They exist; offset=100 returns a full page.
-    #
-    # Unreachable today only because the volume floor stops the scan inside the
-    # first page -- which is luck, not a design. Tracking the real cursor makes
-    # it correct whatever the cap turns out to be.
-    # PAGINATION CONTRACT (verified live 2026-08-10): this endpoint serves a
-    # flat array and supports `offset` only. There is no cursor field in the
-    # response, and `after_cursor` is silently ignored -- identical rows to
-    # `offset=0` -- so keyset pagination is not possible here and there is no
-    # next-cursor to feed back.
+    # 2026-08-02: limit=100, 250 and 500 all return exactly 100. PAGINATION
+    # CONTRACT (verified live 2026-08-10): this endpoint serves a flat array
+    # and supports `offset` only; there is no cursor field and `after_cursor`
+    # is silently ignored, so keyset pagination is not possible.
     offset = 0
     page_cap: int | None = None
     # The floor cutoff below is only sound while the venue keeps the verified
@@ -378,27 +398,40 @@ def gamma_spread_universe(session: requests.Session,
     # invalidates the cutoff.
     floor_seen = False
     ordering_violated = False
-    for _ in range(pages):
+    boundary_pages_done = 0
+    ordering_fallback_pages_done = 0
+
+    def _cheap_reject(kind: str, m: dict) -> None:
+        meta["cheap_rejects"][kind] = meta["cheap_rejects"].get(kind, 0) + 1
+        bucket = meta["cheap_examples"].setdefault(kind, [])
+        if len(bucket) < 8:
+            title = (m.get("question") or "")[:80]
+            if title:
+                bucket.append(title)
+
+    for _ in range(max_pages):
         params = {
             "closed": "false", "active": "true", "archived": "false",
             "order": "volume24hr", "ascending": "false",
             "limit": per_page, "offset": offset,
-            "end_date_min": now.isoformat(),
-            "end_date_max": (now + timedelta(days=MAX_DAYS_TO_RESOLVE)).isoformat(),
         }
         try:
             rows = session.get(GAMMA, params=params, timeout=30).json()
         except Exception:
+            meta["truncated"] = True        # scan ended on an error, not exhaustion
             break
         if isinstance(rows, dict):
             rows = rows.get("data") or []
         if not rows:
             break
+        meta["pages_fetched"] += 1
         offset += len(rows)
+        meta["rows_scanned"] += len(rows)
         for m in rows:
             vol = float(m.get("volume24hr") or 0.0)
             if vol < volume_bar:
                 floor_seen = True
+                _cheap_reject("sub-floor volume", m)
                 continue
             if floor_seen and not ordering_violated:
                 # A qualifying market after a sub-floor one: the venue's
@@ -407,23 +440,28 @@ def gamma_spread_universe(session: requests.Session,
                 # qualifying market is exactly the failure the ordering
                 # assumption exists to rule out.
                 ordering_violated = True
+                meta["ordering_violated"] = True
                 print("WARNING: gamma page not sorted by volume24hr "
                       "(qualifying market below a sub-floor one); "
                       "falling back to per-row filtering for the rest "
                       "of the scan")
-            if not m.get("enableOrderBook") or not m.get("acceptingOrders"):
+            if not m.get("enableOrderBook"):
+                _cheap_reject("no order book", m)
                 continue
-            # Reward-funded markets belong to the other path.
-            if m.get("clobRewards"):
+            if not m.get("acceptingOrders"):
+                _cheap_reject("not accepting orders", m)
                 continue
             try:
                 toks = json.loads(m.get("clobTokenIds") or "[]")
             except (TypeError, ValueError):
+                _cheap_reject("unparsable clobTokenIds", m)
                 continue
-            if len(toks) != 2:
+            if not isinstance(toks, list) or len(toks) != 2:
+                _cheap_reject("not binary", m)
                 continue
             spread = float(m.get("spread") or 0.0)
             if spread <= 0:
+                _cheap_reject("no book spread", m)
                 continue
             out.append({
                 "condition_id": m.get("conditionId"),
@@ -435,17 +473,14 @@ def gamma_spread_universe(session: requests.Session,
                 "series_title": ((m.get("events") or [{}])[0].get("series") or [{}])[0].get("title", ""),
                 "event_title": ((m.get("events") or [{}])[0].get("title") or ""),
                 "tokens": [{"token_id": str(t)} for t in toks],
-                # No reward config exists on these markets. The scan below
-                # still needs a window and a scoring minimum to measure
-                # competing depth with, so the venue's usual defaults stand in
-                # -- they set the units of `theirs`, and reallocate() reads the
-                # same units back out. They are NOT a claim that this market
-                # pays rewards; `daily` stays 0 and `source` says spread.
+                # Reward config, when the venue publishes one, feeds the score
+                # WINDOW only. It is not a filter and not an income source:
+                # the pot for every row here is spread capture.
                 "rewards": {"max_spread": float(m.get("rewardsMaxSpread") or 3.5),
                             "min_size": float(m.get("rewardsMinSize") or 50)},
                 "minimum_tick_size": float(m.get("orderPriceMinTickSize") or 0.01),
                 "end_date_iso": m.get("endDate"),
-                # Quoting minimum, which is the venue's order minimum here --
+                # Quoting minimum, which is the venue's order minimum --
                 # there is no reward score to qualify for, so rewardsMinSize
                 # would only inflate the lot the allocator has to buy.
                 # Sports markets open before the event does; this is what the
@@ -459,31 +494,54 @@ def gamma_spread_universe(session: requests.Session,
             })
         # Sorted by volume, so the first market under the floor ends the
         # useful part of the listing -- when the sort holds. Verified
-        # against the live endpoint 2026-08-02 and re-verified 2026-08-10
-        # with the date filters applied: 100 rows, zero inversions, and the
-        # first row under the floor had no qualifying market after it. The
-        # `order=volume24hr&ascending=false` sort survives
-        # `end_date_min`/`end_date_max`. An inverted page sets
+        # against the live endpoint 2026-08-02 and re-verified 2026-08-10:
+        # 100 rows, zero inversions, and the first row under the floor had
+        # no qualifying market after it. An inverted page sets
         # `ordering_violated`, which skips this cut and scans on. Inversion
         # detection is WITHIN a page only: a page that ends on a clean
         # sub-floor tail trusts the cut, so a venue regression at exactly
         # the page boundary (qualifying rows at the top of the next page)
         # is not detected -- the verified sort rules that case out.
-        if floor_seen and not ordering_violated:
-            break
         # A SHORT PAGE MEANS THE LISTING ENDED -- measured against what this
-        # endpoint actually serves, not what we asked for.
-        #
-        # This compared against `per_page`, and Gamma caps a page at 100 however
-        # large a limit is requested. At the old per_page=250 every response was
-        # "short", so the loop broke after the first page every time: `pages=2`
-        # was never honoured and the scan never saw past the first 100 markets.
-        # The first response establishes the real page size.
+        # endpoint actually serves, not what we asked for. Checked BEFORE the
+        # boundary policy below: a boundary page that is also short is
+        # exhaustion, not truncation. The first response establishes the real
+        # page size.
         if page_cap is None:
             page_cap = len(rows)
         if len(rows) < page_cap:
             break
-    return out
+        if floor_seen and not full_scan:
+            if ordering_violated:
+                ordering_fallback_pages_done += 1
+                if ordering_fallback_pages_done >= ORDERING_FALLBACK_PAGES:
+                    # The sort can no longer support a floor cutoff, so keep
+                    # filtering every fetched row but bound the degraded scan
+                    # separately from the general/full-scan page allowance.
+                    meta["truncated"] = True
+                    break
+            elif boundary_pages_done >= 1:
+                # Stopped on POLICY, not because the listing ended -- recorded
+                # as truncation so no reader mistakes the fetch for complete.
+                meta["truncated"] = True
+                break
+            else:
+                boundary_pages_done += 1
+                # ONE boundary page past the floor: the volume near-miss tail
+                # is fetched and counted so the gate can be tuned from
+                # evidence, then the scan stops. `full_scan` keeps going to
+                # exhaustion.
+    else:
+        meta["truncated"] = True            # stopped at max_pages, not exhaustion
+    return out, meta
+
+
+
+
+# The old two-path discovery (`gamma_spread_universe`, rewards-only
+# /sampling-markets + reward-excluding gamma scan) is deleted with the reward
+# path; `--legacy-rewards` reconstructs its candidate list inline in `main()`
+# for one comparison period.
 
 
 def order_score(v: float, s: float, size: float, min_size: float) -> float:
@@ -526,20 +584,72 @@ def queue_bar_reject(m: dict, *, source: str,
     }
 
 
+def _vol(volume_24h: Optional[float]) -> Optional[float]:
+    """Volume rounded for a funnel row, or None when never measured."""
+    return round(volume_24h, 2) if volume_24h is not None else None
+
+
+def _book_stats(book_spreads: dict, book_depths: dict) -> dict:
+    """Per-side book readings for a funnel row, keyed by leg.
+
+    The universe file answers "did the book gate reject this market, and by
+    how much?" -- so every row that fetched at least one leg carries that
+    leg's spread and top-3 bid depth, under the YES_/NO_-prefixed names the
+    dashboard and diagnostics read.
+    """
+    out: dict = {}
+    for j, label in ((0, "yes"), (1, "no")):
+        if j in book_spreads:
+            out[f"{label}_spread"] = round(book_spreads[j], 4)
+        if j in book_depths:
+            out[f"{label}_depth_usd"] = round(book_depths[j], 2)
+    return out
+
+
+def _reject_row(source: str, reason: str, m: dict,
+                volume_24h: Optional[float] = None,
+                **extra) -> dict:
+    """One funnel row for a rejected market -- never None.
+
+    Book-stage failures used to `return None` and vanish into the
+    `dropped_no_verdict` count: the market was discovered, then silently
+    unaccounted. Every gate now answers with a row, so the raw population
+    reconciles exactly against the buckets.
+    """
+    row = {
+        "source": source, "eligible": False, "reject_reason": reason,
+        "volume_24h": _vol(volume_24h),
+        "cid": m.get("condition_id"),
+        "title": m.get("question", "")[:90],
+        "slug": m.get("market_slug", ""),
+    }
+    row.update(extra)
+    return row
+
+
 def evaluate(session: requests.Session, rate: float, m: dict,
              volume_24h: Optional[float] = None,
-             source: str = "rewards", *,
+             source: str = "spread", *,
              min_depth_usd: Optional[float] = None,
              min_volume_usd: Optional[float] = None,
+             min_movement_usd: Optional[float] = None,
              max_spread: Optional[float] = None,
              max_queue_minutes: Optional[float] = None,
-             queue_minutes_fn=None) -> dict | None:
+             queue_minutes_fn=None) -> dict:
     """Income and capital for one market, from its live book.
 
-    `rate` is the market's pot in $/day, and `source` says what pays it. For a
-    reward market that is the venue's emission and the $1.50 minimum payout
-    applies; for a spread market it is `spread_capture_daily`, paid by the
-    taker on the trade, and no minimum distribution exists to apply.
+    `rate` is the market's pot in $/day. In the unified universe every pot is
+    spread capture -- `spread_capture_daily`, paid by the taker on the trade;
+    no minimum distribution exists to apply. (`source` remains a parameter
+    only for `--legacy-rewards`, which restores the old reward pot and its
+    $1.50 floor for one comparison period.)
+
+    GATE ORDER, cheapest first: identity, pre-start, queue, score-window
+    shape -- then the TAPE (one request) -- then the books (two requests).
+    A market whose tape is dead cannot fill a resting order at any price, so
+    its books are never fetched. Book-stage failures return rejection ROWS
+    rather than None: a market the funnel discovered must stay accounted for
+    all the way to a bucket.
     """
     rw = m.get("rewards") or {}
     identity_ok, identity_reason = identity_allowed(
@@ -559,14 +669,7 @@ def evaluate(session: requests.Session, rate: float, m: dict,
     # buys a reading of a book that cannot move.
     not_started, start_reason = pre_start(market_start_iso(m))
     if not_started:
-        return {
-            "source": source, "eligible": False,
-            "reject_reason": start_reason,
-            "cid": m.get("condition_id"),
-            "title": m.get("question", "")[:90],
-            "slug": m.get("market_slug", ""),
-            "volume_24h": round(volume_24h, 2) if volume_24h is not None else None,
-        }
+        return _reject_row(source, start_reason, m, volume_24h)
     # THE MAKER-QUEUE BAR, before the two book fetches below rather than
     # after them. A market whose queue at our own price never clears cannot be
     # quoted at all, so paying for its books to score it is wasted venue work.
@@ -581,19 +684,46 @@ def evaluate(session: requests.Session, rate: float, m: dict,
     min_size = rw.get("min_size") or 50
     toks = [t.get("token_id") for t in (m.get("tokens") or [])]
     if len(toks) != 2 or OFFSET >= v:
-        return None
+        return _reject_row(
+            source,
+            "no score window: two tokens and a window wider than the "
+            "quote offset are required",
+            m, volume_24h)
+
+    # THE MOVEMENT GATE, BEFORE the two book fetches. A market whose tape is
+    # dead cannot fill a resting order at any price, so paying for its books
+    # to score it is wasted venue work: one tape read refuses it for one
+    # request instead of three. Unmeasured tape stays fail-open -- None
+    # proceeds to the book gates and is recorded on the row, never treated
+    # as flat, because a failed HTTP call must not empty the universe on one
+    # bad minute at the venue.
+    movement_bar = (MIN_MOVEMENT_USD if min_movement_usd is None
+                    else min_movement_usd)
+    movement_usd = traded_notional(
+        session, m.get("condition_id"), window_sec=MOVEMENT_WINDOW_SEC)
+    flat, flat_reason = movement_reject(
+        movement_usd, min_movement_usd=movement_bar,
+        window_sec=MOVEMENT_WINDOW_SEC)
+    if flat:
+        return _reject_row(source, flat_reason, m, volume_24h,
+                           movement_usd=movement_usd,
+                           movement_window_sec=MOVEMENT_WINDOW_SEC)
 
     q1 = q2 = 0.0
     capital_per_share = 0.0
     mids: dict[int, float] = {}
     best_bids: dict[int, float] = {}
+    book_spreads: dict[int, float] = {}
+    book_depths: dict[int, float] = {}
     books: list[tuple[str, list[tuple[float, float]], list[tuple[float, float]]]] = []
     for j, tok in enumerate(toks):
+        side = "YES" if j == 0 else "NO"
         try:
             b = session.get("https://clob.polymarket.com/book",
                             params={"token_id": tok}, timeout=12).json()
         except Exception:
-            return None
+            return _reject_row(source, f"{side}: book fetch failed", m,
+                               volume_24h, movement_usd=movement_usd)
         # The fetch is guarded with Exception, and so is the parse: the whole
         # point is that the scorer must never crash on venue data, whatever
         # parse_book's structural-failure type evolves into. This also rounds
@@ -602,19 +732,22 @@ def evaluate(session: requests.Session, rate: float, m: dict,
         try:
             book = parse_book(b, tok)
         except Exception:
-            return None
+            return _reject_row(source, f"{side}: book parse failed", m,
+                               volume_24h, movement_usd=movement_usd)
         # A skipped level under-counts competitor depth, which OVERSTATES our
         # income share -- the dangerous direction for a funding decision.
         # Fail closed rather than scoring against a partial book; this used
         # to crash the whole ranking run (the parse sat outside the try and
         # the exception aborted every ThreadPool worker).
         if book["malformed"]:
-            return None
+            return _reject_row(source, f"{side}: malformed book", m,
+                               volume_24h, movement_usd=movement_usd)
         bids = list(book["bids"].items())
         asks = list(book["asks"].items())
         if not bids or not asks:
-            return None
-        books.append(("YES" if j == 0 else "NO", bids, asks))
+            return _reject_row(source, f"{side}: empty or one-sided book", m,
+                               volume_24h, movement_usd=movement_usd)
+        books.append((side, bids, asks))
         mid = (max(bids)[0] + min(asks)[0]) / 2.0
         # Outside [0.20, 0.80] the book is one-sided in practice and the
         # position is mostly a bet on a near-settled outcome.
@@ -624,9 +757,16 @@ def evaluate(session: requests.Session, rate: float, m: dict,
         # spread to capture and prevents a decided leg from ever entering the
         # graduated universe.
         if not 0.20 < mid < 0.80:
-            return None
+            return _reject_row(
+                source,
+                f"{side}: decided mid {mid:.2f} outside [0.20, 0.80]",
+                m, volume_24h, movement_usd=movement_usd,
+                **_book_stats({j: min(asks)[0] - max(bids)[0]},
+                              {j: top_depth_usd(bids)}))
         mids[j] = mid
         best_bids[j] = max(bids)[0]
+        book_spreads[j] = min(asks)[0] - max(bids)[0]
+        book_depths[j] = top_depth_usd(bids)
         capital_per_share += mid
         for levels, sign, is_bid in ((bids, 1.0, True), (asks, -1.0, False)):
             for p, s in levels:
@@ -653,7 +793,7 @@ def evaluate(session: requests.Session, rate: float, m: dict,
         return {
             "source": source, "eligible": False,
             "reject_reason": books_reason,
-            "volume_24h": round(volume_24h, 2) if volume_24h is not None else None,
+            "volume_24h": _vol(volume_24h),
             # The book WAS readable -- this market failed the depth/spread
             # gate, not the fetch -- so the competition reading an adopted
             # fleet would average over its window is already in hand here.
@@ -666,12 +806,9 @@ def evaluate(session: requests.Session, rate: float, m: dict,
             "cid": m.get("condition_id"),
             "title": m.get("question", "")[:90],
             "slug": m.get("market_slug", ""),
+            "movement_usd": movement_usd,
+            **_book_stats(book_spreads, book_depths),
         }
-
-    # THE MOVEMENT GATE, measured only for markets that already cleared the
-    # book gates: one tape read per surviving candidate rather than per row.
-    movement_usd = traded_notional(session, m.get("condition_id"))
-    flat, flat_reason = movement_reject(movement_usd)
 
     theirs = q_min(q1, q2)
     n = max(min_size, 120)
@@ -693,7 +830,10 @@ def evaluate(session: requests.Session, rate: float, m: dict,
         sides.append(order_score(v, s, n, min_size))
     ours = q_min(sides[0], sides[1])
     if ours <= 0:
-        return None            # cannot score here without overbidding the book
+        return _reject_row(
+            source, "cannot score here without overbidding the book", m,
+            volume_24h, movement_usd=movement_usd,
+            **_book_stats(book_spreads, book_depths))
     income = rate * ours / (ours + theirs)
     capital = n * capital_per_share
 
@@ -709,13 +849,13 @@ def evaluate(session: requests.Session, rate: float, m: dict,
         m.get("category"), m.get("market_type"),
         m.get("market_group"), m.get("series_title"), m.get("event_title"),
         min_volume_usd=min_volume_usd)
-    # The payout floor is a REWARD rule -- the venue's minimum distribution.
-    # A spread market is paid by whoever lifts the offer, in the amount of the
-    # spread, so there is no distribution to be under. Holding it to the floor
-    # would reject exactly the liquid markets this path exists to admit.
-    if not why and flat:
-        why = flat_reason
-        can_trade = False
+    # The movement gate has already been enforced above, before the book
+    # fetches -- `flat` cannot be true here. The payout floor is a REWARD
+    # rule -- the venue's minimum distribution -- and only under
+    # `--legacy-rewards`: a spread market is paid by whoever lifts the offer,
+    # in the amount of the spread, so there is no distribution to be under.
+    # Holding it to the floor would reject exactly the liquid markets the
+    # unified universe exists to admit.
     pays = income >= MIN_PAYOUT * FLOOR_MULTIPLE if source == "rewards" else income > 0
     if not why and not pays:
         why = (f"income ${income:.2f}/day under payout floor"
@@ -729,7 +869,7 @@ def evaluate(session: requests.Session, rate: float, m: dict,
         # report can show what was rejected and why.
         "eligible": pays and can_trade,
         "reject_reason": why,
-        "volume_24h": round(volume_24h, 2) if volume_24h is not None else None,
+        "volume_24h": _vol(volume_24h),
         # Recorded on every scanned market, gated or not: the bar for
         # `select_min_movement_usd` is meant to be chosen from this column.
         "movement_usd": movement_usd,
@@ -761,6 +901,10 @@ def evaluate(session: requests.Session, rate: float, m: dict,
         "est_capital": round(capital, 2),
         "return_pct_day": round(100 * income / capital, 3) if capital else 0,
         "their_score": round(theirs, 1),
+        "yes_spread": round(book_spreads[0], 4),
+        "no_spread": round(book_spreads[1], 4),
+        "yes_depth_usd": round(book_depths[0], 2),
+        "no_depth_usd": round(book_depths[1], 2),
     }
 
 
@@ -786,6 +930,12 @@ def _cause(reason: str) -> str:
         return "pre-start"
     if "no movement" in r:
         return "no movement"
+    # The decided-mid reason embeds the measured price, so raw text would make
+    # one dashboard card per price level. The gate is the bucket, side kept.
+    if "decided mid" in r:
+        side = ("YES" if r.startswith("yes")
+                else "NO" if r.startswith("no") else "")
+        return f"{side} decided mid" if side else "decided mid"
     # The book gate embeds the measured value in the reason -- "YES: spread
     # 0.8250 > 0.0600" -- so splitting on " $" left one bucket per spread
     # level (23 buckets in one live run). The side still matters (YES-side vs
@@ -985,6 +1135,24 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         "trial_volume_usd in runtime/markets.json so their "
                         "markouts can be watched before the bar is loosened "
                         "permanently." % MIN_VOLUME_24H)
+    p.add_argument("--full-scan", action="store_true",
+                   help="paginate Gamma until the listing is exhausted instead "
+                        "of stopping one boundary page past the volume floor. "
+                        "An operator audit flag: the every-10-min rank keeps "
+                        "the bounded scan, because paginating thousands of "
+                        "sub-floor rows per rank buys nothing the funnel "
+                        "needs. The universe file records whether a scan was "
+                        "truncated either way.")
+    p.add_argument("--legacy-rewards", action="store_true",
+                   help="run the retired two-path scan once for comparison: "
+                        "/sampling-markets reward candidates, scored against "
+                        "their venue emission with the $1.50 payout floor, "
+                        "alongside the unified universe. The reward path pays "
+                        "nothing on the markets that actually trade (they "
+                        "publish clobRewards: 0) and is deleted from the "
+                        "unified scan; this flag exists only to measure that "
+                        "claim against the live funnel before the code comes "
+                        "out.")
     return p.parse_args(argv)
 
 
@@ -1127,6 +1295,40 @@ def _log_rank_volume_near_misses(out, rejected, verdicts=None, ts=None) -> int:
     return len(vols)
 
 
+def _write_universe_file(universe_rows: list[dict],
+                         discovery_meta: dict | None = None) -> None:
+    """Persist the auditable raw population to runtime/market_universe.json.
+
+    The funnel answers "how many, and which gate?"; this file answers "which
+    market, exactly?". One row per discovered candidate that reached the
+    scoring pool -- the cheap metadata filters (order book, binary, quoted
+    spread) are counted and sampled in the snapshot's discovery block instead
+    of being scored. Full rejection detail (reason, movement, book stats)
+    and full detail on every eligible row, picked or not.
+
+    Written atomically -- temp file plus rename -- for the same reason
+    `markets.json` is: the dashboard reads it on its own schedule and a
+    half-written JSON file is a broken pane.
+    """
+    snap = {
+        "ts": time.time(),
+        "discovery": discovery_meta or {},
+        "rows": universe_rows,
+    }
+    RUN.mkdir(exist_ok=True)
+    f = RUN / "market_universe.json"
+    tmp = RUN / f"market_universe.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+    try:
+        tmp.write_text(json.dumps(snap), encoding="utf-8")
+        tmp.replace(f)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
 def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
                              causes, census, gates, attempted,
                              rejected, verdicts=None,
@@ -1135,7 +1337,8 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
                              volume_gate_usd: Optional[float] = None,
                              trial_volume_usd: Optional[float] = None,
                              spread_gate: Optional[float] = None,
-                             trial_spread: Optional[float] = None) -> None:
+                             trial_spread: Optional[float] = None,
+                             discovery: Optional[dict] = None) -> None:
     """Persist the whole selection funnel to runtime/pipeline.json.
 
     runtime/markets.json keeps only the winners, so the dashboard can show the
@@ -1143,6 +1346,12 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
     the run: the raw pools the ranker listed, every rejection bucketed by
     gate with example titles, the eligible-but-unpicked ranking, and the
     picks -- enough to replay the funnel's shape live, run after run.
+
+    In the unified universe there is no reward pool: `raw.rewards` is empty
+    and `counts.funded` reports the LEGACY path's size only (0 unless
+    `--legacy-rewards`). The full raw population is `market_universe.json`;
+    the snapshot keeps a preview of the scored pool plus the discovery
+    metadata (pages, cheap-filter counts, truncation).
 
     Telemetry only: nothing in the fleet reads it as input, so writing it
     during a --dry-run audit is safe (and useful -- the dashboard then shows
@@ -1256,6 +1465,10 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
         "spread_min_income_usd_day": 0.0,
         "max_pair_cost": getattr(_CFG, "max_pair_cost", 0.995),
         "counts": {
+            # LEGACY ACCOUNTING ONLY. In the unified universe the reward pool
+            # is gone -- `funded` reports the --legacy-rewards path's size and
+            # is 0 on every normal rank. `spread_universe` is the whole
+            # scored pool.
             "funded": len(cands),
             "spread_universe": len(spread_cands),
             "attempted": attempted,
@@ -1265,6 +1478,7 @@ def _write_pipeline_snapshot(cands, spread_cands, out, eligible, picked,
             "eligible": len(eligible),
             "picked": len(picked),
         },
+        "discovery": discovery or {},
         "raw": {"rewards": raw_rewards, "spread": raw_spread},
         "rejections": rejections,
         "final": [_row(r) for r in eligible],
@@ -1334,6 +1548,7 @@ def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],
                max_workers: int = 12,
                min_depth_usd: Optional[float] = None,
                min_volume_usd: Optional[float] = None,
+               min_movement_usd: Optional[float] = None,
                max_spread: Optional[float] = None,
                max_queue_minutes: Optional[float] = None,
                queue_minutes_fn=None) -> list[dict]:
@@ -1352,6 +1567,7 @@ def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],
                                    source=a[3],
                                    min_depth_usd=min_depth_usd,
                                    min_volume_usd=min_volume_usd,
+                                   min_movement_usd=min_movement_usd,
                                    max_spread=max_spread,
                                    max_queue_minutes=max_queue_minutes,
                                    queue_minutes_fn=queue_minutes_fn),
@@ -1359,6 +1575,78 @@ def score_pool(jobs: list[tuple[float, dict, Optional[float], str]],
             if r:
                 out.append(r)
     return out
+
+
+def _score_universe(universe: list[dict], *, volume_bar: float,
+                    movement_bar: float, depth_bar: float,
+                    spread_bar: float) -> tuple[list[dict], int]:
+    """Score the unified universe and return (scored rows, attempted count).
+
+    One job per candidate: the pot is ALWAYS spread capture --
+    `spread_capture_daily(volume_24h, quoted_spread)`, the income a taker
+    crossing pays the resting maker. Reward state is not consulted: a market
+    carrying `clobRewards` is scored on the same terms, its reward config
+    feeding only the score-window width.
+    """
+    jobs = [(spread_capture_daily(m["_volume_24h"], m["_spread"],
+                                  _CFG.spread_capture_frac),
+             m, m["_volume_24h"], "spread")
+            for m in universe]
+    out = score_pool(jobs, min_depth_usd=depth_bar,
+                     min_volume_usd=volume_bar,
+                     min_movement_usd=movement_bar,
+                     max_spread=spread_bar,
+                     max_queue_minutes=resolve_queue_bar(_CFG))
+    return out, len(jobs)
+
+
+def _legacy_reward_candidates(s: requests.Session) -> tuple[list[dict], list[dict], list[tuple[float, dict]], dict[str, float]]:
+    """The retired two-path scan, behind `--legacy-rewards`, for comparison.
+
+    Returns (the old top-250 reward job list, additional legacy-only spread
+    rows -- none today -- all funded candidates, and the chunked gamma volume
+    map). The legacy reward rows are scored as "rewards" alongside the
+    unified universe so the funnel can show what retiring the reward path
+    cost -- which the evidence so far says is nothing, because the markets
+    that actually trade publish clobRewards: 0.
+    """
+    # LEGACY PATH 1: the old /sampling-markets reward scan, verbatim.
+    try:
+        data = s.get("https://clob.polymarket.com/sampling-markets",
+                     timeout=30).json()
+    except Exception as exc:
+        # The file's fail-soft contract, not a list of expected errors: a
+        # ChunkedEncodingError from a flaky CDN aborts main() just as dead
+        # as a timeout, and by this point a full scored pool is in hand.
+        print("WARNING: legacy-rewards sampling-markets unavailable "
+              f"({type(exc).__name__}); continuing without legacy markets",
+              file=sys.stderr)
+        return [], [], [], {}
+    if not isinstance(data, dict):
+        print("WARNING: legacy-rewards sampling-markets returned an "
+              "unreadable response; continuing without legacy markets",
+              file=sys.stderr)
+        return [], [], [], {}
+    cands = []
+    for m in data.get("data") or []:
+        if not m.get("accepting_orders") or m.get("closed"):
+            continue
+        rate = sum(x.get("rewards_daily_rate", 0) or 0
+                   for x in ((m.get("rewards") or {}).get("rates") or []))
+        if rate > 0:
+            cands.append((rate, m))
+    cands.sort(key=lambda x: -x[0])
+    # Volume lives on gamma, the book lives on the CLOB. Fetched up front for
+    # the whole candidate list so the per-market workers stay one round trip
+    # each, as they were before the filter existed.
+    short = [(rate, m) for rate, m in cands[:250]
+             if (days_to_resolve(m.get("end_date_iso")) or -1) >= 0]
+    vols = gamma_volume(s, [m["condition_id"] for _, m in short])
+    # LEGACY PATH 2: the old spread scan, minus the markets the unified
+    # universe already carries -- so no market is scored twice and competes
+    # against itself in the ranking.
+    legacy_spread_extra = []
+    return short, legacy_spread_extra, cands, vols
 
 
 def main() -> None:
@@ -1372,6 +1660,7 @@ def main() -> None:
     trial_active = trial_bar != MIN_TOP3_DEPTH_USD
     volume_bar = _effective_volume_bar(args.trial_volume)
     volume_trial_active = volume_bar != MIN_VOLUME_24H
+    movement_bar = MIN_MOVEMENT_USD
     # WIDE-BOOK TRIAL (#145). Resolved here so the bar travels as an argument
     # from this frame down to `pair_books_allowed`, rather than as a module
     # global that a test cannot vary.
@@ -1382,49 +1671,51 @@ def main() -> None:
     # their own keep-alive session; the worker pool below uses one session
     # per thread (see `_worker_session`) instead of sharing this one.
     s = requests.Session()
-    data = s.get("https://clob.polymarket.com/sampling-markets", timeout=30).json()
-    cands = []
-    for m in data.get("data") or []:
-        if not m.get("accepting_orders") or m.get("closed"):
-            continue
-        rate = sum(x.get("rewards_daily_rate", 0) or 0
-                   for x in ((m.get("rewards") or {}).get("rates") or []))
-        if rate > 0:
-            cands.append((rate, m))
-    cands.sort(key=lambda x: -x[0])
-    print(f"funded live markets: {len(cands)}  (scoring top 250 by rate)")
 
-    # Volume lives on gamma, the book lives on the CLOB. Fetched up front for
-    # the whole candidate list so the per-market workers stay one round trip
-    # each, as they were before the filter existed.
-    short = [(rate, m) for rate, m in cands[:250]
-             if (days_to_resolve(m.get("end_date_iso")) or -1) >= 0]
-    vols = gamma_volume(s, [m["condition_id"] for _, m in short])
-    print(f"volume read for {len(vols)}/{len(short)} unexpired candidates")
-
-    # THE SECOND UNIVERSE. Reward-funded markets are chosen for paying rent,
-    # and rent is paid on resting size whether or not anyone trades -- which is
-    # why the reward-only universe could run 74 hours and produce 9 tape-backed
-    # fills. Markets that pay no rewards at all are sourced here, on volume,
-    # and priced on the spread they pay instead.
-    spread_cands = gamma_spread_universe(s, min_volume_usd=volume_bar)
+    # THE ONE UNIVERSE. Every tradable binary Gamma market, reward-funded or
+    # not. `end_date_min`/`end_date_max` are left OFF the request on purpose:
+    # long-dated markets are fetched and refused auditably by the horizon
+    # gate, so the funnel shows what the horizon actually removes.
+    universe, disc_meta = gamma_universe(s, min_volume_usd=volume_bar,
+                                         full_scan=args.full_scan)
     volume_str = (f"${volume_bar:,.0f}"
                   + (f" [TRIAL vs permanent ${MIN_VOLUME_24H:,.0f}]"
                      if volume_trial_active else ""))
-    print(f"unfunded liquid markets: {len(spread_cands)} "
-          f"(>= {volume_str}/24h, <= {MAX_DAYS_TO_RESOLVE:.0f}d)")
+    print(f"universe: {len(universe)} tradable binaries "
+          f"({disc_meta['pages_fetched']} pages, {disc_meta['rows_scanned']} rows"
+          f"{', TRUNCATED' if disc_meta['truncated'] else ''})")
+    if disc_meta["cheap_rejects"]:
+        summary = ", ".join(f"{k}={v}"
+                            for k, v in sorted(disc_meta["cheap_rejects"].items(),
+                                               key=lambda kv: -kv[1]))
+        print(f"  cheap filters: {summary}")
 
-    jobs = [(rate, m, vols.get(m["condition_id"]), "rewards")
-            for rate, m in short]
-    jobs += [(spread_capture_daily(m["_volume_24h"], m["_spread"],
-                                   _CFG.spread_capture_frac),
-              m, m["_volume_24h"], "spread")
-             for m in spread_cands]
+    out, attempted = _score_universe(
+        universe, volume_bar=volume_bar, movement_bar=movement_bar,
+        depth_bar=trial_bar, spread_bar=spread_bar)
 
-    out = score_pool(jobs, min_depth_usd=trial_bar,
-                     min_volume_usd=volume_bar,
-                     max_spread=spread_bar,
-                     max_queue_minutes=resolve_queue_bar(_CFG))
+    # --legacy-rewards: the retired two-path scan, scored alongside the
+    # unified universe so the funnel shows what retiring it cost. The reward
+    # markets are ALSO in the unified universe -- this measures the old
+    # pot/payout-floor treatment of the same books, not extra markets.
+    cands: list[tuple[float, dict]] = []
+    if args.legacy_rewards:
+        short, legacy_extra, cands, vols = _legacy_reward_candidates(s)
+        legacy_jobs = [(rate, m, vols.get(m["condition_id"]), "rewards")
+                       for rate, m in short]
+        legacy_jobs += [(spread_capture_daily(m["_volume_24h"], m["_spread"],
+                                              _CFG.spread_capture_frac),
+                        m, m["_volume_24h"], "spread")
+                       for m in legacy_extra]
+        legacy_out = score_pool(
+            legacy_jobs, min_depth_usd=trial_bar,
+            min_volume_usd=volume_bar, min_movement_usd=movement_bar,
+            max_spread=spread_bar,
+            max_queue_minutes=resolve_queue_bar(_CFG))
+        out += legacy_out
+        attempted += len(legacy_jobs)
+        print(f"legacy-rewards: {len(cands)} funded candidates, "
+              f"{len(short)} scored (top 250 by rate)")
     # Eligibility BEFORE ranking. Sorting on return_pct_day alone put the
     # top-ranked market at $0.25/day actual against $18.96 projected, because a
     # spectacular percentage return on an income of eleven cents is still
@@ -1532,7 +1823,10 @@ def main() -> None:
              f"spread <= {spread_bar:.2f}"
              f"{' (TRIAL)' if spread_trial_active else ''}, "
              f"resolves within {MAX_DAYS_TO_RESOLVE:.0f}d, "
-             f"income >= ${MIN_PAYOUT * FLOOR_MULTIPLE:.2f}/day\n")
+             f"movement >= ${movement_bar:,.0f}/"
+             f"{int(round(MOVEMENT_WINDOW_SEC / 60.0))}m, "
+             f"income > 0 (spread; >= ${MIN_PAYOUT * FLOOR_MULTIPLE:.2f}/day "
+             f"legacy-rewards only)\n")
     print(gates)
     if trial_active:
         print(f"DEPTH-GATE TRIAL: gating on ${trial_bar:,.0f} instead of "
@@ -1546,10 +1840,12 @@ def main() -> None:
               "decision evidence")
 
     verdicts = {id(r): _if_adopted(r) for r in out}
+    _write_universe_file(out, disc_meta)
     _write_pipeline_snapshot(
-        cands=cands, spread_cands=spread_cands, out=out, eligible=eligible,
+        cands=cands, spread_cands=universe, out=out, eligible=eligible,
         picked=picked, causes=causes, census=census, gates=gates,
-        attempted=len(jobs), rejected=rejected, verdicts=verdicts,
+        attempted=attempted, rejected=rejected, verdicts=verdicts,
+        discovery=disc_meta,
         depth_gate_usd=trial_bar,
         trial_depth_usd=(trial_bar if trial_active else None),
         volume_gate_usd=volume_bar,

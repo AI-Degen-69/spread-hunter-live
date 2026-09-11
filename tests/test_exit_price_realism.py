@@ -214,7 +214,8 @@ def test_rehearsed_sell_fills_against_the_prior_rotations_snapshot(registry):
     the fills we get live are precisely the adversely-selected ones. The
     rehearsal must not read the exit's book fresh: the newest `queue_marks`
     row for the token -- written before the exit sweep ran -- is the book the
-    decision was actually made against.
+    decision was actually made against. Depth at best_bid is used, distinct
+    from the order's resting level_size.
     """
     from core_brain.shadow_exec import ensure_shadow_tables, write_queue_mark
 
@@ -222,9 +223,9 @@ def test_rehearsed_sell_fills_against_the_prior_rotations_snapshot(registry):
     ensure_shadow_tables(db)
     write_queue_mark(
         db, ts=1_000.0, condition_id="0xabc", market_slug="fake-market",
-        token_id="tok-dn", price=0.51, level_size=3.0, traded=0.0,
+        token_id="tok-dn", price=0.51, level_size=10.0, traded=0.0,
         cancel_decay=None, queue_minutes=None, run_id=reg._run_id(),
-        best_bid=0.60,
+        best_bid=0.60, best_bid_size=3.0,
     )
 
     # The fresh book has a much better touch than the snapshot. If the fill
@@ -233,7 +234,7 @@ def test_rehearsed_sell_fills_against_the_prior_rotations_snapshot(registry):
 
     filled, avg = client._sell_into_bids("tok-dn", 5.0, floor=0.58)
 
-    # Snapshot best_bid 0.60, stored level depth 3.0: 3 shares fill at 0.60;
+    # Snapshot best_bid 0.60, stored best_bid_size 3.0: 3 shares fill at 0.60;
     # the floor (0.58) stops the remaining 2 -- depth beneath it is not ours.
     assert filled == pytest.approx(3.0)
     assert avg == pytest.approx(0.60)
@@ -254,18 +255,18 @@ def test_rehearsed_sell_snapshot_still_respects_a_better_fresh_floor(registry):
         db, ts=1_000.0, condition_id="0xabc", market_slug="fake-market",
         token_id="tok-dn", price=0.51, level_size=10.0, traded=0.0,
         cancel_decay=None, queue_minutes=None, run_id=reg._run_id(),
-        best_bid=0.60,
+        best_bid=0.61, best_bid_size=10.0,
     )
 
     client = _client(registry, {"bids": {0.66: 20.0}, "asks": {}})
 
-    # Floor 0.60 admits the snapshot touch exactly; nothing below it fills.
+    # Floor 0.60 admits the snapshot touch 0.61; returns 0.61 (distinguishable from 0.60 floor fallback).
     filled, avg = client._sell_into_bids("tok-dn", 4.0, floor=0.60)
 
     assert filled == pytest.approx(4.0)
-    assert avg == pytest.approx(0.60)
+    assert avg == pytest.approx(0.61)
 
-    # Floor 0.62 is above the snapshot touch: nothing fills at 0.60, and the
+    # Floor 0.62 is above the snapshot touch: nothing fills at 0.61, and the
     # fresh book is not consulted -- the conservative floor fallback stands.
     filled2, avg2 = client._sell_into_bids("tok-dn", 4.0, floor=0.62)
     assert filled2 == pytest.approx(4.0)
@@ -290,18 +291,47 @@ def test_rehearsed_sell_ignores_snapshots_from_other_runs(registry):
 
     reg, db = registry
     ensure_shadow_tables(db)
+    # Valid current-run snapshot
     write_queue_mark(
         db, ts=1_000.0, condition_id="0xabc", market_slug="fake-market",
         token_id="tok-dn", price=0.51, level_size=10.0, traded=0.0,
+        cancel_decay=None, queue_minutes=None, run_id=reg._run_id(),
+        best_bid=0.61, best_bid_size=10.0,
+    )
+    # Newer snapshot from another run
+    write_queue_mark(
+        db, ts=2_000.0, condition_id="0xabc", market_slug="fake-market",
+        token_id="tok-dn", price=0.51, level_size=10.0, traded=0.0,
         cancel_decay=None, queue_minutes=None, run_id="some-other-run",
-        best_bid=0.60,
+        best_bid=0.68, best_bid_size=10.0,
     )
 
     client = _client(registry, {"bids": {0.66: 20.0}, "asks": {}})
 
-    filled, avg = client._sell_into_bids("tok-dn", 5.0, floor=0.64)
+    filled, avg = client._sell_into_bids("tok-dn", 5.0, floor=0.60)
 
-    # Fresh book: 5 shares at the 0.66 touch.
+    # Current-run snapshot (0.61) is selected, NOT the foreign snapshot (0.68)
+    # and NOT the fresh book (0.66).
+    assert filled == pytest.approx(5.0)
+    assert avg == pytest.approx(0.61)
+
+
+def test_rehearsed_sell_without_best_bid_size_does_not_use_level_size(registry):
+    """An older queue_marks row lacking best_bid_size must not assume level_size
+    applies to best_bid when resting price != best_bid. It falls back to fresh book."""
+    from core_brain.shadow_exec import ensure_shadow_tables, write_queue_mark
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    write_queue_mark(
+        db, ts=1_000.0, condition_id="0xabc", market_slug="fake-market",
+        token_id="tok-dn", price=0.51, level_size=10.0, traded=0.0,
+        cancel_decay=None, queue_minutes=None, run_id=reg._run_id(),
+        best_bid=0.60, best_bid_size=None,
+    )
+    client = _client(registry, {"bids": {0.66: 20.0}, "asks": {}})
+    filled, avg = client._sell_into_bids("tok-dn", 5.0, floor=0.64)
+    # Falls back to fresh book because best_bid_size is missing
     assert filled == pytest.approx(5.0)
     assert avg == pytest.approx(0.66)
 

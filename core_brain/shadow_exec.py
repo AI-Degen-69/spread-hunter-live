@@ -116,7 +116,8 @@ def ensure_shadow_tables(db_path: Path | str) -> None:
                 cancel_decay REAL,
                 queue_minutes REAL,
                 run_id TEXT,
-                best_bid REAL
+                best_bid REAL,
+                best_bid_size REAL
             )
             """
         )
@@ -127,6 +128,8 @@ def ensure_shadow_tables(db_path: Path | str) -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(queue_marks)")}
         if "best_bid" not in cols:
             conn.execute("ALTER TABLE queue_marks ADD COLUMN best_bid REAL")
+        if "best_bid_size" not in cols:
+            conn.execute("ALTER TABLE queue_marks ADD COLUMN best_bid_size REAL")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_queue_marks_level "
             "ON queue_marks (token_id, price, ts)"
@@ -290,7 +293,7 @@ def record_submit(
 def write_queue_mark(db_path: Path | str, *, ts: float, condition_id, market_slug,
                      token_id: str, price: float, level_size: float,
                      traded: float, cancel_decay, queue_minutes,
-                     run_id=None, best_bid=None) -> None:
+                     run_id=None, best_bid=None, best_bid_size=None) -> None:
     """One observation of the queue at one price on one token.
 
     `best_bid` is the book's touch at the moment of the mark, and it is what
@@ -299,20 +302,23 @@ def write_queue_mark(db_path: Path | str, *, ts: float, condition_id, market_slu
     `cancel_decay`, while a better bid appearing means every share of tape now
     clears against someone else first. From our level's size alone the two are
     identical. None means the book had no bid -- a real state, and not the
-    same as being outbid by everything.
+    same as being outbid by everything. `best_bid_size` is the depth at the
+    touch, separate from the resting order's `level_size`.
     """
     with closing(get_connection(Path(db_path))) as conn:
         conn.execute(
             """
             INSERT INTO queue_marks (
                 ts, condition_id, market_slug, token_id, price, level_size,
-                traded, cancel_decay, queue_minutes, run_id, best_bid
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                traded, cancel_decay, queue_minutes, run_id, best_bid,
+                best_bid_size
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (float(ts), condition_id, market_slug, str(token_id),
              round(float(price), 4), float(level_size), float(traded),
              cancel_decay, queue_minutes, run_id,
-             None if best_bid is None else round(float(best_bid), 4)),
+             None if best_bid is None else round(float(best_bid), 4),
+             None if best_bid_size is None else float(best_bid_size)),
         )
         conn.commit()
 
@@ -412,13 +418,15 @@ def _record_queue_marks(db_path, market, orders, traded, book_fn, now,
             elapsed_min = (float(now) - float(prev["ts"])) / 60.0
             qmin = queue_minutes_at(level_size, at_level, elapsed_min)
 
+        bb = (book or {}).get("best_bid")
+        bb_size = queue_ahead_at(book, bb) if bb is not None else None
         write_queue_mark(
             db_path, ts=float(now),
             condition_id=getattr(market, "condition_id", None),
             market_slug=getattr(market, "market_slug", None),
             token_id=token_id, price=price, level_size=level_size,
             traded=at_level, cancel_decay=decay, queue_minutes=qmin,
-            run_id=run_id, best_bid=(book or {}).get("best_bid"))
+            run_id=run_id, best_bid=bb, best_bid_size=bb_size)
 
 
 def _filled_size(db_path: Path | str, local_id: str) -> float:
@@ -843,7 +851,7 @@ class ShadowExecutionClient:
             snap = None
         if snap is not None and snap.get("best_bid") is not None:
             best_bid = float(snap["best_bid"])
-            depth = float(snap.get("level_size") or 0.0)
+            depth = float(snap.get("best_bid_size") or 0.0)
             if math.isfinite(best_bid) and best_bid > 0 and depth > 0:
                 snapshot_ladder = [(best_bid, depth)]
 

@@ -116,7 +116,8 @@ def ensure_shadow_tables(db_path: Path | str) -> None:
                 cancel_decay REAL,
                 queue_minutes REAL,
                 run_id TEXT,
-                best_bid REAL
+                best_bid REAL,
+                best_bid_size REAL
             )
             """
         )
@@ -127,6 +128,8 @@ def ensure_shadow_tables(db_path: Path | str) -> None:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(queue_marks)")}
         if "best_bid" not in cols:
             conn.execute("ALTER TABLE queue_marks ADD COLUMN best_bid REAL")
+        if "best_bid_size" not in cols:
+            conn.execute("ALTER TABLE queue_marks ADD COLUMN best_bid_size REAL")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_queue_marks_level "
             "ON queue_marks (token_id, price, ts)"
@@ -290,7 +293,7 @@ def record_submit(
 def write_queue_mark(db_path: Path | str, *, ts: float, condition_id, market_slug,
                      token_id: str, price: float, level_size: float,
                      traded: float, cancel_decay, queue_minutes,
-                     run_id=None, best_bid=None) -> None:
+                     run_id=None, best_bid=None, best_bid_size=None) -> None:
     """One observation of the queue at one price on one token.
 
     `best_bid` is the book's touch at the moment of the mark, and it is what
@@ -299,20 +302,23 @@ def write_queue_mark(db_path: Path | str, *, ts: float, condition_id, market_slu
     `cancel_decay`, while a better bid appearing means every share of tape now
     clears against someone else first. From our level's size alone the two are
     identical. None means the book had no bid -- a real state, and not the
-    same as being outbid by everything.
+    same as being outbid by everything. `best_bid_size` is the depth at the
+    touch, separate from the resting order's `level_size`.
     """
     with closing(get_connection(Path(db_path))) as conn:
         conn.execute(
             """
             INSERT INTO queue_marks (
                 ts, condition_id, market_slug, token_id, price, level_size,
-                traded, cancel_decay, queue_minutes, run_id, best_bid
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                traded, cancel_decay, queue_minutes, run_id, best_bid,
+                best_bid_size
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (float(ts), condition_id, market_slug, str(token_id),
              round(float(price), 4), float(level_size), float(traded),
              cancel_decay, queue_minutes, run_id,
-             None if best_bid is None else round(float(best_bid), 4)),
+             None if best_bid is None else round(float(best_bid), 4),
+             None if best_bid_size is None else float(best_bid_size)),
         )
         conn.commit()
 
@@ -333,6 +339,32 @@ def read_last_queue_mark(db_path: Path | str, token_id: str, price: float,
     """
     sql = ("SELECT * FROM queue_marks WHERE token_id = ? AND price = ?")
     args: list = [str(token_id), round(float(price), 4)]
+    if run_id is not None:
+        sql += " AND run_id = ?"
+        args.append(run_id)
+    with closing(get_connection(Path(db_path))) as conn:
+        row = conn.execute(sql + " ORDER BY ts DESC, id DESC LIMIT 1",
+                           tuple(args)).fetchone()
+    return dict(row) if row else None
+
+
+def read_last_token_snapshot(db_path: Path | str, token_id: str,
+                             run_id=None):
+    """The most recent book observation of this token in this run, or None.
+
+    Token-only, deliberately: the exit path has no single resting price to
+    key on (a token position can come from fills at several prices), so the
+    (token, price) key `read_last_queue_mark` uses cannot serve it. The
+    `best_bid` and `level_size` values are the same top-of-book facts no
+    matter which resting-price row they arrived on.
+
+    Scoped to `run_id` for the reason `read_last_queue_mark` documents:
+    `data/shadow.db` is reused between rehearsals, and another run's book is
+    not this run's pre-decision book. Returns the row as a dict, or None when
+    the run has never observed this token.
+    """
+    sql = "SELECT * FROM queue_marks WHERE token_id = ?"
+    args: list = [str(token_id)]
     if run_id is not None:
         sql += " AND run_id = ?"
         args.append(run_id)
@@ -386,13 +418,15 @@ def _record_queue_marks(db_path, market, orders, traded, book_fn, now,
             elapsed_min = (float(now) - float(prev["ts"])) / 60.0
             qmin = queue_minutes_at(level_size, at_level, elapsed_min)
 
+        bb = (book or {}).get("best_bid")
+        bb_size = queue_ahead_at(book, bb) if bb is not None else None
         write_queue_mark(
             db_path, ts=float(now),
             condition_id=getattr(market, "condition_id", None),
             market_slug=getattr(market, "market_slug", None),
             token_id=token_id, price=price, level_size=level_size,
             traded=at_level, cancel_decay=decay, queue_minutes=qmin,
-            run_id=run_id, best_bid=(book or {}).get("best_bid"))
+            run_id=run_id, best_bid=bb, best_bid_size=bb_size)
 
 
 def _filled_size(db_path: Path | str, local_id: str) -> float:
@@ -773,9 +807,26 @@ class ShadowExecutionClient:
 
     def _sell_into_bids(self, token_id: str, shares: float,
                         *, floor: float) -> tuple[float, float]:
-        """Rest a market SELL against the bid ladder, best bid first.
+        """Rest a market SELL against the pre-decision bid ladder.
 
         Returns `(shares_filled, weighted_average_price)`.
+
+        The book filled against is the PRIOR ROTATION's snapshot, not a fresh
+        read at post time. Seconds pass between the sweep's decision and the
+        taker SELL landing, and the fills we get live are precisely the
+        adversely-selected ones -- shadow-01 showed h1 markout drift of -17c
+        to -37c on 4 of 12 exits. Filling the rehearsal against the book it
+        reads at the moment of the simulated post books an exit price the
+        venue never gave. The snapshot source is `queue_marks`, which
+        `settle_market` writes per rotation BEFORE the exit sweep runs, so the
+        newest row per token is the book the decision was made against. The
+        snapshot carries one level -- `best_bid` at the stored `level_size`
+        depth -- so a short fill at the touch is the honest answer to a thin
+        snapshot.
+
+        With no snapshot for this run (first rotation on a token, or a session
+        that never recorded marks) the fresh book is used, which is the
+        previous behaviour and still better than the floor.
 
         This used to return the caller's `floor` as though it were the fill.
         The floor is `best_bid - MAX_SELL_SLIPPAGE`, a flat 2c -- the worst
@@ -785,21 +836,38 @@ class ShadowExecutionClient:
         report attributes to the market. A real market SELL takes the touch
         first and only walks down when the touch is thin.
 
-        The floor stays a real limit: depth beneath it is not ours to take, so
-        a book that is thin above it fills short rather than selling through.
-        With no book at all there is no better information than the floor, and
-        the old conservative answer stands.
+        The floor stays a real limit in both paths: depth beneath it is not
+        ours to take, so a book that is thin above it fills short rather than
+        selling through. With no book at all there is no better information
+        than the floor, and the old conservative answer stands.
         """
+        snapshot_ladder: list[tuple[float, float]] = []
         try:
-            book = self.get_order_book(token_id)
-        except Exception:  # noqa: BLE001 - a bookless rehearsal keeps the floor
-            book = {}
-        levels = [
-            (float(lvl["price"]), float(lvl["size"]))
-            for lvl in (book or {}).get("bids") or []
-            if float(lvl.get("size") or 0.0) > 0
-        ]
-        levels.sort(key=lambda pl: pl[0], reverse=True)
+            snap = read_last_token_snapshot(
+                self._db_path, str(token_id), run_id=self._registry._run_id())
+        except sqlite3.Error as e:
+            _log.warning("exit snapshot read failed for %s: %s",
+                         str(token_id)[:12], e)
+            snap = None
+        if snap is not None and snap.get("best_bid") is not None:
+            best_bid = float(snap["best_bid"])
+            depth = float(snap.get("best_bid_size") or 0.0)
+            if math.isfinite(best_bid) and best_bid > 0 and depth > 0:
+                snapshot_ladder = [(best_bid, depth)]
+
+        if snapshot_ladder:
+            levels = snapshot_ladder
+        else:
+            try:
+                book = self.get_order_book(token_id)
+            except Exception:  # noqa: BLE001 - a bookless rehearsal keeps the floor
+                book = {}
+            levels = [
+                (float(lvl["price"]), float(lvl["size"]))
+                for lvl in (book or {}).get("bids") or []
+                if float(lvl.get("size") or 0.0) > 0
+            ]
+            levels.sort(key=lambda pl: pl[0], reverse=True)
 
         remaining = float(shares)
         notional = 0.0

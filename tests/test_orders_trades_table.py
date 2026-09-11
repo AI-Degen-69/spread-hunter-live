@@ -717,6 +717,50 @@ def test_closed_trades_says_so_when_nothing_has_closed():
     assert "No closed trades yet" in rendered["html"]
 
 
+@requires_node
+def test_closed_trades_excludes_a_settled_market_with_a_resting_order():
+    # Arrange — CID_SETTLED is settled with booked P&L, but has a working (open) order
+    state = _state()
+    state["orders"].append({
+        "condition_id": CID_SETTLED,
+        "status": "open",
+        "side": "BUY",
+        "price": 0.45,
+        "original_size": 10,
+        "size_matched": 0,
+    })
+
+    # Act
+    rendered = _render("closed-trades", _kpi(), state)
+
+    # Assert — the market with a working order is not closed; count drops matching the exclusion
+    assert "Settled Market" not in rendered["html"]
+    assert "Closed Market" in rendered["html"]
+    assert rendered["rows"] == 1
+    assert rendered["counts"]["closed-trades"] == 1
+
+
+@requires_node
+def test_closed_trades_always_renders_finished_status_pill():
+    # Arrange / Act — every row rendered in CLOSED TRADES must display as FINISHED
+    rendered = _render("closed-trades", _kpi(), _state())
+
+    # Assert
+    assert "FINISHED" in rendered["html"]
+    assert "QUOTING" not in rendered["html"]
+    assert "IDLE" not in rendered["html"]
+
+
+@requires_node
+def test_active_markets_retains_live_quoting_status_pill():
+    # Arrange / Act — active-markets table retains live state (QUOTING / IDLE)
+    rendered = _render("active-markets", _kpi(), _state())
+
+    # Assert
+    assert "QUOTING" in rendered["html"]
+
+
+
 # ── Tab counts ──────────────────────────────────────────────────────────────
 
 @requires_node

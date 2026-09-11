@@ -3620,15 +3620,17 @@ function heldLegs(m) {
  * resolution, a leg never filled -- and its realized P&L is zero. That is
  * not a closed trade: there is no profit or loss to read, and a row of
  * zeros pushed the trades the tab exists to show below the fold. */
-function closedTradesEntries(kpi) {
+function closedTradesEntries(kpi, state) {
+  const ordersByMarket = groupOrdersByMarket(state && state.orders);
   return Object.entries((kpi && kpi.by_market) || {})
     .filter(([cid, m]) => (m.settlements || []).length > 0
-                           && Number(m.realized_pnl) !== 0)
+                           && Number(m.realized_pnl) !== 0
+                           && !(ordersByMarket[cid] || []).some(isRestingOrder))
     .sort((a, b) => (Number(b[1].realized_pnl) || 0) - (Number(a[1].realized_pnl) || 0));
 }
 
 function closedTradesRows(kpi, state) {
-  const entries = closedTradesEntries(kpi);
+  const entries = closedTradesEntries(kpi, state);
 
   if (!entries.length) {
     return otEmptyRow('closed-trades', 'No closed trades yet: nothing has settled with a booked profit or loss.');
@@ -3647,6 +3649,7 @@ function closedTradesRows(kpi, state) {
       showCancelled: showCancelledByMarket.has(cid),
       fills,
       graduatedCids,
+      forceFinished: true,
     })).join('');
 }
 
@@ -3705,7 +3708,7 @@ function ordersTradesCounts(kpi, state) {
     'open-orders': ((state && state.orders) || []).filter(isRestingOrder).length,
     'positions': markets.filter(([, m]) => (Number(m.total_sh) || 0) > 0
                                             && !isFinishedMarket(m)).length,
-    'closed-trades': closedTradesEntries(kpi).length,
+    'closed-trades': closedTradesEntries(kpi, state).length,
   };
 }
 
@@ -3838,7 +3841,7 @@ function renderMarkets(kpi, state) {
  * Trades CLOSED TRADES view so a closed trade reads identically in both
  * tables. Pure: no DOM reads or writes, everything arrives as arguments. */
 function marketRowPairHtml(cid, m, opts) {
-  const { isExpanded, hasOrders, allOrders, showCancelled, fills, graduatedCids } = opts;
+  const { isExpanded, hasOrders, allOrders, showCancelled, fills, graduatedCids, forceFinished } = opts;
   const fills_count = m.fills_count || 0;
   const hedged = m.balance !== null && m.balance !== undefined && m.balance >= 0.99 ? 'Hedged' : 'One-Sided';
   // Merged legs are finished, not active: a fully-merged market must not
@@ -3856,7 +3859,8 @@ function marketRowPairHtml(cid, m, opts) {
   // `m.resolved` is the primary, durable signal; the funnel heuristic is
   // the fallback that still works when no sweeper has run (live runs that
   // only drop by_mkt via venue_sync, or older shadow dbs pre-sweeper).
-  const isFinished = m.resolved === true
+  const isFinished = forceFinished === true
+    || m.resolved === true
     || (m.days_to_resolve !== null && m.days_to_resolve < 0)
     || (hasFunnel && !graduatedCids.has(cid) && hasOrders);
 

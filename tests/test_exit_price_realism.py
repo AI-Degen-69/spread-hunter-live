@@ -189,6 +189,22 @@ def test_rehearsed_buy_falls_back_to_touch_without_usable_asks(registry):
     assert avg == pytest.approx(0.51)
 
 
+def test_rehearsed_buy_orders_list_shaped_asks_before_applying_ceiling(registry):
+    client = _client(registry, {
+        "bids": {},
+        "asks": [
+            {"price": 0.54, "size": 100.0},
+            {"price": 0.52, "size": 0.5},
+            {"price": 0.51, "size": 1.0},
+        ],
+    })
+
+    shares, avg = client._buy_from_asks("tok-dn", 1.0, price=0.51)
+
+    assert shares == pytest.approx(1.5)
+    assert avg == pytest.approx(0.77 / 1.5)
+
+
 # --- 3. the close must record what the venue reported --------------------
 
 def test_exit_close_records_the_achieved_price_when_the_venue_reports_one():

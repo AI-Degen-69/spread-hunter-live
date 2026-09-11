@@ -31,3 +31,13 @@ The shadow client already walks bid depth for SELL exits in `_sell_into_bids`, b
 - **Change:** Run the complete hermetic suite and inspect failures without weakening the quality bar.
 - **Acceptance:** `python -m pytest -q` passes with no skipped or removed assertions caused by this change.
 - **Check:** `python -m pytest -q`
+
+## How to verify by hand
+
+1. Run a shadow rehearsal and open its generated report or shadow registry output.
+2. Find a completion BUY against a thin ask ladder; it should show fewer shares than
+	the requested notional divided by the touch price.
+3. Compare the recorded completion price with the ask-level weighted average; it should
+	be worse than the touch when the ladder walks and should never use asks above the
+	two-cent ceiling.
+4. A completion with no usable ask depth should retain the touch-price fallback.

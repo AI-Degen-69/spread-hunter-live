@@ -835,8 +835,7 @@ class ShadowExecutionClient:
         remaining = float(amount)
         notional = 0.0
         taken = 0.0
-        # `get_order_book` returns asks lowest-first; walking that sequence
-        # keeps the fill model linear and bounded in working memory.
+        levels = []
         for lvl in (book or {}).get("asks") or []:
             try:
                 lvl_price = float(lvl.get("price"))
@@ -846,6 +845,12 @@ class ShadowExecutionClient:
             if (not math.isfinite(lvl_price) or lvl_price <= 0
                     or not math.isfinite(lvl_size) or lvl_size <= 0):
                 continue
+            levels.append((lvl_price, lvl_size))
+
+        # Canonical dict books are already ascending, but injected list-shaped
+        # books are not guaranteed to be ordered.
+        levels.sort(key=lambda level: level[0])
+        for lvl_price, lvl_size in levels:
             if remaining <= 0 or lvl_price > ceiling:
                 break
             fill = min(lvl_size, remaining / lvl_price)

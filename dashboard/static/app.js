@@ -63,6 +63,7 @@ let lastKpi = null;
 // Whether the page is reading the production registry. Starts false: until the
 // first status arrives we cannot claim a live view, and START is refused on it.
 let lastDbIsProduction = false;
+let isStopping = false;
 
 /* ── XSS defense: escape before innerHTML ── */
 function esc(v) {
@@ -655,11 +656,16 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
   const lastSyncEl = document.getElementById('runtime-last-sync');
 
   if (masterIndicator) {
-    masterIndicator.className = `pill ${isRunning ? 'active' : 'stopped'} font-display`;
-    masterIndicator.textContent = isRunning ? '● STACK RUNNING' : '○ STACK STOPPED';
+    if (isStopping) {
+      masterIndicator.className = 'pill stopped font-display';
+      masterIndicator.textContent = '○ STOPPING…';
+    } else {
+      masterIndicator.className = `pill ${isRunning ? 'active' : 'stopped'} font-display`;
+      masterIndicator.textContent = isRunning ? '● STACK RUNNING' : '○ STACK STOPPED';
+    }
   }
   if (livePulseDot) {
-    livePulseDot.className = `pulse-dot ${isRunning ? 'active' : ''}`;
+    livePulseDot.className = `pulse-dot ${(isRunning && !isStopping) ? 'active' : ''}`;
   }
   if (lastSyncEl) {
     lastSyncEl.textContent = `Last poll: ${new Date().toLocaleTimeString()}`;
@@ -731,9 +737,15 @@ function renderServiceCards(status, guardrailHealth, guardrailAlerts) {
     masterStartBtn.style.cursor = isRunning ? 'not-allowed' : 'pointer';
   }
   if (masterStopBtn) {
-    masterStopBtn.disabled = !isRunning;
-    masterStopBtn.style.opacity = !isRunning ? '0.45' : '1';
-    masterStopBtn.style.cursor = !isRunning ? 'not-allowed' : 'pointer';
+    if (isStopping) {
+      masterStopBtn.disabled = true;
+      masterStopBtn.style.opacity = '0.45';
+      masterStopBtn.style.cursor = 'wait';
+    } else {
+      masterStopBtn.disabled = !isRunning;
+      masterStopBtn.style.opacity = !isRunning ? '0.45' : '1';
+      masterStopBtn.style.cursor = !isRunning ? 'not-allowed' : 'pointer';
+    }
   }
 
   // Render Service Cards Grid
@@ -869,19 +881,44 @@ const masterStopBtn = document.getElementById('btn-master-stop');
 if (masterStopBtn && !masterStopBtn.dataset.wired) {
   masterStopBtn.dataset.wired = 'true';
   masterStopBtn.addEventListener('click', async () => {
+    if (isStopping || masterStopBtn.disabled) return;
+    isStopping = true;
     try {
       masterStopBtn.innerHTML = `
         <svg class="btn-syncing-spinner" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:inline-block;vertical-align:-2px;margin-right:4px;animation:spin 1s linear infinite"><circle cx="12" cy="12" r="10" stroke-opacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10"/></svg>
         STOPPING…`;
       masterStopBtn.disabled = true;
-      await controlFetch('/api/system/stop');
+      masterStopBtn.style.opacity = '0.45';
+      masterStopBtn.style.cursor = 'wait';
+
+      const masterIndicator = document.getElementById('master-status-indicator');
+      if (masterIndicator) {
+        masterIndicator.className = 'pill stopped font-display';
+        masterIndicator.textContent = '○ STOPPING…';
+      }
+      const livePulseDot = document.getElementById('live-ops-pulse-dot');
+      if (livePulseDot) {
+        livePulseDot.className = 'pulse-dot';
+      }
+
+      const res = await controlFetch('/api/system/stop');
+      try {
+        const data = await res.json();
+        if (data && data.status) {
+          renderDbMode(data.status);
+          renderServiceCards(data.status);
+        }
+      } catch {
+        // Non-JSON reply or network parse failure; pollStatus will handle
+      }
     } catch (e) {
       console.error('Stop stack error:', e);
     } finally {
+      isStopping = false;
       masterStopBtn.innerHTML = `
         <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display:inline-block;vertical-align:-2px;margin-right:4px"><rect x="6" y="6" width="12" height="12"/></svg>
         STOP RUN`;
-      pollStatus();
+      await pollStatus();
     }
   });
 }
@@ -4666,5 +4703,7 @@ if (typeof module !== 'undefined' && module.exports) {
     positionMarkValue, settledMarkValue, winningLeg,
     isQuotedMarket, isRestingOrder, tokenLegMap, legForOrder,
     normalizeLeg, groupOrdersByPair, restingPairCost, restingPairLegs,
-    pairStatus, PAIR_STATUS };
+    pairStatus, PAIR_STATUS,
+    get isStopping() { return isStopping; },
+    set isStopping(v) { isStopping = v; } };
 }

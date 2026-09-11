@@ -1903,3 +1903,228 @@ def test_account_sweep_endpoint(client, monkeypatch):
     assert data["sweep"]["account_value_usd"] == 92.50
 
 
+@pytest.mark.skipif(NODE is None, reason="node not installed")
+def test_master_stop_button_state_management():
+    """Verify master STOP button disables on click, stays disabled during polling, and reflects stack state.
+
+    Covers Issue #208 acceptance criteria:
+    - STOP button disables when clicked and shows STOPPING… loading feedback.
+    - Periodic polling / renderServiceCards does not re-enable it while stop is in-flight.
+    - Clicking STOP while already stopping is guarded against double-POST.
+    - STOP button reflects stack state (enabled when running, disabled when stopped).
+    """
+    node_script = """
+const fs = require('fs');
+const appJsPath = process.argv[1];
+
+const log = { fetches: [] };
+function fakeClassList() {
+  const set = new Set();
+  return {
+    add: (c) => set.add(c),
+    remove: (c) => set.delete(c),
+    contains: (c) => set.has(c),
+  };
+}
+
+class FakeEl {
+  constructor(id) {
+    this.id = id;
+    this._html = '';
+    this.className = '';
+    this.textContent = '';
+    this.title = '';
+    this.style = {};
+    this.dataset = {};
+    this.classList = fakeClassList();
+    this.disabled = false;
+    this._listeners = {};
+  }
+  set innerHTML(v) { this._html = String(v); }
+  get innerHTML() { return this._html; }
+  addEventListener(ev, fn) {
+    if (!this._listeners[ev]) this._listeners[ev] = [];
+    this._listeners[ev].push(fn);
+  }
+  async dispatch(ev) {
+    const fns = this._listeners[ev] || [];
+    for (const fn of fns) {
+      await fn();
+    }
+  }
+  querySelectorAll() { return []; }
+  appendChild() {}
+  setAttribute() {}
+  getAttribute() { return null; }
+}
+
+const elements = new Map();
+global.document = {
+  getElementById(id) {
+    if (!elements.has(id)) elements.set(id, new FakeEl(id));
+    return elements.get(id);
+  },
+  querySelectorAll() { return []; },
+  createElement() { return new FakeEl('created'); },
+  addEventListener() {},
+  body: new FakeEl('body'),
+};
+global.window = { addEventListener() {}, matchMedia: () => ({ matches: false }) };
+global.CONTROL_TOKEN = 'harness-token';
+global.EventSource = function () { return { addEventListener() {}, close() {} }; };
+global.setInterval = () => 0;
+global.alert = () => {};
+global.prompt = () => null;
+
+let stopFetchResolver = null;
+global.fetch = async (p, opts) => {
+  const method = (opts && opts.method) || 'GET';
+  const pathStr = String(p);
+  log.fetches.push({ path: pathStr, method });
+
+  if (pathStr.includes('/api/system/stop')) {
+    if (stopFetchResolver) {
+      await new Promise((r) => { stopFetchResolver = r; });
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        message: 'Bot stopped',
+        status: {
+          bot_state: 'STOPPED',
+          services: {
+            filter: { running: false },
+            query: { running: false },
+            decide: { running: false },
+          },
+        },
+      }),
+      text: async () => '',
+    };
+  }
+
+  return {
+    ok: true,
+    status: 200,
+    json: async () => ({
+      bot_state: 'STOPPED',
+      services: {},
+    }),
+    text: async () => '',
+  };
+};
+
+global.localStorage = {
+  _v: {},
+  getItem(k) { return Object.prototype.hasOwnProperty.call(this._v, k) ? this._v[k] : null; },
+  setItem(k, v) { this._v[k] = String(v); },
+};
+
+const mod = { exports: {} };
+new Function('module', 'exports', 'document', 'window', 'localStorage', 'EventSource',
+             fs.readFileSync(appJsPath, 'utf8'))(
+  mod, mod.exports, global.document, global.window,
+  global.localStorage, global.EventSource);
+const app = mod.exports;
+
+const RUNNING_STACK = {
+  bot_state: 'RUNNING',
+  services: {
+    filter: { running: true }, query: { running: true },
+    decide: { running: true }, dash: { running: true },
+  },
+};
+
+(async () => {
+  const masterStopBtn = document.getElementById('btn-master-stop');
+  const masterIndicator = document.getElementById('master-status-indicator');
+
+  // 1. Initial running state: STOP button should be enabled
+  app.renderServiceCards(RUNNING_STACK, null, null);
+  const initialStopDisabled = masterStopBtn.disabled;
+  const initialIndicatorText = masterIndicator.textContent;
+
+  // 2. Click STOP with an in-flight request
+  const stopPromiseGate = new Promise((resolve) => {
+    stopFetchResolver = resolve;
+  });
+
+  const clickPromise = masterStopBtn.dispatch('click');
+
+  // Mid-flight state checks
+  const inFlightDisabled = masterStopBtn.disabled;
+  const inFlightHtml = masterStopBtn.innerHTML;
+  const inFlightIndicatorText = masterIndicator.textContent;
+  const isStoppingFlagDuringFlight = app.isStopping;
+
+  // While in flight, simulate periodic background polling renderServiceCards with RUNNING status!
+  // It MUST NOT re-enable the button or clear the STOPPING indicator!
+  app.renderServiceCards(RUNNING_STACK, null, null);
+  const stillDisabledDuringPoll = masterStopBtn.disabled;
+  const stillStoppingIndicatorDuringPoll = masterIndicator.textContent;
+
+  // Try clicking again while in-flight (should be ignored due to guard)
+  await masterStopBtn.dispatch('click');
+  const totalStopFetchesWhileInFlight = log.fetches.filter(f => f.path.includes('/api/system/stop')).length;
+
+  // Release the in-flight stop request
+  stopFetchResolver();
+  await clickPromise;
+
+  // 3. Post-stop state
+  const postStopDisabled = masterStopBtn.disabled;
+  const postStopHtml = masterStopBtn.innerHTML;
+  const isStoppingFlagAfter = app.isStopping;
+  const postStopIndicatorText = masterIndicator.textContent;
+
+  process.stdout.write(JSON.stringify({
+    initialStopDisabled,
+    initialIndicatorText,
+    inFlightDisabled,
+    inFlightHtml,
+    inFlightIndicatorText,
+    isStoppingFlagDuringFlight,
+    stillDisabledDuringPoll,
+    stillStoppingIndicatorDuringPoll,
+    totalStopFetchesWhileInFlight,
+    postStopDisabled,
+    postStopHtml,
+    isStoppingFlagAfter,
+    postStopIndicatorText,
+  }));
+})();
+"""
+    app_js = Path(__file__).resolve().parent.parent / "dashboard" / "static" / "app.js"
+    res = subprocess.run(
+        [NODE, "-e", node_script, str(app_js)],
+        capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    out = json.loads(res.stdout)
+
+    # Criteria 4: Enabled when stack is running
+    assert out["initialStopDisabled"] is False
+    assert "STACK RUNNING" in out["initialIndicatorText"]
+
+    # Criteria 1 & 2: Disables immediately when clicked, visual feedback STOPPING…
+    assert out["inFlightDisabled"] is True
+    assert "STOPPING…" in out["inFlightHtml"]
+    assert "STOPPING…" in out["inFlightIndicatorText"]
+    assert out["isStoppingFlagDuringFlight"] is True
+
+    # Criteria 1 & 3: Background poll does NOT re-enable button while stop is in-flight
+    assert out["stillDisabledDuringPoll"] is True
+    assert "STOPPING…" in out["stillStoppingIndicatorDuringPoll"]
+
+    # In-flight repeated click was ignored (no double-POST)
+    assert out["totalStopFetchesWhileInFlight"] == 1
+
+    # Criteria 3 & 4: Post-stop state resets flag, button disabled because stack is stopped, text reset
+    assert out["isStoppingFlagAfter"] is False
+    assert out["postStopDisabled"] is True
+    assert "STOP RUN" in out["postStopHtml"]
+    assert "STACK STOPPED" in out["postStopIndicatorText"]
+
+

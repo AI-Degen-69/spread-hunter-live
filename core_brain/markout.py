@@ -210,6 +210,15 @@ def _record_reference(registry, row: dict, markout_id: int, horizon_idx: int,
                         fill_price=fill_price, fill_size=fill_size)
     registry.update_markout_reference(markout_id, horizon_idx, reference, peer)
 
+    # The reference exists in `refs_json`, but the row's headline `ref_mid`
+    # still reads as the fill price stamped 'contaminated' -- the hold the
+    # row was born under. Retire it: the measured VWAP becomes `ref_mid` and
+    # the source names the tape, so the harness's matured-markout counter and
+    # the KPI pooling stop excluding this row. A None reference (window with
+    # no prints) leaves the hold in place -- unmeasured is not clean.
+    if reference is not None:
+        registry.mark_markout_clean(markout_id, reference)
+
 
 def sample_pending_markouts(
     registry: OrderRegistry,
@@ -283,6 +292,30 @@ def sample_pending_markouts(
                     }
             except Exception:
                 mids_cache[cid] = {}
+
+            if not mids_cache.get(cid):
+                # The pinned-market fetch refused (closed / unfunded /
+                # unreachable) and left nothing to resolve a leg from. The
+                # fill's own token is still known, and the book endpoint is
+                # public and answers for closed markets -- read that leg's
+                # book directly. Without this, a fill on a market that ended
+                # before its horizons came due strands its row at done=0
+                # forever: exactly what every shadow run's markouts table
+                # shows. A book that also fails stays {}, same as before.
+                row_token_cached = row.get("token_id")
+                if row_token_cached:
+                    try:
+                        b = full_book(clob_host, str(row_token_cached))
+                        bb, ba = b.get("best_bid"), b.get("best_ask")
+                        if bb is not None and ba is not None:
+                            mids_cache[cid] = {
+                                "UP": (bb + ba) / 2.0,
+                                "DOWN": (bb + ba) / 2.0,
+                                "_up_token": str(row_token_cached),
+                                "_down_token": None,
+                            }
+                    except Exception:
+                        mids_cache[cid] = {}
 
         mids = mids_cache.get(cid, {})
         leg = _resolve_leg(row_token, mids, side)

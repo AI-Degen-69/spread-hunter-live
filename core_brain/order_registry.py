@@ -1255,6 +1255,28 @@ class OrderRegistry:
             )
             conn.commit()
 
+    def mark_markout_clean(self, markout_id: int, ref: float) -> None:
+        """Retire the 'contaminated' stamp once a measured reference exists.
+
+        Every markout row is born `ref_mid_source='contaminated'`: its
+        `ref_mid` is the fill price itself, so a drift read against it would
+        measure our own entry offset. The stamp is a hold, not a verdict -- it
+        means "the reference has not been measured yet". When the windowed
+        tape reference lands, the hold is over: `ref_mid` becomes the measured
+        VWAP and the source names how it was measured, so the rows the
+        harness's `count_matured_markouts` and `kpi._pool_stats` exclude today
+        start counting. A row whose reference was never measured keeps the
+        stamp, exactly as before.
+        """
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE markouts SET ref_mid = ?, ref_mid_source = 'tape_vwap' "
+                "WHERE id = ?",
+                (float(ref), markout_id),
+            )
+            conn.commit()
+
     def get_pending_markouts(self, now_sec: float, horizons: tuple[float, ...]) -> list[dict]:
         """Fetch pending markouts due for sampling."""
         with self._conn() as conn:

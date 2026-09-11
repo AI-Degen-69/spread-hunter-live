@@ -235,6 +235,13 @@ def record_submit(
     pair_id = f"pair-{uuid.uuid4().hex[:12]}"
     max_pair_cost = float(getattr(cfg, "max_pair_cost", 0.995))
 
+    # Same carry `trader_loop._submit_intents` applies: a replacement leg
+    # tagged by `plan_orders` joins the pair whose complement still rests,
+    # so a rehearsal splits no pairs the live loop would no longer split.
+    carried = {getattr(i, "pair_id", None) for i in intents} - {None}
+    if len(carried) == 1:
+        pair_id = carried.pop()
+
     placed = 0
     created_local_ids: list[str] = []
     try:

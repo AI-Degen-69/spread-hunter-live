@@ -42,10 +42,12 @@ Operator-facing commands are PowerShell; sequence with `;`, never `&&`.
 
 ## Done means
 
-`python -m pytest -q` green (run by the agent, never delegated to the operator), every changed
-behaviour covered by a test that fails without the change, and a **How to verify** block
-written for the operator that lists only non-pytest, operator-actionable steps. Report the
-agent-run output, not the impression. Rules and examples:
+Targeted checks for the changed behaviour must be green during development; the full
+`python -m pytest -q` suite is required before shipping or merging (run by the agent, never
+delegated to the operator). Every changed behaviour needs a test that fails without the
+change, plus a **How to verify** block written for the operator that lists only non-pytest,
+operator-actionable steps. Report the checks actually run, not the impression. Rules and
+examples:
 [docs/agents/verifying.md](docs/agents/verifying.md).
 
 ## Model conduct — verification

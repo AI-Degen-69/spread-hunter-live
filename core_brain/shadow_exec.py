@@ -21,6 +21,7 @@ store before any of these functions can be reached.
 from __future__ import annotations
 
 import logging
+import math
 import sqlite3
 import time
 import uuid
@@ -831,17 +832,20 @@ class ShadowExecutionClient:
             book = {}
 
         ceiling = float(price) + MAX_BUY_SLIPPAGE
-        levels = [
-            (float(lvl["price"]), float(lvl["size"]))
-            for lvl in (book or {}).get("asks") or []
-            if float(lvl.get("size") or 0.0) > 0
-        ]
-        levels.sort(key=lambda pl: pl[0])
-
         remaining = float(amount)
         notional = 0.0
         taken = 0.0
-        for lvl_price, lvl_size in levels:
+        # `get_order_book` returns asks lowest-first; walking that sequence
+        # keeps the fill model linear and bounded in working memory.
+        for lvl in (book or {}).get("asks") or []:
+            try:
+                lvl_price = float(lvl.get("price"))
+                lvl_size = float(lvl.get("size") or 0.0)
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if (not math.isfinite(lvl_price) or lvl_price <= 0
+                    or not math.isfinite(lvl_size) or lvl_size <= 0):
+                continue
             if remaining <= 0 or lvl_price > ceiling:
                 break
             fill = min(lvl_size, remaining / lvl_price)
@@ -878,7 +882,8 @@ class ShadowExecutionClient:
         raw_price = getattr(order_args, "price", None)
         price = float(raw_price) if raw_price is not None else None
 
-        if not token_id or amount <= 0 or price is None or price <= 0:
+        if (not token_id or not math.isfinite(amount) or amount <= 0
+            or price is None or not math.isfinite(price) or price <= 0):
             raise ShadowOrderRefused(
                 f"cannot cross {token_id[:12] or '?'} for amount={amount}: "
                 f"missing token, amount or price")

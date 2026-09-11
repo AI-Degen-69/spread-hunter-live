@@ -16,9 +16,11 @@ it is safe to measure anything:
    venue never took, which is most of the "2-3c per stranded leg" the run
    reports.
 """
+from contextlib import closing
+
 import pytest
 
-from core_brain.order_registry import OrderRegistry, init_db
+from core_brain.order_registry import OrderRegistry, get_connection, init_db
 
 
 @pytest.fixture
@@ -146,6 +148,15 @@ def test_rehearsed_buy_walks_the_ask_ladder_and_records_a_short_fill(registry):
     })
     from py_clob_client_v2.clob_types import MarketOrderArgsV2
 
+    capped_client = _client(registry, {
+        "bids": {}, "asks": {0.51: 100.0},
+    })
+    capped_size, capped_price = capped_client._buy_from_asks(
+        "tok-dn", 1.0, price=0.51,
+    )
+    assert capped_size == pytest.approx(1.0 / 0.51)
+    assert capped_price == pytest.approx(0.51)
+
     resp = client.create_and_post_market_order(
         MarketOrderArgsV2(token_id="tok-dn", amount=1.0, side="BUY",
                           price=0.51)
@@ -160,6 +171,22 @@ def test_rehearsed_buy_walks_the_ask_ladder_and_records_a_short_fill(registry):
     fill = next(f for f in reg.get_all_fills() if f["order_uuid"] == completion.id)
     assert fill["size"] == pytest.approx(1.5)
     assert fill["price"] == pytest.approx(0.77 / 1.5)
+    with closing(get_connection(db)) as conn:
+        markout = conn.execute(
+            "SELECT fill_price, size FROM markouts WHERE token_id = ?",
+            ("tok-dn",),
+        ).fetchone()
+    assert markout["fill_price"] == pytest.approx(0.77 / 1.5)
+    assert markout["size"] == pytest.approx(1.5)
+
+
+def test_rehearsed_buy_falls_back_to_touch_without_usable_asks(registry):
+    client = _client(registry, {"bids": {}, "asks": {}})
+
+    shares, avg = client._buy_from_asks("tok-dn", 1.02, price=0.51)
+
+    assert shares == pytest.approx(2.0)
+    assert avg == pytest.approx(0.51)
 
 
 # --- 3. the close must record what the venue reported --------------------

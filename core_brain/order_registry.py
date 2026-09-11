@@ -1593,6 +1593,21 @@ class OrderRegistry:
             rows = conn.execute("SELECT * FROM resolutions").fetchall()
             return [dict(r) for r in rows]
 
+    def get_winning_token_id(self, condition_id: str) -> Optional[str]:
+        """The venue token id that won this condition, per the `resolutions`
+        table, or None when the condition has no recorded resolution. Written
+        by the resolution sweeper from the public gamma feed; read here so the
+        markout sampler can price a purged (resolved) market's horizons at
+        settlement -- 1.0 on this token, 0.0 on the other.
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT winning_token_id FROM resolutions WHERE condition_id = ?",
+                (str(condition_id),),
+            ).fetchone()
+        winner = row["winning_token_id"] if row else None
+        return str(winner) if winner else None
+
     def get_all_venue_errors(self) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute("SELECT * FROM venue_errors ORDER BY ts ASC").fetchall()

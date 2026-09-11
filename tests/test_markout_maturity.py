@@ -108,6 +108,75 @@ def test_a_markout_on_a_closed_market_still_matures(registry, monkeypatch):
     assert updated >= 1
 
 
+def test_a_resolved_market_with_purged_book_matures_at_settlement(registry, monkeypatch):
+    """The real-world case the backfill exposed: the market resolved, the
+    venue purged its book (/book 404s), so the book fallback cannot answer.
+    The store's own resolutions table knows the winner, and a resolved
+    market's terminal price is exact: 1.0 on the winning token, 0.0 on the
+    losing one. The horizon must be sampled from that settlement price.
+    """
+    markout_id = _seed_markout(registry, T0 - 4000, token="tok-up")
+    con = sqlite3.connect(str(registry.db_path))
+    con.execute(
+        "INSERT INTO resolutions (condition_id, winning_token, winning_token_id,"
+        " resolved_ts, run_id) VALUES ('0xmarket', 'Up', 'tok-up', ?, 'shadow-test')",
+        (T0 - 100.0,),
+    )
+    con.commit()
+    con.close()
+    # Book endpoint purged -> raises, as it does live for resolved markets.
+    _patch_venue(monkeypatch, market_closed=True)
+    import core_brain.markets as markets_mod
+    monkeypatch.setattr(
+        markets_mod, "full_book",
+        lambda host, token: (_ for _ in ()).throw(Exception("404 purged")))
+
+    sample_pending_markouts(
+        registry, now_sec=T0, trades_fn=lambda token, cid=None: [])
+
+    row = _row(registry, markout_id)
+    assert row["mid_h0"] == pytest.approx(1.0), (
+        "the winning token settles at 1.00; the horizon must carry that")
+
+
+def test_a_resolved_markets_losing_leg_settles_at_zero(registry, monkeypatch):
+    markout_id = _seed_markout(registry, T0 - 4000, token="tok-dn")
+    con = sqlite3.connect(str(registry.db_path))
+    con.execute(
+        "INSERT INTO resolutions (condition_id, winning_token, winning_token_id,"
+        " resolved_ts, run_id) VALUES ('0xmarket', 'Up', 'tok-up', ?, 'shadow-test')",
+        (T0 - 100.0,),
+    )
+    con.commit()
+    con.close()
+    _patch_venue(monkeypatch, market_closed=True)
+    import core_brain.markets as markets_mod
+    monkeypatch.setattr(
+        markets_mod, "full_book",
+        lambda host, token: (_ for _ in ()).throw(Exception("404 purged")))
+
+    sample_pending_markouts(
+        registry, now_sec=T0, trades_fn=lambda token, cid=None: [])
+
+    assert _row(registry, markout_id)["mid_h0"] == pytest.approx(0.0)
+
+
+def test_a_market_without_a_recorded_resolution_stays_pending(registry, monkeypatch):
+    """Control: no book, no resolution -> the row is left for a later pass,
+    never priced on a guess."""
+    markout_id = _seed_markout(registry, T0 - 4000, token="tok-up")
+    _patch_venue(monkeypatch, market_closed=True)
+    import core_brain.markets as markets_mod
+    monkeypatch.setattr(
+        markets_mod, "full_book",
+        lambda host, token: (_ for _ in ()).throw(Exception("404 purged")))
+
+    sample_pending_markouts(
+        registry, now_sec=T0, trades_fn=lambda token, cid=None: [])
+
+    assert _row(registry, markout_id)["mid_h0"] is None
+
+
 def test_both_legs_of_one_closed_market_mature(registry, monkeypatch):
     """Regression: the closed-market fallback must serve each token.
 

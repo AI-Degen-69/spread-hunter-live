@@ -210,6 +210,15 @@ def _record_reference(registry, row: dict, markout_id: int, horizon_idx: int,
                         fill_price=fill_price, fill_size=fill_size)
     registry.update_markout_reference(markout_id, horizon_idx, reference, peer)
 
+    # The reference exists in `refs_json`, but the row's headline `ref_mid`
+    # still reads as the fill price stamped 'contaminated' -- the hold the
+    # row was born under. Retire it: the measured VWAP becomes `ref_mid` and
+    # the source names the tape, so the harness's matured-markout counter and
+    # the KPI pooling stop excluding this row. A None reference (window with
+    # no prints) leaves the hold in place -- unmeasured is not clean.
+    if reference is not None:
+        registry.mark_markout_clean(markout_id, reference)
+
 
 def sample_pending_markouts(
     registry: OrderRegistry,
@@ -241,6 +250,7 @@ def sample_pending_markouts(
 
     updated_count = 0
     mids_cache: dict[str, dict[str, float]] = {}
+    closed_book_mids: dict[str, Optional[float]] = {}
 
     for row in pending:
         cid = row.get("condition_id")
@@ -287,6 +297,31 @@ def sample_pending_markouts(
         mids = mids_cache.get(cid, {})
         leg = _resolve_leg(row_token, mids, side)
         mid = mids.get(leg) if leg else None
+
+        if mid is None and row_token:
+            # The pinned-market fetch refused (closed / unfunded /
+            # unreachable) and left nothing to resolve a leg from. The fill's
+            # own token is still known, and the book endpoint is public and
+            # answers for closed markets -- read that token's book directly.
+            # Keyed by TOKEN, not condition_id: both legs of one closed market
+            # land here as separate rows with separate tokens, and a
+            # cid-keyed entry built from the first row's token would resolve
+            # nothing for the second -- the row would stay stranded exactly
+            # as before the fallback existed. None is cached too: a book that
+            # will not answer is retried never, not every pass.
+            token_key = str(row_token)
+            if token_key not in closed_book_mids:
+                try:
+                    b = full_book(clob_host, token_key)
+                    bb, ba = b.get("best_bid"), b.get("best_ask")
+                    closed_book_mids[token_key] = (
+                        (bb + ba) / 2.0
+                        if (bb is not None and ba is not None)
+                        else None
+                    )
+                except Exception:
+                    closed_book_mids[token_key] = None
+            mid = closed_book_mids[token_key]
 
         # The windowed reference and the peer baseline, when the tape can be
         # read. Best-effort by design: a tape that will not answer leaves these

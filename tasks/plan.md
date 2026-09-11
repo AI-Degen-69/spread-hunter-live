@@ -1,43 +1,59 @@
-# Implementation Plan: Issue #195
+# Implementation Plan: Issue #204
 
 ## Context
+In the Orders & Trades table, resting orders that lost their `pair_id` render as two disconnected `Unpaired` rows even when they constitute a valid complementary pair on the same market. This plan implements display-side inferred pairing for both open orders and held positions with an informational secondary `Inferred` tag (`ot-tag is-info`).
 
-The shadow client already walks bid depth for SELL exits in `_sell_into_bids`, but its BUY completion branch still does `shares = amount / price` and records the full request at the touch. The implementation should mirror the SELL-side realism pattern while respecting that BUY `amount` is notional dollars.
+- **Size Tier**: Standard (touches ~3 files: `app.js`, `styles.css`, `test_orders_trades_table.py`)
+- **Task Type**: Design + Code (UI rendering logic, CSS tag styling, DOM assertions)
 
-## Task 1: Add bounded ask-depth helper [x]
+## Task 1: Second-pass inferred grouping in `groupOrdersByPair` [x]
 
-- **Files:** `core_brain/shadow_exec.py`
-- **Change:** Add `MAX_BUY_SLIPPAGE = 0.02` near the module constants. Add `ShadowExecutionClient._buy_from_asks(token_id, amount, *, price)`.
-- **Acceptance:** The helper reads `get_order_book`, walks positive ask levels from lowest price through `price + MAX_BUY_SLIPPAGE`, caps each fill by remaining notional, returns actual shares plus weighted average price, and falls back to `(amount / price, price)` when no shares are taken.
-- **Check:** `python -m pytest -q tests/test_exit_price_realism.py -k 'buy or sell'` after the regression test exists.
+- **Files:** `dashboard/static/app.js`
+- **Change:**
+  - Preserve pass 1: group orders with non-empty `pair_id` into their pair group. Keep leftover orders as single-order groups keyed `order:<order_id>`.
+  - Add pass 2: collect single-order leftovers and group them by `condition_id`.
+  - For each `condition_id`, if there is exactly 1 leftover UP order and exactly 1 leftover DOWN order (via `legForOrder`), merge them into a single group with `key: "inferred:" + condition_id` and `inferred: true`.
+  - Sort merged group orders: UP before DOWN (`legRank`), then `posted_ts`.
+  - Ensure every group has `inferred: Boolean` (`false` for native `pair_id` groups and unmatched single-order groups).
+- **Acceptance:** `groupOrdersByPair` returns a single group for two detached complementary legs on the same market with `inferred: true` and `key: "inferred:<cid>"`. Unmatched single legs remain isolated with `inferred: false`.
+- **Check:** `python -m pytest tests/test_orders_trades_table.py -q`
 
-## Task 2: Wire BUY persistence to walked values [x]
+## Task 2: Visual styling and inferred tag in Open Orders & Positions [x]
 
-- **Files:** `core_brain/shadow_exec.py`
-- **Change:** Replace the BUY branch's flat `amount / price` calculation with `_buy_from_asks`. Use returned `shares` and `avg` for the completion `OrderRecord`, `FillRecord`, markout, and response. Leave naked-pair lookup and `pessimistic_completion_price` unchanged.
-- **Acceptance:** No requested notional or raw touch price is recorded when ask depth produces a different fill; the existing SELL branch and pair-selection behavior remain unchanged.
-- **Check:** `python -m pytest -q tests/test_shadow_exec.py tests/test_exit_price_realism.py`
+- **Files:** `dashboard/static/styles.css`, `dashboard/static/app.js`
+- **Change:**
+  - In `styles.css`: Add `.ot-tag.is-info` styling with `background: var(--blue-bg)`, `border-color: var(--blue-border)`, and `color: #38bdf8`.
+  - In `app.js`:
+    - Extend `pairSummary(status, pairCost, inferred)` to render `<div class="ot-tag is-info">Inferred</div>` alongside the status tag and cost when `inferred` is true.
+    - In `openOrdersRows`, pass `group.inferred` to `pairSummary(...)`.
+    - In `ordersTradesRows`, pass `state` into `positionsRows(kpi, state)`.
+    - In `positionsRows`, inspect `state.fills` for held markets (`up_sh > 0 && dn_sh > 0`). If fills lack a common non-null `pair_id` covering both UP and DOWN, mark `inferred = true` and pass to `pairSummary`.
+    - Export any new helpers needed for test verification in `module.exports`.
+- **Acceptance:** Both Open Orders and Positions render `<div class="ot-tag is-info">Inferred</div>` when detached legs are paired on the fly, without altering the primary `Paired`/`Partial` status.
+- **Check:** `python -m pytest tests/test_orders_trades_table.py -q`
 
-## Task 3: Add the BUY realism regression test [x]
+## Task 3: Regression and unit tests in `test_orders_trades_table.py` [x]
 
-- **Files:** `tests/test_exit_price_realism.py`
-- **Change:** Reuse the existing registry and client helpers, seed an in-window naked pair using the established `record_submit` and `settle_market` pattern, and submit a BUY against a thin ask ladder. Assert a short fill and the hand-computed weighted average with `pytest.approx`.
-- **Acceptance:** The test fails before the implementation because the old path fills the full amount at touch, and passes after the helper is wired.
-- **Check:** `python -m pytest -q tests/test_exit_price_realism.py`
+- **Files:** `tests/test_orders_trades_table.py`
+- **Change:**
+  - Add test: two resting orders on the same market with missing/different `pair_id` render as 1 group (`rowspan="2"`, `data-pair="inferred:<cid>"`), correct status, computed pair cost, and `.ot-tag.is-info` with text `Inferred`.
+  - Add test: single resting order renders as 1 row, `Unpaired`, with no `Inferred` tag.
+  - Add test: held position with fills missing a common `pair_id` renders `Inferred` tag.
+  - Add test: held position with fills sharing `pair_id` renders without `Inferred` tag.
+  - Audit existing assertions for row counts / unpaired tags and adjust if detached fixtures intentionally change.
+- **Acceptance:** All new tests pass, validating grouping, tags, and edge cases.
+- **Check:** `python -m pytest tests/test_orders_trades_table.py -q`
 
-## Task 4: Full regression verification [x]
+## Task 4: Full verification gate [x]
 
-- **Files:** No source changes.
-- **Change:** Run the complete hermetic suite and inspect failures without weakening the quality bar.
-- **Acceptance:** `python -m pytest -q` passes with no skipped or removed assertions caused by this change.
+- **Files:** None (verification gate)
+- **Change:** Run full test suite silently and confirm clean diff.
+- **Acceptance:** `python -m pytest -q` is 100% green.
 - **Check:** `python -m pytest -q`
 
-## How to verify by hand
+## How to verify by hand (Operator)
+1. Launch dashboard on `http://127.0.0.1:8799` (`python -m dashboard.server`).
+2. Navigate to the **Orders & Trades** tab.
+3. Observe resting orders where a market has both UP and DOWN orders: they are merged into a single 2-row table entry sharing the market title cell with an `Inferred` blue badge beside `Paired` or `Partial`.
+4. Genuinely single-side resting orders remain distinct rows labeled `Unpaired` with no `Inferred` tag.
 
-1. Run a shadow rehearsal and open its generated report or shadow registry output.
-2. Find a completion BUY against a thin ask ladder; it should show fewer shares than
-	the requested notional divided by the touch price.
-3. Compare the recorded completion price with the ask-level weighted average; it should
-	be worse than the touch when the ladder walks and should never use asks above the
-	two-cent ceiling.
-4. A completion with no usable ask depth should retain the touch-price fallback.

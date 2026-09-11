@@ -3429,8 +3429,9 @@ function pairCostText(pairCost) {
 }
 
 /* The status and its measurement on one line, under the market name. */
-function pairSummary(status, pairCost) {
-  return `<div class="ot-pair-line">${pairStatusTag(status)}${pairCostText(pairCost)}</div>`;
+function pairSummary(status, pairCost, inferred) {
+  const inferredTag = inferred ? `<div class="ot-tag is-info" title="Complementary legs grouped by market (no shared pair_id)">Inferred</div>` : '';
+  return `<div class="ot-pair-line">${pairStatusTag(status)}${inferredTag}${pairCostText(pairCost)}</div>`;
 }
 
 /* A labelled status tag: a named condition, optionally with the number behind
@@ -3526,11 +3527,24 @@ function groupOrdersByPair(orders, kpi) {
   const byMarket = (kpi && kpi.by_market) || {};
   const legs = tokenLegMap(kpi);
   const groups = new Map();
+  const leftovers = [];
 
+  // Pass 1: group orders sharing a valid pair_id; isolate orders without pair_id
   for (const o of orders) {
-    const key = o.pair_id || ('order:' + o.order_id);
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(o);
+    if (o.pair_id) {
+      if (!groups.has(o.pair_id)) groups.set(o.pair_id, []);
+      groups.get(o.pair_id).push(o);
+    } else {
+      leftovers.push(o);
+    }
+  }
+
+  // Pass 2: find complementary detached legs among leftovers (exactly 1 UP + 1 DN per market)
+  const leftoversByCid = new Map();
+  for (const o of leftovers) {
+    const cid = o.condition_id;
+    if (!leftoversByCid.has(cid)) leftoversByCid.set(cid, []);
+    leftoversByCid.get(cid).push(o);
   }
 
   const legRank = (order) => {
@@ -3541,12 +3555,32 @@ function groupOrdersByPair(orders, kpi) {
   };
 
   const out = [];
+
+  // Add native pair groups (inferred: false)
   for (const [key, list] of groups) {
     list.sort((a, b) => legRank(a) - legRank(b)
       || (Number(a.posted_ts) || 0) - (Number(b.posted_ts) || 0));
     const newest = list.reduce((max, o) => Math.max(max, Number(o.posted_ts) || 0), 0);
-    out.push({ key, orders: list, newest });
+    out.push({ key, orders: list, newest, inferred: false });
   }
+
+  // Consolidate or isolate leftovers
+  for (const [cid, list] of leftoversByCid) {
+    const ups = list.filter(o => legForOrder(o, legs, byMarket) === 'UP');
+    const dns = list.filter(o => legForOrder(o, legs, byMarket) === 'DN');
+    if (ups.length === 1 && dns.length === 1) {
+      const pairList = [ups[0], dns[0]];
+      pairList.sort((a, b) => legRank(a) - legRank(b)
+        || (Number(a.posted_ts) || 0) - (Number(b.posted_ts) || 0));
+      const newest = pairList.reduce((max, o) => Math.max(max, Number(o.posted_ts) || 0), 0);
+      out.push({ key: 'inferred:' + cid, orders: pairList, newest, inferred: true });
+    } else {
+      for (const o of list) {
+        out.push({ key: 'order:' + o.order_id, orders: [o], newest: Number(o.posted_ts) || 0, inferred: false });
+      }
+    }
+  }
+
   out.sort((a, b) => b.newest - a.newest);
   return out;
 }
@@ -3594,7 +3628,7 @@ function openOrdersRows(kpi, state) {
       restingLegs.UP ? restingLegs.UP.size : 0,
       restingLegs.DN ? restingLegs.DN.size : 0);
     const pairCost = restingPairCost(group.orders, kpi);
-    const pairTags = pairSummary(status, status === 'unpaired' ? null : pairCost);
+    const pairTags = pairSummary(status, status === 'unpaired' ? null : pairCost, Boolean(group.inferred));
 
     return group.orders.map((o, legIndex) => {
       const leg = legForOrder(o, legs, byMarket) || '--';
@@ -3690,7 +3724,34 @@ function closedTradesRows(kpi, state) {
     })).join('');
 }
 
-function positionsRows(kpi) {
+function isMarketInferredPosition(cid, kpi, state) {
+  if (!state || !Array.isArray(state.fills)) return false;
+  const byMarket = (kpi && kpi.by_market) || {};
+  const legs = tokenLegMap(kpi);
+  const fillsForMarket = state.fills.filter(f => f.condition_id === cid);
+  if (!fillsForMarket.length) return false;
+
+  // Group fills by non-null pair_id
+  const pairIds = new Set();
+  for (const f of fillsForMarket) {
+    if (f.pair_id) pairIds.add(f.pair_id);
+  }
+
+  // Check if any single pair_id covers both an UP and DOWN fill
+  for (const pid of pairIds) {
+    const pairFills = fillsForMarket.filter(f => f.pair_id === pid);
+    const hasUp = pairFills.some(f => legForOrder(f, legs, byMarket) === 'UP');
+    const hasDn = pairFills.some(f => legForOrder(f, legs, byMarket) === 'DN');
+    if (hasUp && hasDn) {
+      return false; // Found a legitimate shared pair_id covering both legs
+    }
+  }
+
+  // If both legs are held but no shared pair_id links them in fills, it is inferred
+  return true;
+}
+
+function positionsRows(kpi, state) {
   const entries = heldMarketEntries(kpi, false);
 
   if (!entries.length) return otEmptyRow('positions', 'No legs have filled, so nothing is held.');
@@ -3707,7 +3768,8 @@ function positionsRows(kpi) {
     const legs = heldLegs(m);
     if (!legs.length) return '';
 
-    const pairTags = pairSummary(status, (status === 'unpaired') ? null : m.pair_cost);
+    const isInferred = (status !== 'unpaired') && isMarketInferredPosition(cid, kpi, state);
+    const pairTags = pairSummary(status, (status === 'unpaired') ? null : m.pair_cost, isInferred);
     const span = legs.length;
 
     return legs.map((entry, legIndex) => {
@@ -3751,7 +3813,7 @@ function ordersTradesCounts(kpi, state) {
 
 function ordersTradesRows(view, kpi, state) {
   if (view === 'open-orders') return openOrdersRows(kpi, state);
-  if (view === 'positions') return positionsRows(kpi);
+  if (view === 'positions') return positionsRows(kpi, state);
   if (view === 'closed-trades') return closedTradesRows(kpi, state);
   return activeMarketsRows(kpi, state);
 }
@@ -4703,7 +4765,7 @@ if (typeof module !== 'undefined' && module.exports) {
     positionMarkValue, settledMarkValue, winningLeg,
     isQuotedMarket, isRestingOrder, tokenLegMap, legForOrder,
     normalizeLeg, groupOrdersByPair, restingPairCost, restingPairLegs,
-    pairStatus, PAIR_STATUS,
+    pairStatus, PAIR_STATUS, isMarketInferredPosition, pairSummary,
     get isStopping() { return isStopping; },
     set isStopping(v) { isStopping = v; } };
 }

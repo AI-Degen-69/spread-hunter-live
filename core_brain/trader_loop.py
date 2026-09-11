@@ -821,6 +821,7 @@ def _make_open_orders_fn(registry):
                 "id": o.id,
                 "side": o.side,
                 "status": o.status,
+                "pair_id": o.pair_id,
             })
         return out
     return open_orders_fn

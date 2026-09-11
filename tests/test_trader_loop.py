@@ -173,9 +173,27 @@ class TestPlanOrders:
         assert len(to_submit) == 2
         assert all(i.pair_id is None for i in to_submit)
 
+        from unittest.mock import MagicMock
+        from core_brain.trader_loop import _submit_intents
+
+        venue = MagicMock()
+        venue.get_open_orders.return_value = []
+        venue.create_order.return_value = {"signed": True}
+        venue.post_orders.return_value = [{"orderID": "0x1"}, {"orderID": "0x2"}]
+        registry = MagicMock()
+
+        _submit_intents(venue, registry, FakeMarket("0xmkt"), to_submit, MakerConfig())
+        created = [call.args[0] for call in registry.create_order.call_args_list]
+        assert len(created) == 2
+        pids = {o.pair_id for o in created}
+        assert len(pids) == 1
+        fresh_pid = pids.pop()
+        assert fresh_pid != "pair-aaa111"
+        assert fresh_pid.startswith("pair-")
+
     def test_carried_pair_id_survives_the_queue_hold(self):
-        # The queue hold keeps the stale leg itself: nothing is cancelled on
-        # its token, nothing is submitted, and nothing detaches.
+        # The queue hold keeps the UP leg at 0.73 while the DOWN leg drifts out of tolerance.
+        # The replacement intent for the cancelled DOWN leg must join the resting UP leg's pair.
         open_orders = [
             {"token_id": "tok-up", "price": 0.73, "order_id": "o-up",
              "side": "BUY", "status": "open", "pair_id": "pair-aaa111"},
@@ -184,15 +202,18 @@ class TestPlanOrders:
         ]
         intents = [
             _intent(side="UP", token="tok-up", price=0.60),
-            _intent(side="DOWN", token="tok-dn", price=0.23),
+            _intent(side="DOWN", token="tok-dn", price=0.28),
         ]
         to_cancel, to_submit = plan_orders(
-            open_orders, intents, dead_band=0.20,
+            open_orders, intents, dead_band=0.01,
             cfg=MakerConfig(max_completable_pair_cost=1.00),
-            hedge_asks={"tok-up": 0.20}, queue_ahead={"o-up": 10.0},
+            hedge_asks={"tok-up": 0.20, "tok-dn": 0.70},
+            queue_ahead={"o-up": 10.0},
             hold_queue_shares=50.0)
-        assert [o["order_id"] for o in to_cancel] == []
-        assert to_submit == []
+        assert [o["order_id"] for o in to_cancel] == ["o-dn"]
+        assert len(to_submit) == 1
+        assert to_submit[0].token_id == "tok-dn"
+        assert to_submit[0].pair_id == "pair-aaa111"
 
     def test_the_larger_of_dead_band_and_price_eps_wins(self):
         # Two independent reasons to keep an order; neither may silently
@@ -392,11 +413,11 @@ class TestRunLoop:
         from core_brain.trader_loop import _make_open_orders_fn
 
         registry = MagicMock()
-        o_open = MagicMock(condition_id="0xabc", status="open", token_id="tok-up", price=0.55, order_id="v1", id="row1", side="BUY")
-        o_partial = MagicMock(condition_id="0xabc", status="partial", token_id="tok-dn", price=0.45, order_id="v2", id="row2", side="BUY")
-        o_filled = MagicMock(condition_id="0xabc", status="filled", token_id="tok-up", price=0.55, order_id="v3", id="row3", side="BUY")
-        o_cancelled = MagicMock(condition_id="0xabc", status="cancelled", token_id="tok-dn", price=0.45, order_id="v4", id="row4", side="BUY")
-        o_other_mkt = MagicMock(condition_id="0xdef", status="open", token_id="tok-dn", price=0.45, order_id="v5", id="row5", side="BUY")
+        o_open = MagicMock(condition_id="0xabc", status="open", token_id="tok-up", price=0.55, order_id="v1", id="row1", side="BUY", pair_id="pair-1")
+        o_partial = MagicMock(condition_id="0xabc", status="partial", token_id="tok-dn", price=0.45, order_id="v2", id="row2", side="BUY", pair_id="pair-2")
+        o_filled = MagicMock(condition_id="0xabc", status="filled", token_id="tok-up", price=0.55, order_id="v3", id="row3", side="BUY", pair_id="pair-3")
+        o_cancelled = MagicMock(condition_id="0xabc", status="cancelled", token_id="tok-dn", price=0.45, order_id="v4", id="row4", side="BUY", pair_id="pair-4")
+        o_other_mkt = MagicMock(condition_id="0xdef", status="open", token_id="tok-dn", price=0.45, order_id="v5", id="row5", side="BUY", pair_id="pair-5")
 
         registry.get_active_orders.return_value = [o_open, o_partial, o_filled, o_cancelled, o_other_mkt]
 
@@ -407,6 +428,7 @@ class TestRunLoop:
         assert len(res) == 2
         assert {r["order_id"] for r in res} == {"v1", "v2"}
         assert {r["status"] for r in res} == {"open", "partial"}
+        assert {r["pair_id"] for r in res} == {"pair-1", "pair-2"}
 
     def test_run_reloads_markets_via_markets_fn_each_cycle(self):
         call_count = [0]

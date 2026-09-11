@@ -444,6 +444,33 @@ def test_open_orders_labels_a_half_built_pair_unpaired():
     assert "ot-tag is-alert" in rendered["html"]
     assert "Pair Cost" not in rendered["html"]
     assert "single buy" not in rendered["html"].lower()
+    assert "Inferred" not in rendered["html"]
+    assert "ot-tag is-info" not in rendered["html"]
+
+
+@requires_node
+def test_open_orders_consolidates_detached_complementary_legs_with_inferred_tag():
+    # Arrange — two resting orders on the same market missing pair_id (or with
+    # mismatched/null pair_id) are complementary (one UP, one DOWN).
+    # They must consolidate into one pair group with rowspan=2, computed pair cost,
+    # and the secondary 'Inferred' tag.
+    state = _state()
+    for o in state["orders"]:
+        if o.get("condition_id") == CID_QUOTED:
+            o["pair_id"] = None  # Detach both orders
+
+    # Act
+    rendered = _render("open-orders", _kpi(), state)
+
+    # Assert
+    assert f'data-pair="inferred:{CID_QUOTED}"' in rendered["html"]
+    assert 'rowspan="2"' in rendered["html"]
+    assert "ot-tag is-info" in rendered["html"]
+    assert "Inferred" in rendered["html"]
+    # Combined cost: 0.47 (UP) + 0.51 (DOWN) = 0.98
+    assert "$0.980" in rendered["html"]
+    assert "Partial" in rendered["html"]  # Sizes: 5.0 vs 3.0 remaining
+
 
 
 @requires_node
@@ -629,6 +656,46 @@ def test_positions_calls_a_lone_filled_leg_unpaired():
     assert "Unpaired" in rendered["html"]
     assert "ot-tag is-alert" in rendered["html"]
     assert rendered["rows"] == 1
+
+
+@requires_node
+def test_positions_shows_inferred_tag_when_fills_lack_shared_pair_id():
+    # Arrange — both legs are held in a market, but fills do not share a common pair_id.
+    state = _state()
+    state["fills"] = [
+        {"fill_id": "f-1", "order_id": "o-1", "condition_id": CID_HELD, "token_id": "tok-h-up",
+         "pair_id": "pair-detached-up", "side": "BUY", "price": 0.60, "size": 10.0},
+        {"fill_id": "f-2", "order_id": "o-2", "condition_id": CID_HELD, "token_id": "tok-h-dn",
+         "pair_id": "pair-detached-dn", "side": "BUY", "price": 0.40, "size": 6.0},
+    ]
+
+    # Act
+    rendered = _render("positions", _kpi(), state)
+
+    # Assert
+    assert "ot-tag is-info" in rendered["html"]
+    assert "Inferred" in rendered["html"]
+    assert "Partial" in rendered["html"]  # 10 UP vs 6 DN
+
+
+@requires_node
+def test_positions_omits_inferred_tag_when_fills_share_pair_id():
+    # Arrange — both legs are held and fills share a genuine pair_id.
+    state = _state()
+    state["fills"] = [
+        {"fill_id": "f-1", "order_id": "o-1", "condition_id": CID_HELD, "token_id": "tok-h-up",
+         "pair_id": "pair-native-held", "side": "BUY", "price": 0.60, "size": 10.0},
+        {"fill_id": "f-2", "order_id": "o-2", "condition_id": CID_HELD, "token_id": "tok-h-dn",
+         "pair_id": "pair-native-held", "side": "BUY", "price": 0.40, "size": 6.0},
+    ]
+
+    # Act
+    rendered = _render("positions", _kpi(), state)
+
+    # Assert
+    assert "ot-tag is-info" not in rendered["html"]
+    assert "Inferred" not in rendered["html"]
+    assert "Partial" in rendered["html"]
 
 
 @requires_node

@@ -1353,6 +1353,11 @@ td { font-size: 13px; }
   border-color: var(--red-border);
   color: #fca5a5;
 }
+.ot-tag.is-info {
+  background: var(--blue-bg);
+  border-color: var(--blue-border);
+  color: #38bdf8;
+}
 
 /* ── Quant Risk Metrics Grid ── */
 .quant-grid {

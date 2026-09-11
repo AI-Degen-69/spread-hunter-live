@@ -40,6 +40,10 @@ _log = logging.getLogger(__name__)
 
 SHADOW_ORDER_PREFIX = "shadow-"
 SHADOW_TRADE_PREFIX = "shadow-"
+# The worst price above the touch a completion BUY may pay. This mirrors the
+# SELL-side limit; the shadow client applies it because the caller passes raw
+# best-ask touch pricing without a cushion.
+MAX_BUY_SLIPPAGE = 0.02
 
 # Mirrors `MakerConfig.pairs_exit_window_sec`. A fallback only: the session
 # passes its own configured value in.
@@ -600,11 +604,9 @@ class ShadowExecutionClient:
     class that never defined it -- which is a loud failure rather than a
     silent no-op that would make a rehearsal look successful.
 
-    A market order here is a fill, immediately, at the price the caller
-    already chose (the book's best bid or ask, applied by `single_buy_saver`
-    before this is ever called). That is the optimistic end of what a taker
-    gets, and it is stated rather than hidden: a completion that clears in a
-    rehearsal is not evidence that the same completion clears live.
+    A market order here is a fill, immediately, against the book levels the
+    caller's touch price permits. That models the optimistic timing of a
+    rehearsal while still exposing thin depth and weighted execution prices.
     """
 
     def __init__(self, registry: OrderRegistry, db_path: Path | str, *,
@@ -813,6 +815,44 @@ class ShadowExecutionClient:
             return float(shares), float(floor)
         return taken, notional / taken
 
+    def _buy_from_asks(self, token_id: str, amount: float,
+                       *, price: float) -> tuple[float, float]:
+        """Cross the ask ladder up to the BUY slippage ceiling.
+
+        Returns `(shares_filled, weighted_average_price)`. The caller's
+        `price` is the touch, not a guaranteed fill: eligible asks are walked
+        from best to worse until the requested notional is spent. Thin depth
+        therefore produces a short fill. If no usable book is available, the
+        old touch-price fallback remains in place.
+        """
+        try:
+            book = self.get_order_book(token_id)
+        except Exception:  # noqa: BLE001 - a bookless rehearsal keeps the fallback
+            book = {}
+
+        ceiling = float(price) + MAX_BUY_SLIPPAGE
+        levels = [
+            (float(lvl["price"]), float(lvl["size"]))
+            for lvl in (book or {}).get("asks") or []
+            if float(lvl.get("size") or 0.0) > 0
+        ]
+        levels.sort(key=lambda pl: pl[0])
+
+        remaining = float(amount)
+        notional = 0.0
+        taken = 0.0
+        for lvl_price, lvl_size in levels:
+            if remaining <= 0 or lvl_price > ceiling:
+                break
+            fill = min(lvl_size, remaining / lvl_price)
+            notional += fill * lvl_price
+            taken += fill
+            remaining -= fill * lvl_price
+
+        if taken <= 0:
+            return float(amount) / float(price), float(price)
+        return taken, notional / taken
+
     def create_and_post_market_order(self, order_args) -> dict:
         """Cross the book in the rehearsal: called with one positional
         `MarketOrderArgsV2(token_id=..., amount=..., side=..., price=...)`.
@@ -855,7 +895,7 @@ class ShadowExecutionClient:
             raise ShadowOrderRefused(
                 f"unrecognised order side {side!r} for {token_id[:12]}")
 
-        shares = amount / price
+        shares, fill_price = self._buy_from_asks(token_id, amount, price=price)
 
         found = self._naked_pair_for_token(token_id)
         if found is None:
@@ -872,23 +912,23 @@ class ShadowExecutionClient:
             id=local_id,
             order_id=f"{SHADOW_ORDER_PREFIX}{uuid.uuid4().hex[:12]}",
             condition_id=condition_id, token_id=token_id, side="BUY",
-            price=price, original_size=shares, status="filled",
+            price=fill_price, original_size=shares, status="filled",
             posted_ts=now_ms, last_polled_ts=now_ms, pair_id=pair_id,
         )
         self._registry.create_order(completion)
         self._registry.record_fill(FillRecord(
             trade_id=f"{SHADOW_TRADE_PREFIX}{uuid.uuid4().hex[:16]}",
-            order_uuid=local_id, size=shares, price=price,
+            order_uuid=local_id, size=shares, price=fill_price,
             venue_ts=now_ms, recorded_ts=now_ms,
         ))
         # A completion buy is a fill like any other, and the live path writes a
         # markout for it too. Leaving it out would make the taker leg of every
         # completed pair invisible to the adverse-selection measurement.
         _log_shadow_markout(self._registry, completion, None,
-                            price=price, size=shares,
+                    price=fill_price, size=shares,
                             fill_sec=now_ms / 1000.0)
         return {"success": True, "orderID": local_id, "status": "matched",
-                "price": price, "size": shares}
+                "price": fill_price, "size": shares}
 
 
 def shadow_positions(registry: OrderRegistry, db_path: Path | str) -> dict[str, float]:

@@ -113,6 +113,55 @@ def test_rehearsed_sell_falls_back_to_the_floor_without_a_book(registry):
     assert avg == pytest.approx(0.64)
 
 
+def test_rehearsed_buy_walks_the_ask_ladder_and_records_a_short_fill(registry):
+    """A thin ask ladder returns only its available, weighted fill."""
+    from types import SimpleNamespace
+
+    from core_brain.quotes import QuoteIntent
+    from core_brain.shadow_exec import (
+        ensure_shadow_tables, record_submit, settle_market,
+    )
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    market = SimpleNamespace(condition_id="0xabc", market_slug="fake-market")
+    intents = [
+        QuoteIntent(side="UP", token_id="tok-up", price=0.47, size=2,
+                    mid=0.5, edge_vs_mid=0.0),
+        QuoteIntent(side="DOWN", token_id="tok-dn", price=0.51, size=2,
+                    mid=0.5, edge_vs_mid=0.0),
+    ]
+    record_submit(
+        object(), reg, market, intents, SimpleNamespace(max_pair_cost=0.995),
+        db_path=db, book_fn=lambda _host, _token: {"bids": {}},
+    )
+    settle_market(
+        reg, market, db_path=db, seen=set(),
+        traded_fn=lambda _condition_id, _seen: {"tok-up": {0.47: 2.0}},
+    )
+
+    client = _client(registry, {
+        "bids": {},
+        "asks": {0.51: 1.0, 0.52: 0.5, 0.54: 100.0},
+    })
+    from py_clob_client_v2.clob_types import MarketOrderArgsV2
+
+    resp = client.create_and_post_market_order(
+        MarketOrderArgsV2(token_id="tok-dn", amount=1.0, side="BUY",
+                          price=0.51)
+    )
+
+    # 1 @ 0.51 + 0.5 @ 0.52 = 0.77 over 1.5 shares; 0.54 is above the 2c ceiling.
+    assert resp["size"] == pytest.approx(1.5)
+    assert resp["price"] == pytest.approx(0.77 / 1.5)
+    completion = reg.get_order(resp["orderID"])
+    assert completion.original_size == pytest.approx(1.5)
+    assert completion.price == pytest.approx(0.77 / 1.5)
+    fill = next(f for f in reg.get_all_fills() if f["order_uuid"] == completion.id)
+    assert fill["size"] == pytest.approx(1.5)
+    assert fill["price"] == pytest.approx(0.77 / 1.5)
+
+
 # --- 3. the close must record what the venue reported --------------------
 
 def test_exit_close_records_the_achieved_price_when_the_venue_reports_one():

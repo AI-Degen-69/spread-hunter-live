@@ -205,6 +205,107 @@ def test_rehearsed_buy_orders_list_shaped_asks_before_applying_ceiling(registry)
     assert avg == pytest.approx(0.77 / 1.5)
 
 
+# --- 2b. the rehearsed SELL must fill against the pre-decision book -------
+
+def test_rehearsed_sell_fills_against_the_prior_rotations_snapshot(registry):
+    """A stored queue-mark drives the exit fill, not the book read at post time.
+
+    Seconds pass between the sweep's decision and the taker SELL landing, and
+    the fills we get live are precisely the adversely-selected ones. The
+    rehearsal must not read the exit's book fresh: the newest `queue_marks`
+    row for the token -- written before the exit sweep ran -- is the book the
+    decision was actually made against.
+    """
+    from core_brain.shadow_exec import ensure_shadow_tables, write_queue_mark
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    write_queue_mark(
+        db, ts=1_000.0, condition_id="0xabc", market_slug="fake-market",
+        token_id="tok-dn", price=0.51, level_size=3.0, traded=0.0,
+        cancel_decay=None, queue_minutes=None, run_id=reg._run_id(),
+        best_bid=0.60,
+    )
+
+    # The fresh book has a much better touch than the snapshot. If the fill
+    # matches the fresh touch, the exit read the book it should not have.
+    client = _client(registry, {"bids": {0.66: 20.0}, "asks": {}})
+
+    filled, avg = client._sell_into_bids("tok-dn", 5.0, floor=0.58)
+
+    # Snapshot best_bid 0.60, stored level depth 3.0: 3 shares fill at 0.60;
+    # the floor (0.58) stops the remaining 2 -- depth beneath it is not ours.
+    assert filled == pytest.approx(3.0)
+    assert avg == pytest.approx(0.60)
+
+
+def test_rehearsed_sell_snapshot_still_respects_a_better_fresh_floor(registry):
+    """The floor the caller passes stays a real limit over the snapshot.
+
+    The floor is computed from the decision-time book; if it is worse than
+    the snapshot touch the snapshot still applies (it is above the floor),
+    and depth below the floor is never taken.
+    """
+    from core_brain.shadow_exec import ensure_shadow_tables, write_queue_mark
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    write_queue_mark(
+        db, ts=1_000.0, condition_id="0xabc", market_slug="fake-market",
+        token_id="tok-dn", price=0.51, level_size=10.0, traded=0.0,
+        cancel_decay=None, queue_minutes=None, run_id=reg._run_id(),
+        best_bid=0.60,
+    )
+
+    client = _client(registry, {"bids": {0.66: 20.0}, "asks": {}})
+
+    # Floor 0.60 admits the snapshot touch exactly; nothing below it fills.
+    filled, avg = client._sell_into_bids("tok-dn", 4.0, floor=0.60)
+
+    assert filled == pytest.approx(4.0)
+    assert avg == pytest.approx(0.60)
+
+    # Floor 0.62 is above the snapshot touch: nothing fills at 0.60, and the
+    # fresh book is not consulted -- the conservative floor fallback stands.
+    filled2, avg2 = client._sell_into_bids("tok-dn", 4.0, floor=0.62)
+    assert filled2 == pytest.approx(4.0)
+    assert avg2 == pytest.approx(0.62)
+
+
+def test_rehearsed_sell_without_a_snapshot_uses_the_fresh_book(registry):
+    """No queue-mark row for this run -> the fresh book, exactly as today."""
+    client = _client(registry, {"bids": {0.66: 20.0, 0.65: 30.0}, "asks": {}})
+
+    filled, avg = client._sell_into_bids("tok-dn", 5.0, floor=0.64)
+
+    assert filled == pytest.approx(5.0)
+    assert avg == pytest.approx(0.66)
+
+
+def test_rehearsed_sell_ignores_snapshots_from_other_runs(registry):
+    """`data/shadow.db` is reused between runs: a stale run's snapshot is not
+    this run's pre-decision book, and filling against it would book this run
+    an exit price nobody observed."""
+    from core_brain.shadow_exec import ensure_shadow_tables, write_queue_mark
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    write_queue_mark(
+        db, ts=1_000.0, condition_id="0xabc", market_slug="fake-market",
+        token_id="tok-dn", price=0.51, level_size=10.0, traded=0.0,
+        cancel_decay=None, queue_minutes=None, run_id="some-other-run",
+        best_bid=0.60,
+    )
+
+    client = _client(registry, {"bids": {0.66: 20.0}, "asks": {}})
+
+    filled, avg = client._sell_into_bids("tok-dn", 5.0, floor=0.64)
+
+    # Fresh book: 5 shares at the 0.66 touch.
+    assert filled == pytest.approx(5.0)
+    assert avg == pytest.approx(0.66)
+
+
 # --- 3. the close must record what the venue reported --------------------
 
 def test_exit_close_records_the_achieved_price_when_the_venue_reports_one():

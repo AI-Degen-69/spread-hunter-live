@@ -170,6 +170,25 @@ def _resolve_leg(
     return side_fallback if side_fallback in ("UP", "DOWN") else None
 
 
+def _settlement_mid(registry, condition_id: str, token_id: str) -> Optional[float]:
+    """The terminal mid for a resolved market's token: 1.0 winner, 0.0 loser.
+
+    Reads the registry's own `resolutions` table -- written by the resolution
+    sweeper (`market_resolution.sweep_market_resolutions`) from the public
+    gamma feed, so no network read happens here and this can never fail on a
+    credential. `None` when the condition has no recorded resolution (market
+    still open, or the sweeper never reached it): the caller then leaves the
+    row for a later pass, exactly as before this fallback existed.
+    """
+    try:
+        winner_id = registry.get_winning_token_id(condition_id)
+    except Exception:  # noqa: BLE001 - telemetry degrades, never blocks
+        return None
+    if not winner_id:
+        return None
+    return 1.0 if str(token_id) == str(winner_id) else 0.0
+
+
 def _record_reference(registry, row: dict, markout_id: int, horizon_idx: int,
                       mid: float, token_id: Optional[str], trades_fn,
                       now: float, horizons: tuple[float, ...]) -> None:
@@ -251,6 +270,7 @@ def sample_pending_markouts(
     updated_count = 0
     mids_cache: dict[str, dict[str, float]] = {}
     closed_book_mids: dict[str, Optional[float]] = {}
+    settled_mids: dict[str, Optional[float]] = {}
 
     for row in pending:
         cid = row.get("condition_id")
@@ -322,6 +342,24 @@ def sample_pending_markouts(
                 except Exception:
                     closed_book_mids[token_key] = None
             mid = closed_book_mids[token_key]
+
+        if mid is None and row_token and row.get("condition_id"):
+            # Last link in the chain: the market RESOLVED and the venue has
+            # purged its book (the /book endpoint 404s for it -- confirmed on
+            # the shadow-01 store, where every closed token 404s). The store's
+            # own `resolutions` table holds the winner per condition, and a
+            # resolved market's terminal price is not an estimate: 1.0 on the
+            # winning token, 0.0 on the losing one. Sampling a horizon from
+            # settlement is the truest mid a purged market can offer -- the
+            # drift it produces is the outcome, not noise around it. Cached
+            # per condition (the resolution is market-wide, not per token);
+            # None cached too, so a market with no recorded resolution is not
+            # re-read every pass.
+            cid_key = str(row["condition_id"])
+            if cid_key not in settled_mids:
+                settled_mids[cid_key] = _settlement_mid(
+                    registry, str(row["condition_id"]), str(row_token))
+            mid = settled_mids[cid_key]
 
         # The windowed reference and the peer baseline, when the tape can be
         # read. Best-effort by design: a tape that will not answer leaves these

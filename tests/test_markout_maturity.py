@@ -108,6 +108,27 @@ def test_a_markout_on_a_closed_market_still_matures(registry, monkeypatch):
     assert updated >= 1
 
 
+def test_both_legs_of_one_closed_market_mature(registry, monkeypatch):
+    """Regression: the closed-market fallback must serve each token.
+
+    A market's fill on each leg leaves two pending rows sharing one closed
+    condition_id with different tokens. A fallback cached by condition_id
+    from the first row's token resolves nothing for the second -- the second
+    row stays stranded. Keyed by token, both mature.
+    """
+    up_id = _seed_markout(registry, T0 - 4000, token="tok-up")
+    dn_id = _seed_markout(registry, T0 - 4000, token="tok-dn")
+    _patch_venue(monkeypatch, market_closed=True)
+
+    sample_pending_markouts(
+        registry, now_sec=T0, trades_fn=lambda token, cid=None: [])
+
+    assert _row(registry, up_id)["mid_h0"] is not None
+    assert _row(registry, dn_id)["mid_h0"] is not None, (
+        "the DOWN leg's row must sample its own token's book, not the UP "
+        "leg's cached fallback")
+
+
 def test_a_sampled_row_with_a_recorded_reference_is_counted_clean(registry, monkeypatch):
     """Defect 2. Once the tape supplies a windowed reference, the row must
     stop reading as contaminated — or the harness's matured-markout counter

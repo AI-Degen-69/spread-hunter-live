@@ -250,6 +250,7 @@ def sample_pending_markouts(
 
     updated_count = 0
     mids_cache: dict[str, dict[str, float]] = {}
+    closed_book_mids: dict[str, Optional[float]] = {}
 
     for row in pending:
         cid = row.get("condition_id")
@@ -293,33 +294,34 @@ def sample_pending_markouts(
             except Exception:
                 mids_cache[cid] = {}
 
-            if not mids_cache.get(cid):
-                # The pinned-market fetch refused (closed / unfunded /
-                # unreachable) and left nothing to resolve a leg from. The
-                # fill's own token is still known, and the book endpoint is
-                # public and answers for closed markets -- read that leg's
-                # book directly. Without this, a fill on a market that ended
-                # before its horizons came due strands its row at done=0
-                # forever: exactly what every shadow run's markouts table
-                # shows. A book that also fails stays {}, same as before.
-                row_token_cached = row.get("token_id")
-                if row_token_cached:
-                    try:
-                        b = full_book(clob_host, str(row_token_cached))
-                        bb, ba = b.get("best_bid"), b.get("best_ask")
-                        if bb is not None and ba is not None:
-                            mids_cache[cid] = {
-                                "UP": (bb + ba) / 2.0,
-                                "DOWN": (bb + ba) / 2.0,
-                                "_up_token": str(row_token_cached),
-                                "_down_token": None,
-                            }
-                    except Exception:
-                        mids_cache[cid] = {}
-
         mids = mids_cache.get(cid, {})
         leg = _resolve_leg(row_token, mids, side)
         mid = mids.get(leg) if leg else None
+
+        if mid is None and row_token:
+            # The pinned-market fetch refused (closed / unfunded /
+            # unreachable) and left nothing to resolve a leg from. The fill's
+            # own token is still known, and the book endpoint is public and
+            # answers for closed markets -- read that token's book directly.
+            # Keyed by TOKEN, not condition_id: both legs of one closed market
+            # land here as separate rows with separate tokens, and a
+            # cid-keyed entry built from the first row's token would resolve
+            # nothing for the second -- the row would stay stranded exactly
+            # as before the fallback existed. None is cached too: a book that
+            # will not answer is retried never, not every pass.
+            token_key = str(row_token)
+            if token_key not in closed_book_mids:
+                try:
+                    b = full_book(clob_host, token_key)
+                    bb, ba = b.get("best_bid"), b.get("best_ask")
+                    closed_book_mids[token_key] = (
+                        (bb + ba) / 2.0
+                        if (bb is not None and ba is not None)
+                        else None
+                    )
+                except Exception:
+                    closed_book_mids[token_key] = None
+            mid = closed_book_mids[token_key]
 
         # The windowed reference and the peer baseline, when the tape can be
         # read. Best-effort by design: a tape that will not answer leaves these

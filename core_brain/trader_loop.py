@@ -214,6 +214,32 @@ def plan_orders(
             continue
         kept.setdefault(tok, []).append(o)
 
+    # Which pair each submitted intent should JOIN, keyed by token.
+    #
+    # A replacement for a leg that was just cancelled must not look like a new
+    # unrelated position. When this cycle cancels an order whose pair still
+    # has a SURVIVING resting member (the complementary leg resting untouched
+    # on the other token), the replacement joins that pair: the two legs are
+    # one economic position (0.71 UP + 0.23 DOWN is a $0.94 pair regardless of
+    # what the registry's bookkeeping says), and a fresh pair id here is
+    # exactly how a market ends up with two one-legged pairs -- the detachment
+    # confirmed live on three conditions in the shadow store (see #206).
+    #
+    # The mapping only carries ids of pairs with a surviving member, so a pair
+    # whose legs were ALL cancelled this cycle cannot leak its id onto the
+    # replacement: those legs re-post together under one NEW shared id.
+    cancelled_tokens = {o["token_id"] for o in to_cancel}
+    surviving_tokens_by_pair: dict[str, set] = {}
+    for o in open_orders:
+        pid = o.get("pair_id")
+        if pid and o["token_id"] not in cancelled_tokens:
+            surviving_tokens_by_pair.setdefault(pid, set()).add(o["token_id"])
+    carry_pair_by_token: dict[str, str] = {}
+    for o in to_cancel:
+        pid = o.get("pair_id")
+        if pid and surviving_tokens_by_pair.get(pid):
+            carry_pair_by_token[o["token_id"]] = pid
+
     to_submit: list[QuoteIntent] = []
     for i in intents:
         if i.token_id in held_tokens:
@@ -223,6 +249,12 @@ def plan_orders(
         sits = kept.get(i.token_id, [])
         if not any(abs(o["price"] - i.price) <= tolerance for o in sits):
             to_submit.append(i)
+
+    # Stamp the carry AFTER collection so the intents are the caller's own
+    # objects annotated in one place. A token not in the map keeps whatever it
+    # had (None for a fresh intent): no complement resting, no lineage to join.
+    for i in to_submit:
+        i.pair_id = carry_pair_by_token.get(i.token_id, getattr(i, "pair_id", None))
 
     return to_cancel, to_submit
 
@@ -789,6 +821,7 @@ def _make_open_orders_fn(registry):
                 "id": o.id,
                 "side": o.side,
                 "status": o.status,
+                "pair_id": o.pair_id,
             })
         return out
     return open_orders_fn
@@ -844,6 +877,17 @@ def _submit_intents(client, registry, market, intents, cfg) -> int:
     now_ms = int(time.time() * 1000)
     pair_id = f"pair-{uuid.uuid4().hex[:12]}"
     max_pair_cost = getattr(cfg, "max_pair_cost", 0.995)
+
+    # A carried pair_id (stamped on the intents by `plan_orders`) means this
+    # batch REPLACES one leg of an existing pair whose complement still rests:
+    # the replacement must join that pair, not open a new one, or the market
+    # ends up with two one-legged pairs -- the detachment seen live (#206).
+    # Every carried intent in one batch shares one complement, so one id wins;
+    # a batch mixing carried ids would be a planner bug, and minting fresh is
+    # the safe fall-back rather than silently picking a side.
+    carried = {getattr(i, "pair_id", None) for i in intents} - {None}
+    if len(carried) == 1:
+        pair_id = carried.pop()
 
     passive = [i for i in intents if not i.crossed]
     crossed = [i for i in intents if i.crossed]

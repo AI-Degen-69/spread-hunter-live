@@ -184,3 +184,51 @@ def test_partial_fill_sets_partial_not_filled(registry, venue):
     assert summary.orders_filled == 0
     assert registry.get_order(up.id).status == "partial"
     assert registry.get_order(down.id).status == "open"
+
+
+def test_requoted_leg_joins_the_resting_complement_pair(registry, venue):
+    # #206 end to end: a couple rests; the UP leg's price drifts, plan_orders
+    # cancels it and tags the replacement with the resting pair's id, and
+    # _submit_intents carries that id forward instead of minting a new one.
+    # Before the fix this minted fresh, leaving the market with two
+    # one-legged pairs -- exactly the detachment seen live on Sweden.
+    cfg = load()
+    intents, _ = _decide(cfg)
+    _submit_intents(venue, registry, Market(), intents, cfg)
+    original_pair = next(o.pair_id for o in registry.get_active_orders())
+
+    # The UP leg drifts out of tolerance; the DOWN leg is untouched.
+    resting = registry.get_active_orders()
+    up = next(o for o in resting if o.token_id == "tok-up")
+    down = next(o for o in resting if o.token_id == "tok-dn")
+    open_orders = [
+        {"token_id": o.token_id, "price": o.price, "order_id": o.order_id,
+         "id": o.id, "side": o.side, "status": o.status, "pair_id": o.pair_id}
+        for o in resting
+    ]
+    from core_brain.quotes import QuoteIntent
+    from core_brain.trader_loop import plan_orders
+
+    drifted = [
+        QuoteIntent(side="UP", token_id="tok-up", price=up.price - 0.03,
+                    size=up.original_size, mid=up.price - 0.02,
+                    edge_vs_mid=0.01),
+        QuoteIntent(side="DOWN", token_id="tok-dn", price=down.price,
+                    size=down.original_size, mid=down.price + 0.01,
+                    edge_vs_mid=0.01),
+    ]
+    to_cancel, to_submit = plan_orders(open_orders, drifted)
+    assert [o["order_id"] for o in to_cancel] == [up.order_id]
+    assert len(to_submit) == 1
+    assert all(i.pair_id == original_pair for i in to_submit)
+
+    # Registry says the old leg is cancelled; the replacement joins the pair.
+    registry.update_order_status(up.id, "cancelled", last_polled_ts=up.last_polled_ts)
+    placed = _submit_intents(venue, registry, Market(), to_submit, cfg)
+    assert placed == 1
+
+    legs = registry.get_active_orders()
+    assert len(legs) == 2  # one two-legged pair, not two one-legged pairs
+    assert {o.pair_id for o in legs} == {original_pair}
+    assert {o.token_id for o in legs} == {"tok-up", "tok-dn"}
+    assert next(o for o in legs if o.token_id == "tok-dn").id == down.id

@@ -69,6 +69,39 @@ def test_both_legs_share_one_pair_id(registry):
     assert pair_ids.pop().startswith("pair-")
 
 
+def test_a_carried_pair_id_joins_the_resting_pair(registry):
+    # #206: a replacement leg tagged by plan_orders joins the pair whose
+    # complement still rests, instead of opening a fresh one-legged pair.
+    from core_brain.shadow_exec import ensure_shadow_tables, record_submit
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    intents = _intents()[:1]  # only the UP leg is being re-quoted
+    intents[0].pair_id = "pair-aaa111"
+
+    placed = record_submit(object(), reg, FakeMarket(), intents, _cfg(),
+                           db_path=db, book_fn=_books)
+
+    assert placed == 1
+    rows = reg.get_active_orders()
+    assert len(rows) == 1
+    assert rows[0].pair_id == "pair-aaa111"
+
+
+def test_untagged_legs_still_get_a_fresh_pair(registry):
+    from core_brain.shadow_exec import ensure_shadow_tables, record_submit
+
+    reg, db = registry
+    ensure_shadow_tables(db)
+    record_submit(object(), reg, FakeMarket(), _intents(), _cfg(),
+                  db_path=db, book_fn=_books)
+
+    rows = reg.get_active_orders()
+    pair_ids = {r.pair_id for r in rows}
+    assert len(pair_ids) == 1  # one id, shared by both legs
+    assert not any(r.pair_id is None for r in rows)
+
+
 def test_queue_position_is_captured_from_the_book_at_post_time(registry):
     from core_brain.shadow_exec import (
         ensure_shadow_tables, read_queue_ahead, record_submit,

@@ -31,14 +31,19 @@ from core_brain.config import MakerConfig
 from core_brain.quotes import Inventory, QuoteIntent
 
 
-def _intent(side="UP", token="tok-up", price=0.60, size=5):
-    return QuoteIntent(side=side, token_id=token, price=price, size=size,
-                       mid=price + 0.01, edge_vs_mid=0.01)
+def _intent(side="UP", token="tok-up", price=0.60, size=5, pair_id=None):
+    i = QuoteIntent(side=side, token_id=token, price=price, size=size,
+                    mid=price + 0.01, edge_vs_mid=0.01)
+    i.pair_id = pair_id
+    return i
 
 
-def _open(token="tok-up", price=0.60, oid="o1", status="open"):
-    return {"token_id": token, "price": price, "order_id": oid,
-            "side": "BUY", "status": status}
+def _open(token="tok-up", price=0.60, oid="o1", status="open", pair_id=None):
+    d = {"token_id": token, "price": price, "order_id": oid,
+         "side": "BUY", "status": status}
+    if pair_id is not None:
+        d["pair_id"] = pair_id
+    return d
 
 
 class TestPlanOrders:
@@ -108,6 +113,107 @@ class TestPlanOrders:
         intents = [_intent(price=0.58)]
         to_cancel, to_submit = plan_orders(open_orders, intents)
         assert to_cancel == open_orders
+
+    def test_requoted_leg_carries_the_resting_complement_pair_id(self):
+        # Root cause of #206: re-quoting one leg of a market whose complement
+        # still rests used to mint a brand-new pair_id, splitting one economic
+        # pair into two one-legged pairs (seen live: 0.71 + 0.23 on Sweden
+        # landing in pair-9028... and pair-3dab...). plan_orders knows which
+        # resting order a submitted intent replaces, so it tags the intent
+        # with that order's pair_id for _submit_intents to carry forward.
+        open_orders = [
+            {"token_id": "tok-up", "price": 0.73, "order_id": "o-up",
+             "side": "BUY", "status": "open", "pair_id": "pair-aaa111"},
+            {"token_id": "tok-dn", "price": 0.23, "order_id": "o-dn",
+             "side": "BUY", "status": "open", "pair_id": "pair-aaa111"},
+        ]
+        # Both legs are quoted this cycle (the normal decide flow); the DOWN
+        # leg still sits at its desired price and is KEPT, the UP leg drifted
+        # and is cancelled + resubmitted.
+        intents = [
+            _intent(side="UP", token="tok-up", price=0.71),
+            _intent(side="DOWN", token="tok-dn", price=0.23),
+        ]
+        to_cancel, to_submit = plan_orders(open_orders, intents)
+        assert [o["order_id"] for o in to_cancel] == ["o-up"]
+        assert len(to_submit) == 1
+        assert to_submit[0].token_id == "tok-up"
+        assert to_submit[0].pair_id == "pair-aaa111"
+
+    def test_requote_with_no_resting_complement_carries_no_pair_id(self):
+        # A market with nothing else resting starts a fresh pair.
+        open_orders = [
+            {"token_id": "tok-up", "price": 0.73, "order_id": "o-up",
+             "side": "BUY", "status": "open", "pair_id": "pair-aaa111"},
+        ]
+        intents = [_intent(side="UP", token="tok-up", price=0.71)]
+        to_cancel, to_submit = plan_orders(open_orders, intents)
+        assert len(to_submit) == 1
+        assert to_submit[0].pair_id is None
+
+    def test_fully_requoted_pair_gets_one_fresh_pair_id_not_the_old_one(self):
+        # Both legs re-priced in the same cycle: nothing of the old pair
+        # survives this cycle's cancels, so the replacement legs must NOT
+        # resurrect the old id (a stale id could later collide with fills
+        # attributed to the cancelled legs). They land together under one NEW
+        # shared id, minted by the submit path.
+        # Both legs re-priced in the same cycle land in ONE new pair together.
+        open_orders = [
+            {"token_id": "tok-up", "price": 0.73, "order_id": "o-up",
+             "side": "BUY", "status": "open", "pair_id": "pair-aaa111"},
+            {"token_id": "tok-dn", "price": 0.23, "order_id": "o-dn",
+             "side": "BUY", "status": "open", "pair_id": "pair-aaa111"},
+        ]
+        intents = [
+            _intent(side="UP", token="tok-up", price=0.71),
+            _intent(side="DOWN", token="tok-dn", price=0.25),
+        ]
+        to_cancel, to_submit = plan_orders(open_orders, intents)
+        assert len(to_cancel) == 2
+        assert len(to_submit) == 2
+        assert all(i.pair_id is None for i in to_submit)
+
+        from unittest.mock import MagicMock
+        from core_brain.trader_loop import _submit_intents
+
+        venue = MagicMock()
+        venue.get_open_orders.return_value = []
+        venue.create_order.return_value = {"signed": True}
+        venue.post_orders.return_value = [{"orderID": "0x1"}, {"orderID": "0x2"}]
+        registry = MagicMock()
+
+        _submit_intents(venue, registry, FakeMarket("0xmkt"), to_submit, MakerConfig())
+        created = [call.args[0] for call in registry.create_order.call_args_list]
+        assert len(created) == 2
+        pids = {o.pair_id for o in created}
+        assert len(pids) == 1
+        fresh_pid = pids.pop()
+        assert fresh_pid != "pair-aaa111"
+        assert fresh_pid.startswith("pair-")
+
+    def test_carried_pair_id_survives_the_queue_hold(self):
+        # The queue hold keeps the UP leg at 0.73 while the DOWN leg drifts out of tolerance.
+        # The replacement intent for the cancelled DOWN leg must join the resting UP leg's pair.
+        open_orders = [
+            {"token_id": "tok-up", "price": 0.73, "order_id": "o-up",
+             "side": "BUY", "status": "open", "pair_id": "pair-aaa111"},
+            {"token_id": "tok-dn", "price": 0.23, "order_id": "o-dn",
+             "side": "BUY", "status": "open", "pair_id": "pair-aaa111"},
+        ]
+        intents = [
+            _intent(side="UP", token="tok-up", price=0.60),
+            _intent(side="DOWN", token="tok-dn", price=0.28),
+        ]
+        to_cancel, to_submit = plan_orders(
+            open_orders, intents, dead_band=0.01,
+            cfg=MakerConfig(max_completable_pair_cost=1.00),
+            hedge_asks={"tok-up": 0.20, "tok-dn": 0.70},
+            queue_ahead={"o-up": 10.0},
+            hold_queue_shares=50.0)
+        assert [o["order_id"] for o in to_cancel] == ["o-dn"]
+        assert len(to_submit) == 1
+        assert to_submit[0].token_id == "tok-dn"
+        assert to_submit[0].pair_id == "pair-aaa111"
 
     def test_the_larger_of_dead_band_and_price_eps_wins(self):
         # Two independent reasons to keep an order; neither may silently
@@ -307,11 +413,11 @@ class TestRunLoop:
         from core_brain.trader_loop import _make_open_orders_fn
 
         registry = MagicMock()
-        o_open = MagicMock(condition_id="0xabc", status="open", token_id="tok-up", price=0.55, order_id="v1", id="row1", side="BUY")
-        o_partial = MagicMock(condition_id="0xabc", status="partial", token_id="tok-dn", price=0.45, order_id="v2", id="row2", side="BUY")
-        o_filled = MagicMock(condition_id="0xabc", status="filled", token_id="tok-up", price=0.55, order_id="v3", id="row3", side="BUY")
-        o_cancelled = MagicMock(condition_id="0xabc", status="cancelled", token_id="tok-dn", price=0.45, order_id="v4", id="row4", side="BUY")
-        o_other_mkt = MagicMock(condition_id="0xdef", status="open", token_id="tok-dn", price=0.45, order_id="v5", id="row5", side="BUY")
+        o_open = MagicMock(condition_id="0xabc", status="open", token_id="tok-up", price=0.55, order_id="v1", id="row1", side="BUY", pair_id="pair-1")
+        o_partial = MagicMock(condition_id="0xabc", status="partial", token_id="tok-dn", price=0.45, order_id="v2", id="row2", side="BUY", pair_id="pair-2")
+        o_filled = MagicMock(condition_id="0xabc", status="filled", token_id="tok-up", price=0.55, order_id="v3", id="row3", side="BUY", pair_id="pair-3")
+        o_cancelled = MagicMock(condition_id="0xabc", status="cancelled", token_id="tok-dn", price=0.45, order_id="v4", id="row4", side="BUY", pair_id="pair-4")
+        o_other_mkt = MagicMock(condition_id="0xdef", status="open", token_id="tok-dn", price=0.45, order_id="v5", id="row5", side="BUY", pair_id="pair-5")
 
         registry.get_active_orders.return_value = [o_open, o_partial, o_filled, o_cancelled, o_other_mkt]
 
@@ -322,6 +428,7 @@ class TestRunLoop:
         assert len(res) == 2
         assert {r["order_id"] for r in res} == {"v1", "v2"}
         assert {r["status"] for r in res} == {"open", "partial"}
+        assert {r["pair_id"] for r in res} == {"pair-1", "pair-2"}
 
     def test_run_reloads_markets_via_markets_fn_each_cycle(self):
         call_count = [0]

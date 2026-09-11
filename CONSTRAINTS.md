@@ -5,7 +5,7 @@
 - Existing behavior outside shadow completion BUYs must remain unchanged.
 - Add at least one regression test that fails against the current touch-price implementation.
 - During implementation, run the narrowest relevant test command; reserve the full
-	`python -m pytest -q` suite for the pre-ship/pre-merge gate.
+  `python -m pytest -q` suite for the pre-ship/pre-merge gate.
 - Do not skip, weaken, delete, or rewrite assertions merely to obtain a passing suite.
 - Do not add tests that depend on live network access or real funds.
 

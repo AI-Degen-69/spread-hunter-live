@@ -1109,6 +1109,16 @@ function renderRunProfitability(kpi) {
     detParts.push(`${rp.fills || 0} fills / ${rp.quotes || 0} quotes / ${rp.closes_count || 0} closes`);
     if (rp.win_rate != null) detParts.push(`win rate ${(rp.win_rate * 100).toFixed(1)}%`);
     if (rp.expectancy_usd != null) detParts.push(`expectancy ${fmtUSD(rp.expectancy_usd)}`);
+    const split = rp.pnl_by_fill_path || kpi.pnl_by_fill_path;
+    if (split && split.by_path) {
+      const mPnl = fmtSignedUSD(split.by_path.maker_merged || 0);
+      const tPnl = fmtSignedUSD(split.by_path.taker_completed || 0);
+      const rPnl = fmtSignedUSD(split.by_path.single_buy_exit || 0);
+      const mPct = split.pct?.maker_merged != null ? ` (${(split.pct.maker_merged * 100).toFixed(0)}%)` : '';
+      const tPct = split.pct?.taker_completed != null ? ` (${(split.pct.taker_completed * 100).toFixed(0)}%)` : '';
+      const rPct = split.pct?.single_buy_exit != null ? ` (${(split.pct.single_buy_exit * 100).toFixed(0)}%)` : '';
+      detParts.push(`paths: maker ${mPnl}${mPct} · taker ${tPnl}${tPct} · rescue ${rPnl}${rPct}`);
+    }
     detailsEl.textContent = detParts.join(' · ');
   }
 }

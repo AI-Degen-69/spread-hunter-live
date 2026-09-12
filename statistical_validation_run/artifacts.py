@@ -461,6 +461,18 @@ def render_report_md(
         "- The losses above are already inside `total_realized_pnl`; a bad exit "
         "path fails the primary gate with the rest of the PnL.",
         "",
+        "### Realized PnL attribution by fill path (shadow estimate)",
+        "- **Maker-merged**: "
+        + f"${((kpi.get('pnl_by_fill_path') or {}).get('by_path') or {}).get('maker_merged', 0.0):.2f}"
+        + f" ({_pct(((kpi.get('pnl_by_fill_path') or {}).get('pct') or {}).get('maker_merged'))})",
+        "- **Taker-completed**: "
+        + f"${((kpi.get('pnl_by_fill_path') or {}).get('by_path') or {}).get('taker_completed', 0.0):.2f}"
+        + f" ({_pct(((kpi.get('pnl_by_fill_path') or {}).get('pct') or {}).get('taker_completed'))})",
+        "- **Single-buy exit**: "
+        + f"${((kpi.get('pnl_by_fill_path') or {}).get('by_path') or {}).get('single_buy_exit', 0.0):.2f}"
+        + f" ({_pct(((kpi.get('pnl_by_fill_path') or {}).get('pct') or {}).get('single_buy_exit'))})",
+        "- *Shadow-only estimate: taker completions identified via multi-order pair IDs; live merges default to maker_merged.*",
+        "",
         "## Mechanics",
         "",
         f"- **order_latency_ms**: median {_fmt((kpi.get('order_latency_ms') or {}).get('median'), 1)}, "
@@ -611,6 +623,7 @@ def write_artifacts(
         },
         "cost_of_being_wrong": COST_OF_BEING_WRONG,
         "rescue": rescue_stats(closes),
+        "pnl_by_fill_path": kpi.get("pnl_by_fill_path"),
         "methods_present": methods if closes else [],
         "target_closes": target_closes,
         "min_markouts": min_markouts,

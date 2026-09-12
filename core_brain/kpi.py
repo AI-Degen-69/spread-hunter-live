@@ -300,6 +300,7 @@ def compute_trade_analytics(
     starting_capital: float,
     equity_series: list[dict],
     float_marks: list[dict],
+    pnl_by_fill_path: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Per-trade outcome statistics and risk factors for the Level 1 tiles.
 
@@ -432,6 +433,7 @@ def compute_trade_analytics(
         "max_drawdown_pct": max_drawdown_pct,
         "max_naked_exposure_usd": max_naked_exposure_usd,
         "pnl_distribution": pnl_distribution,
+        "pnl_by_fill_path": pnl_by_fill_path,
     }
 
 
@@ -696,6 +698,8 @@ MERGE_METHODS = ("merge", "shadow_merge")
 # Bookkeeping rows the account sweep writes against a market. They are not an
 # exit the strategy chose, so they belong to no execution stage.
 NON_TRADE_CLOSE_METHODS = ("venue_sync",)
+# Methods representing single-buy liquidation or rescue exits.
+SINGLE_BUY_EXIT_METHODS = ("single_buy_exit", "naked_exit")
 # The stages, in the order a leg travels them.
 EXECUTION_STAGES = (
     ("quoted", "Quoted"),
@@ -703,6 +707,87 @@ EXECUTION_STAGES = (
     ("closed", "Closed"),
     ("merged", "Merged"),
 )
+
+
+def find_taker_completed_pairs(
+    orders: list[dict] | None = None,
+    reg: OrderRegistry | None = None,
+) -> set[str]:
+    """Identify pair IDs that required a taker order to complete the second leg.
+
+    In shadow rehearsals and live taker completions, a taker completion occurs when
+    one leg fails to fill as a maker order and is cancelled/replaced by a taker order,
+    resulting in more than 1 order record under the same (pair_id, token_id).
+    """
+    taker_pairs: set[str] = set()
+    order_list: list[dict] = []
+    if orders is not None:
+        order_list = orders
+    elif reg is not None:
+        order_list = reg.get_all_orders()
+
+    pair_token_counts: dict[tuple[str, str], int] = {}
+    for o in order_list:
+        pid = o.get("pair_id")
+        tid = o.get("token_id")
+        if pid and tid:
+            key = (str(pid), str(tid))
+            pair_token_counts[key] = pair_token_counts.get(key, 0) + 1
+
+    for (pid, _), count in pair_token_counts.items():
+        if count > 1:
+            taker_pairs.add(pid)
+
+    return taker_pairs
+
+
+def pnl_by_fill_path(
+    closes: list[dict],
+    taker_pairs: set[str],
+) -> dict[str, Any]:
+    """Compute realized PnL split across three distinct fill paths.
+
+    1. maker_merged: merged pairs where both legs were placed as resting maker orders.
+    2. taker_completed: merged pairs where one leg had to be completed via a taker order.
+    3. single_buy_exit: single-buy rescue / liquidation exits (single_buy_exit, naked_exit).
+
+    Percentages are returned as ratios in [0.0, 1.0], or None when total PnL is 0.0 or no closes.
+    """
+    by_path = {
+        "maker_merged": 0.0,
+        "taker_completed": 0.0,
+        "single_buy_exit": 0.0,
+    }
+
+    for c in closes:
+        method = c.get("method") or "unknown"
+        if method in NON_TRADE_CLOSE_METHODS:
+            continue
+
+        pnl = float(c.get("realized_pnl") or 0.0)
+
+        if method in SINGLE_BUY_EXIT_METHODS:
+            by_path["single_buy_exit"] += pnl
+        elif method in MERGE_METHODS:
+            tx = str(c.get("tx_hash") or "")
+            pid = tx.split(":")[0] if tx else ""
+            if pid and pid in taker_pairs:
+                by_path["taker_completed"] += pnl
+            else:
+                by_path["maker_merged"] += pnl
+
+    total = sum(by_path.values())
+    if abs(total) > 1e-9:
+        pct = {k: v / total for k, v in by_path.items()}
+    else:
+        pct = {k: None for k in by_path}
+
+    return {
+        "total": total,
+        "by_path": by_path,
+        "pct": pct,
+    }
+
 
 
 def _execution_funnel(
@@ -1767,6 +1852,9 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         for fm in float_marks
     ]
 
+    taker_pairs = find_taker_completed_pairs(orders=orders, reg=reg)
+    pnl_split = pnl_by_fill_path(closes=closes, taker_pairs=taker_pairs)
+
     # Per-trade win rate/expectancy/risk factors (Level 1 tiles). Computed from
     # the same closes the outcome block sums, plus the equity curve and marks
     # already assembled above.
@@ -1775,6 +1863,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         starting_capital=starting_capital,
         equity_series=equity_series,
         float_marks=float_marks,
+        pnl_by_fill_path=pnl_split,
     )
 
     # ── Run profitability verdict (dashboard quick-answer) ─────────────────
@@ -1859,6 +1948,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
             "verdict_level": _verdict_level,
             "merge_closes": _merge_closes,
             "single_buy_exits": _single_exits,
+            "pnl_by_fill_path": pnl_split,
         }
     except Exception:
         run_profitability = None
@@ -1868,6 +1958,7 @@ def report(db_path: Path | str | None = None, run_id: Optional[str] = None) -> d
         "runs": runs,
         "active_run_id": active_run_id,
         "run_profitability": run_profitability,
+        "pnl_by_fill_path": pnl_split,
 
         # Portfolio overview (run-level, all markets)
         "portfolio": portfolio,

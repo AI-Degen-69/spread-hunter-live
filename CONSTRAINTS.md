@@ -1,32 +1,16 @@
-# Constraints: Issue #195
+# Constraints: Issue #197
 
-## Regression and tests
+## Quality & Tests
+- Existing behavior outside the new KPI field must remain unchanged.
+- Zero breakage of the existing 2,019 tests in `python -m pytest -q`.
+- Do not skip, weaken, delete, or rewrite existing assertions merely to obtain a green suite.
+- A new dedicated unit test file `tests/test_pnl_by_fill_path.py` must test the 25/35/41 attribution against a seeded SQLite DB using `pytest.approx`.
+- The test must not rely on `data/01_shadow_11-09_00-37.db` since it is gitignored; it must build its own registry on `tmp_path`.
 
-- Existing behavior outside shadow completion BUYs must remain unchanged.
-- Add at least one regression test that fails against the current touch-price implementation.
-- During implementation, run the narrowest relevant test command; reserve the full
-  `python -m pytest -q` suite for the pre-ship/pre-merge gate.
-- Do not skip, weaken, delete, or rewrite assertions merely to obtain a passing suite.
-- Do not add tests that depend on live network access or real funds.
+## Anti-Cheat
+- When total PnL is 0.0 or closes are empty, percentages must return `None` (not 0.0) matching repo convention.
+- Live `merge` method closes default to `maker_merged` because live execution has no taker signal in SQLite; shadow merges inspect multiple orders under `(pair_id, token_id)`.
+- No live network calls, venue credentials, or execution loop modifications.
 
-## Fill-model correctness
-
-- BUY `amount` is USDC notional, never a share count.
-- Never spend more than the requested notional.
-- Never consume asks priced above `price + 0.02`.
-- Ignore missing or non-positive ask sizes.
-- Report the actual filled share count and depth-weighted average price consistently across the order row, fill row, markout, and response.
-- A thin eligible ladder must produce a short fill rather than inventing depth.
-- If no eligible depth is available, preserve the existing fallback `(amount / price, price)`.
-
-## Performance and dependencies
-
-- The ask walk must be a single linear pass over the returned ask levels: O(n) time and O(1) additional working memory.
-- Do not add a runtime dependency or change the database schema.
-- Keep the change within `core_brain/shadow_exec.py` and its focused test unless validation exposes a concrete contract issue.
-
-## Safety
-
-- Do not modify live venue execution or order sizing caps.
-- Do not run commands that place real orders.
-- Do not hardcode credentials, tokens, or private keys.
+## Performance
+- Taker pair detection must be a single efficient query or scan over the in-memory/sqlite orders table.

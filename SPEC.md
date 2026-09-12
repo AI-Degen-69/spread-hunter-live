@@ -1,49 +1,47 @@
-# SPEC: Issue #195
+# SPEC: Issue #197
 
 ## Goal
 
-Make the shadow rehearsal's taker BUY completion path model ask-side market depth instead of crediting the full requested notional at the caller's touch price.
+Add a 3-way realized PnL attribution split (`maker_merged`, `taker_completed`, `single_buy_exit`) across the statistical validation report, KPI payloads, and the dashboard UI, matching the hand-calculated 25/35/41 ratio on the shadow rehearsal benchmark.
 
-## In scope
+## Scope
 
-- Add a bounded ask-ladder walk inside `ShadowExecutionClient`.
-- Use a module-level `MAX_BUY_SLIPPAGE = 0.02` ceiling above the caller-supplied price.
-- Treat BUY `amount` as USDC notional, matching `MarketOrderArgsV2` and `complete_pair`.
-- Return a depth-weighted average fill price and the shares actually acquired.
-- Allow a short fill when eligible ask depth is insufficient.
-- Preserve the existing no-book fallback: requested notional divided by the caller price at that price.
-- Record the walked size and price consistently in the completion order, fill, markout, and response.
-- Add a focused regression test in `tests/test_exit_price_realism.py`.
+### In Scope
+1. **Core KPI Calculation (`core_brain/kpi.py`)**:
+   - Helper to identify taker-completed pairs from orders table: any `(pair_id, token_id)` with >1 orders represents an original resting order replaced by a taker completion order.
+   - Helper `pnl_by_fill_path(closes, taker_pairs)` that classifies realized PnL into:
+     - `maker_merged`: closes with method in `MERGE_METHODS` whose resolved `pair_id` (from `tx_hash.split(":")[0]`) is NOT taker-completed.
+     - `taker_completed`: closes with method in `MERGE_METHODS` whose resolved `pair_id` IS taker-completed.
+     - `single_buy_exit`: closes with method in `("single_buy_exit", "naked_exit")`.
+   - Returns structured dict:
+     ```python
+     {
+         "total": float,
+         "by_path": {
+             "maker_merged": float,
+             "taker_completed": float,
+             "single_buy_exit": float,
+         },
+         "pct": {
+             "maker_merged": Optional[float],
+             "taker_completed": Optional[float],
+             "single_buy_exit": Optional[float],
+         },
+     }
+     ```
+   - Exposed in `trade_analytics["pnl_by_fill_path"]`, `run_profitability["pnl_by_fill_path"]`, and top-level KPI `pnl_by_fill_path`.
 
-## Out of scope
+2. **Validation Reports & Artifacts (`statistical_validation_run/artifacts.py`)**:
+   - Include `pnl_by_fill_path` in `stat_validation["pnl_by_fill_path"]` inside `write_artifacts()`.
+   - Update `render_report_md()` under `## Rescue & failure modes` to output the dollar and percentage breakdown for each of the 3 paths, with a clear disclaimer that this is a shadow-rehearsal estimate.
 
-- Changes to the live completion path in `single_buy_saver.py`.
-- Changes to `_sell_into_bids`.
-- Changes to `pessimistic_completion_price` or reporting recosts.
-- Changes to pair discovery, naked-pair selection, registry schema, or external dependencies.
+3. **Dashboard UI (`dashboard/static/app.js`)**:
+   - Surface the 3-way breakdown clearly beside realized PnL in run profitability and analytics.
 
-## Contract
+4. **Testing (`tests/test_pnl_by_fill_path.py`)**:
+   - Seeded SQLite database asserting exact totals and percentages for the 25/35/41 split using `pytest.approx`.
+   - Edge cases: 0 closes (total 0.0, percentages None), only maker merges, only single-buy exits.
 
-```python
-MAX_BUY_SLIPPAGE: float = 0.02
-
-ShadowExecutionClient._buy_from_asks(
-    token_id: str,
-    amount: float,
-    *,
-    price: float,
-) -> tuple[float, float]
-```
-
-The helper fetches the adapted book through `get_order_book(token_id)`, walks positive-size asks from lowest price upward while `ask_price <= price + MAX_BUY_SLIPPAGE`, and spends no more than `amount`. It returns `(shares_taken, dollars_spent / shares_taken)` when any depth is available. If the book is empty or unavailable, it returns `(amount / price, price)`.
-
-`create_and_post_market_order` keeps `_naked_pair_for_token` unchanged. For BUY orders it uses the helper result for `OrderRecord.price`, `OrderRecord.original_size`, `FillRecord.price`, `FillRecord.size`, `_log_shadow_markout`, and the response dictionary.
-
-## Acceptance criteria
-
-- A thin ask ladder below the ceiling produces a short BUY fill.
-- The recorded and returned price is the depth-weighted average, not the touch price.
-- Ask levels above the ceiling are ignored.
-- Empty or unavailable book data preserves the existing fallback behavior.
-- The new focused test fails against the current implementation and passes after the change.
-- `python -m pytest -q` remains green.
+### Out of Scope
+- Modifying live order execution, fill models, or trading loops.
+- Altering markout calculation or adverse selection.

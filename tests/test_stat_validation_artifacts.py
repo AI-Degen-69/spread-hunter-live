@@ -444,3 +444,28 @@ class TestPessimisticSensitivity:
         headline = next(l for l in md.splitlines()
                         if l.strip() == "**NO-GO**")
         assert headline == "**NO-GO**"
+
+    def test_pnl_by_fill_path_in_artifacts(self, tmp_path):
+        closes = [
+            {"method": "shadow_merge", "realized_pnl": 0.50,
+             "cost_basis": 9.5, "shares": 10},
+            {"method": "single_buy_exit", "realized_pnl": -0.20,
+             "cost_basis": 5.0, "shares": 5},
+        ]
+        out, _kpi = _write_bundle(tmp_path, closes)
+
+        data = json.loads((out / "report.json").read_text(encoding="utf-8"))
+        assert "pnl_by_fill_path" in data["stat_validation"]
+        assert "pnl_by_fill_path" in data
+        pnl_split = data["stat_validation"]["pnl_by_fill_path"]
+        assert pnl_split["total"] == pytest.approx(0.30)
+        assert pnl_split["by_path"]["maker_merged"] == pytest.approx(0.50)
+        assert pnl_split["by_path"]["single_buy_exit"] == pytest.approx(-0.20)
+
+        md = (out / "report.md").read_text(encoding="utf-8")
+        assert "Realized PnL attribution by fill path" in md
+        assert "Maker-merged" in md
+        assert "Taker-completed" in md
+        assert "Single-buy exit" in md
+        assert "Shadow-only estimate" in md
+

@@ -1,6 +1,8 @@
-# Issue #204 Tasks
+# Issue #197 Tasks
 
-- [x] T1: Implement detached order second-pass consolidation (`inferred:<condition_id>`) in `dashboard/static/app.js` (`groupOrdersByPair`).
-- [x] T2: Add `.ot-tag.is-info` in `dashboard/static/styles.css` and update `pairSummary`, `openOrdersRows`, and `positionsRows` to support and render the `Inferred` tag.
-- [x] T3: Add comprehensive regression tests in `tests/test_orders_trades_table.py` for open-orders and positions inferred pairing.
-- [x] T4: Run targeted table tests and full test suite (`python -m pytest -q`) to verify 100% green without regressions.
+- [x] T1: Implement taker pair detection and 3-way PnL attribution in `core_brain/kpi.py`.
+- [x] T2: Update `statistical_validation_run/artifacts.py` (`report.json` and `report.md`) to report the 3-way split.
+- [x] T3: Update `dashboard/static/app.js` to render the PnL fill-path breakdown in Run Profitability.
+- [x] T4: Add comprehensive regression tests in `tests/test_pnl_by_fill_path.py` covering 25/35/41 split and edge cases.
+- [x] T5: Verify full test suite (`python -m pytest -q`) is 100% green.
+

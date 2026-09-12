@@ -1,59 +1,59 @@
-# Implementation Plan: Issue #204
+# Implementation Plan: Issue #197
 
 ## Context
-In the Orders & Trades table, resting orders that lost their `pair_id` render as two disconnected `Unpaired` rows even when they constitute a valid complementary pair on the same market. This plan implements display-side inferred pairing for both open orders and held positions with an informational secondary `Inferred` tag (`ot-tag is-info`).
+Report realized PnL attribution split by fill path:
+1. `maker_merged`: Pairs merged where both legs were placed as resting maker orders.
+2. `taker_completed`: Pairs merged where one leg was completed via a taker order (identified by >1 order under the same `(pair_id, token_id)`).
+3. `single_buy_exit`: Positions exited via single-buy / rescue liquidation (`single_buy_exit`, `naked_exit`).
 
-- **Size Tier**: Standard (touches ~3 files: `app.js`, `styles.css`, `test_orders_trades_table.py`)
-- **Task Type**: Design + Code (UI rendering logic, CSS tag styling, DOM assertions)
+- **Size Tier**: Standard (~3 files: `core_brain/kpi.py`, `statistical_validation_run/artifacts.py`, `dashboard/static/app.js` + 1 new test file)
+- **Task Type**: Code + Analytics
 
-## Task 1: Second-pass inferred grouping in `groupOrdersByPair` [x]
+## Task 1: Core PnL attribution logic in `core_brain/kpi.py` [x]
+- **Files:** `core_brain/kpi.py`
+- **Change:**
+  - Implement helper `find_taker_completed_pairs(orders: list[dict] | None, reg: OrderRegistry | None = None) -> set[str]` that finds pair IDs having multiple order rows for any `(pair_id, token_id)`.
+  - Implement helper `pnl_by_fill_path(closes: list[dict], taker_pairs: set[str]) -> dict[str, Any]`.
+    - Buckets: `maker_merged`, `taker_completed`, `single_buy_exit`.
+    - `total`: sum of realized PnL.
+    - `pct`: dictionary mapping each path to its share of total PnL. If `total == 0.0` or no closes, `pct` values are `None`.
+  - Wire into `report()`:
+    - Compute `pnl_by_fill_path` and attach to top-level KPI `pnl_by_fill_path`, `trade_analytics["pnl_by_fill_path"]`, and `run_profitability["pnl_by_fill_path"]`.
+- **Acceptance:** Calling `kpi.report()` returns `pnl_by_fill_path` with correct totals and percentages across the 3 paths.
+- **Check:** `python -m pytest tests/test_account_kpi.py -q`
 
+## Task 2: Statistical Validation Report Artifacts in `statistical_validation_run/artifacts.py` [x]
+- **Files:** `statistical_validation_run/artifacts.py`
+- **Change:**
+  - Update `write_artifacts()` to record `pnl_by_fill_path` in `stat_validation["pnl_by_fill_path"]` directly from `kpi["pnl_by_fill_path"]`.
+  - Update `render_report_md()` in the `## Rescue & failure modes` section to output lines for Maker-merged, Taker-completed, and Single-buy exit PnL and percentage shares, noting it is a shadow rehearsal estimate.
+- **Acceptance:** Generated `report.json` contains `pnl_by_fill_path` in `stat_validation`, and `report.md` formats the 3-way split clearly.
+- **Check:** `python -m pytest tests/test_stat_validation_artifacts.py -q`
+
+## Task 3: Dashboard UI display in `dashboard/static/app.js` [x]
 - **Files:** `dashboard/static/app.js`
 - **Change:**
-  - Preserve pass 1: group orders with non-empty `pair_id` into their pair group. Keep leftover orders as single-order groups keyed `order:<order_id>`.
-  - Add pass 2: collect single-order leftovers and group them by `condition_id`.
-  - For each `condition_id`, if there is exactly 1 leftover UP order and exactly 1 leftover DOWN order (via `legForOrder`), merge them into a single group with `key: "inferred:" + condition_id` and `inferred: true`.
-  - Sort merged group orders: UP before DOWN (`legRank`), then `posted_ts`.
-  - Ensure every group has `inferred: Boolean` (`false` for native `pair_id` groups and unmatched single-order groups).
-- **Acceptance:** `groupOrdersByPair` returns a single group for two detached complementary legs on the same market with `inferred: true` and `key: "inferred:<cid>"`. Unmatched single legs remain isolated with `inferred: false`.
-- **Check:** `python -m pytest tests/test_orders_trades_table.py -q`
+  - In `renderRunProfitability(kpi)`: surface the 3-way PnL split in `detailsEl` or a subtitle (e.g. `maker $X (A%) · taker $Y (B%) · rescue $Z (C%)`).
+- **Acceptance:** Dashboard renders the attribution without crashing or disturbing existing UI elements.
+- **Check:** `python -m pytest tests/test_analytics_api.py -q`
 
-## Task 2: Visual styling and inferred tag in Open Orders & Positions [x]
-
-- **Files:** `dashboard/static/styles.css`, `dashboard/static/app.js`
+## Task 4: Dedicated Unit Tests in `tests/test_pnl_by_fill_path.py` [x]
+- **Files:** `tests/test_pnl_by_fill_path.py`
 - **Change:**
-  - In `styles.css`: Add `.ot-tag.is-info` styling with `background: var(--blue-bg)`, `border-color: var(--blue-border)`, and `color: #38bdf8`.
-  - In `app.js`:
-    - Extend `pairSummary(status, pairCost, inferred)` to render `<div class="ot-tag is-info">Inferred</div>` alongside the status tag and cost when `inferred` is true.
-    - In `openOrdersRows`, pass `group.inferred` to `pairSummary(...)`.
-    - In `ordersTradesRows`, pass `state` into `positionsRows(kpi, state)`.
-    - In `positionsRows`, inspect `state.fills` for held markets (`up_sh > 0 && dn_sh > 0`). If fills lack a common non-null `pair_id` covering both UP and DOWN, mark `inferred = true` and pass to `pairSummary`.
-    - Export any new helpers needed for test verification in `module.exports`.
-- **Acceptance:** Both Open Orders and Positions render `<div class="ot-tag is-info">Inferred</div>` when detached legs are paired on the fly, without altering the primary `Paired`/`Partial` status.
-- **Check:** `python -m pytest tests/test_orders_trades_table.py -q`
+  - Create test fixture with temporary SQLite DB and seeded data for maker-merged, taker-completed, and single-buy rescue.
+  - Verify that realized PnL values matching 25% maker / 35% taker / 41% single exit yield exact expected totals and percentages via `pytest.approx`.
+  - Test zero closes / empty store edge case returns None for percentages.
+- **Acceptance:** All tests pass cleanly.
+- **Check:** `python -m pytest tests/test_pnl_by_fill_path.py -q`
 
-## Task 3: Regression and unit tests in `test_orders_trades_table.py` [x]
-
-- **Files:** `tests/test_orders_trades_table.py`
-- **Change:**
-  - Add test: two resting orders on the same market with missing/different `pair_id` render as 1 group (`rowspan="2"`, `data-pair="inferred:<cid>"`), correct status, computed pair cost, and `.ot-tag.is-info` with text `Inferred`.
-  - Add test: single resting order renders as 1 row, `Unpaired`, with no `Inferred` tag.
-  - Add test: held position with fills missing a common `pair_id` renders `Inferred` tag.
-  - Add test: held position with fills sharing `pair_id` renders without `Inferred` tag.
-  - Audit existing assertions for row counts / unpaired tags and adjust if detached fixtures intentionally change.
-- **Acceptance:** All new tests pass, validating grouping, tags, and edge cases.
-- **Check:** `python -m pytest tests/test_orders_trades_table.py -q`
-
-## Task 4: Full verification gate [x]
-
-- **Files:** None (verification gate)
-- **Change:** Run full test suite silently and confirm clean diff.
-- **Acceptance:** `python -m pytest -q` is 100% green.
+## Task 5: Full verification gate [x]
+- **Files:** None
+- **Change:** Run full test suite silently (`python -m pytest -q`) and verify 2,019+ tests pass.
+- **Acceptance:** 100% green test suite.
 - **Check:** `python -m pytest -q`
 
 ## How to verify by hand (Operator)
-1. Launch dashboard on `http://127.0.0.1:8799` (`python -m dashboard.server`).
-2. Navigate to the **Orders & Trades** tab.
-3. Observe resting orders where a market has both UP and DOWN orders: they are merged into a single 2-row table entry sharing the market title cell with an `Inferred` blue badge beside `Paired` or `Partial`.
-4. Genuinely single-side resting orders remain distinct rows labeled `Unpaired` with no `Inferred` tag.
-
+1. Run a shadow rehearsal or load an existing run database:
+   `python -m core_brain.kpi`
+2. Inspect the output payload or run `python -m statistical_validation_run.artifacts` to verify `pnl_by_fill_path` displays the 3-way attribution in the generated `report.md`.
+3. Open the dashboard at `http://127.0.0.1:8799` and observe the Run Profitability card / Analytics displaying the Maker / Taker / Rescue PnL split.

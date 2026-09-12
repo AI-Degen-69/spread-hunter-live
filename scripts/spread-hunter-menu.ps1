@@ -3,7 +3,8 @@
 # (C:\Users\Tiger\Agents\Projects\spread-hunter-live).
 #
 # Usage:
-#   .\scripts\spread-hunter-menu.ps1          # interactive menu
+#   .\scripts\spread-hunter-menu.ps1          # interactive menu (press 1-9/q, no Enter; one choice, then exits)
+#   .\scripts\spread-hunter-menu.ps1 8        # run menu option 8 directly (1-9, q all work)
 #   .\scripts\spread-hunter-menu.ps1 start -Yes    # 1 · LIVE: preflight-stop + wipe, fresh bot + dashboard (real bids)
 #   .\scripts\spread-hunter-menu.ps1 stop          # 2 · LIVE: stop bot + dashboard
 #   .\scripts\spread-hunter-menu.ps1 host          # 3 · LIVE: release :8799 from the other menu-owned dashboard (no wipe), host live & open
@@ -2020,6 +2021,30 @@ function Invoke-LiveAction {
     }
 }
 
+function Read-MenuChoice {
+    <# Single-keypress menu input: 1-9/q run at once, no Enter needed.
+       Non-printable keys (arrows, etc.) are ignored; Enter exits.
+       Falls back to Read-Host when stdin is redirected or non-interactive. #>
+    try {
+        while ($true) {
+            $key = [Console]::ReadKey($true)
+            $ch = "$($key.KeyChar)"
+            if ($ch -eq "`r" -or $ch -eq "`n") { Write-Host ""; return "" }
+            if ([string]::IsNullOrWhiteSpace($ch) -or [char]::IsControl($ch[0])) { continue }
+            Write-Host $ch
+            return $ch.Trim().ToLower()
+        }
+    } catch {
+        try { $fallback = Read-Host }
+        catch {
+            Write-Host "No interactive console; pass a menu option directly (e.g. .\scripts\spread-hunter-menu.ps1 8)."
+            return ""
+        }
+        if ($null -eq $fallback) { return "" }
+        return $fallback.Trim().ToLower()
+    }
+}
+
 # ── Dispatch ──
 if ($Action -ne "") {
     $actionMap = @{
@@ -2053,6 +2078,14 @@ if ($Action -ne "") {
     $key = $Action.Trim().ToLower()
     if ($actionMap.ContainsKey($key)) { $key = $actionMap[$key] }
 
+    # Menu numbers work directly too: `.\scripts\spread-hunter-menu.ps1 8`
+    # runs option 8 at once, no menu shown. Reject anything else here so a
+    # typo fails fast instead of falling into the "invalid selection" path.
+    if (@("1","2","3","4","5","6","7","8","9","q") -notcontains $key) {
+        Write-Host "ERROR: Unknown action '$Action' (use 1-9, q, or a name like start/stop/status)" -ForegroundColor Red
+        exit 1
+    }
+
     # Require -Yes flag for non-interactive LIVE start (key 1)
     if ($key -eq "1" -and -not $Yes) {
         Write-Host "ERROR: Non-interactive LIVE start requires explicit -Yes flag" -ForegroundColor Red
@@ -2064,19 +2097,12 @@ if ($Action -ne "") {
     exit 0
 }
 
-while ($true) {
-    Lsh-Banner -Title "SPREAD HUNTER LIVE - CONTROL CENTER"
-    Show-MenuGrid
-    Write-Host "  Select " -ForegroundColor (Get-ProfileColor -Name Text) -NoNewline
-    Write-Host "[1-9, q]" -ForegroundColor (Get-ProfileColor -Name Command) -NoNewline
-    Write-Host " › " -ForegroundColor (Get-ProfileColor -Name Highlight) -NoNewline
-    $choice = Read-Host
-    if ($null -eq $choice) { exit 0 }
-    $choice = $choice.Trim().ToLower()
-    if ($choice -eq "") { exit 0 }
-    Invoke-LiveAction $choice
-
-    Write-Host ""
-    Write-Host "  Press Enter to return to main menu..." -ForegroundColor (Get-ProfileColor -Name Neutral)
-    $null = Read-Host
-}
+Lsh-Banner -Title "SPREAD HUNTER LIVE - CONTROL CENTER"
+Show-MenuGrid
+Write-Host "  Select " -ForegroundColor (Get-ProfileColor -Name Text) -NoNewline
+Write-Host "[1-9, q]" -ForegroundColor (Get-ProfileColor -Name Command) -NoNewline
+Write-Host " › " -ForegroundColor (Get-ProfileColor -Name Highlight) -NoNewline
+$choice = Read-MenuChoice
+if ($null -eq $choice -or $choice -eq "") { exit 0 }
+Invoke-LiveAction $choice
+exit 0

@@ -633,7 +633,7 @@ const SERVICE_DEFS = [
   { key: 'query', name: 'Venue Engine & Order Poller', cmd: 'python -m core_brain.order_manager poll --interval 0.5',
     tag: '0.5s CLOB FEED',
     desc: 'Queries CLOB every 0.5s, reconciles fills, and executes periodic balance sweeps.' },
-  { key: 'decide', name: 'Execution Loop & Maker Quoter', cmd: 'python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5 --max-markets 1',
+  { key: 'decide', name: 'Execution Loop & Maker Quoter', cmd: 'python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5',
     tag: 'SPREAD QUOTER',
     desc: 'Runs the trading loop (dual-sided maker quotes -> merge execution) every 5s across approved markets.' },
 ];

@@ -1,8 +1,8 @@
-# Issue #197 Tasks
+# Tasks Checklist: Issue #205
 
-- [x] T1: Implement taker pair detection and 3-way PnL attribution in `core_brain/kpi.py`.
-- [x] T2: Update `statistical_validation_run/artifacts.py` (`report.json` and `report.md`) to report the 3-way split.
-- [x] T3: Update `dashboard/static/app.js` to render the PnL fill-path breakdown in Run Profitability.
-- [x] T4: Add comprehensive regression tests in `tests/test_pnl_by_fill_path.py` covering 25/35/41 split and edge cases.
-- [x] T5: Verify full test suite (`python -m pytest -q`) is 100% green.
-
+- [x] Task 1: Core Stray Classifier & Data Structures (`core_brain/stray_guard.py`)
+- [x] Task 2: Detached Leg Adoption Mechanism (`core_brain/stray_guard.py`, `core_brain/order_registry.py`)
+- [x] Task 3: Cancellation of Hopeless Resting Orders (`core_brain/stray_guard.py`)
+- [x] Task 4: Unhedged Position Remediation (`core_brain/stray_guard.py`)
+- [x] Task 5: Integration & Order Manager CLI (`core_brain/order_manager.py`, `core_brain/order_registry.py`)
+- [x] Task 6: Full Verification Gate (`python -m pytest -q`)

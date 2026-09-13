@@ -1,16 +1,19 @@
-# Constraints: Issue #197
+# Constraints: Issue #205 — Stray-Order Guard
 
 ## Quality & Tests
-- Existing behavior outside the new KPI field must remain unchanged.
-- Zero breakage of the existing 2,019 tests in `python -m pytest -q`.
-- Do not skip, weaken, delete, or rewrite existing assertions merely to obtain a green suite.
-- A new dedicated unit test file `tests/test_pnl_by_fill_path.py` must test the 25/35/41 attribution against a seeded SQLite DB using `pytest.approx`.
-- The test must not rely on `data/01_shadow_11-09_00-37.db` since it is gitignored; it must build its own registry on `tmp_path`.
+- Zero regressions on existing test suite: all 2,017 tests in `python -m pytest -q` must remain green.
+- Every new behavior (adopt, cancel, dry-run, idempotent pass) must have automated tests.
+- Anti-Cheat: Strictly forbid skipping tests (`@pytest.mark.skip`), deleting assertions, or bypassing dynamic caps.
+- Tests must use isolated temporary SQLite DB fixtures (`tmp_path`) and mock venue clients; never touch `data/orders.db`.
 
-## Anti-Cheat
-- When total PnL is 0.0 or closes are empty, percentages must return `None` (not 0.0) matching repo convention.
-- Live `merge` method closes default to `maker_merged` because live execution has no taker signal in SQLite; shadow merges inspect multiple orders under `(pair_id, token_id)`.
-- No live network calls, venue credentials, or execution loop modifications.
+## Venue Safety & Risk
+- Live orders reach real financial venue:
+  - `--no-live` / dry-run must NEVER place or cancel venue orders.
+  - Cancellation must respect dynamic risk caps (`order_risk_pct`, `naked_risk_pct`, `bankroll_ceiling_pct`).
+  - Reconcile lock discipline: stray guard actions must be synchronized and must never fight an active quoting cycle.
+- Never cancel an order that belongs to a healthy `registry_paired` pair.
 
-## Performance
-- Taker pair detection must be a single efficient query or scan over the in-memory/sqlite orders table.
+## Architectural Integrity
+- Reusable primitives: reuse `OrderRegistry`, `single_buy_saver.load_pair`, `order_manager.cancel_single_order`.
+- Separation of concerns: encapsulate stray detection and policy in `core_brain/stray_guard.py` rather than overloading `order_registry.py` with venue/pricing logic.
+- Idempotence: Running multiple stray-guard passes sequentially must make zero redundant mutations or cancellations.

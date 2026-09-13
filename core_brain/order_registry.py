@@ -613,6 +613,8 @@ class OrderRecord:
     order_id: Optional[str] = None
     pair_id: Optional[str] = None
     max_pair_cost_at_post: Optional[float] = None
+    cancel_reason: Optional[str] = None
+    cancel_queue_ahead: Optional[float] = None
     run_id: Optional[str] = None
 
 
@@ -1064,6 +1066,22 @@ class OrderRegistry:
                 )
             conn.commit()
 
+    def adopt_orders_into_pair(self, local_ids: list[str], pair_id: str) -> int:
+        """Update pair_id for the given order local_ids in orders table."""
+        if not local_ids or not pair_id:
+            return 0
+        placeholders = ",".join("?" for _ in local_ids)
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                f"UPDATE orders SET pair_id = ? WHERE id IN ({placeholders})",
+                [pair_id] + list(local_ids),
+            )
+            count = cur.rowcount
+            conn.commit()
+            return count
+
+
     def get_matched_notional(self, order_uuid: str) -> float:
         """SUM(size * price) over this order's fills."""
         with self._conn() as conn:
@@ -1088,6 +1106,30 @@ class OrderRegistry:
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM orders WHERE status IN ('pending', 'open', 'partial') ORDER BY posted_ts ASC"
+            ).fetchall()
+            return [self._row_to_order(r) for r in rows]
+
+    def get_unpaired_filled_orders(self) -> list[OrderRecord]:
+        """Return filled or partial orders that have no pair_id assigned or whose pair lacks an opposing leg/fill."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM orders o
+                WHERE o.status IN ('filled', 'partial')
+                  AND (
+                    o.pair_id IS NULL OR o.pair_id = ''
+                    OR NOT EXISTS (
+                      SELECT 1 FROM orders o2
+                      WHERE o2.pair_id = o.pair_id
+                        AND o2.id != o.id
+                        AND (
+                          o2.status IN ('open', 'pending')
+                          OR EXISTS (SELECT 1 FROM fills f2 WHERE f2.order_uuid = o2.id)
+                        )
+                    )
+                  )
+                ORDER BY o.posted_ts ASC
+                """
             ).fetchall()
             return [self._row_to_order(r) for r in rows]
 
@@ -1637,6 +1679,12 @@ class OrderRegistry:
                 if row["max_pair_cost_at_post"] is not None
                 else None
             ),
+            cancel_reason=row["cancel_reason"] if "cancel_reason" in row.keys() else None,
+            cancel_queue_ahead=(
+                float(row["cancel_queue_ahead"])
+                if "cancel_queue_ahead" in row.keys() and row["cancel_queue_ahead"] is not None
+                else None
+            ),
             run_id=row["run_id"] if "run_id" in row.keys() else None,
         )
 
@@ -1654,6 +1702,8 @@ class ReconcileSummary:
     orphans_adopted: int = 0
     unattributed_recorded: int = 0
     unmatched_trades: int = 0
+    strays_adopted: int = 0
+    strays_cancelled: int = 0
     transitions: list[str] = field(default_factory=list)
 
 
@@ -1674,6 +1724,8 @@ def reconcile_orders(
     current_ts_ms: Optional[int] = None,
     orphan_window_ms: int = DEFAULT_ORPHAN_MATCH_WINDOW_MS,
     lookback_ms: Optional[int] = None,
+    enable_stray_guard: bool = True,
+    live: bool = True,
 ) -> ReconcileSummary:
     """Reconcile registry state against venue open orders and trades."""
     now_ms = current_ts_ms if current_ts_ms is not None else int(time.time() * 1000)
@@ -1685,6 +1737,8 @@ def reconcile_orders(
             now_ms=now_ms,
             orphan_window_ms=orphan_window_ms,
             lookback_ms=lookback_ms,
+            enable_stray_guard=enable_stray_guard,
+            live=live,
         )
 
 
@@ -1695,6 +1749,8 @@ def _reconcile_pass(
     now_ms: int,
     orphan_window_ms: int,
     lookback_ms: Optional[int] = None,
+    enable_stray_guard: bool = True,
+    live: bool = True,
 ) -> ReconcileSummary:
     """One reconcile pass. Callers must already hold the reconcile lock."""
     summary = ReconcileSummary(polled_ts=now_ms)
@@ -1972,6 +2028,27 @@ def _reconcile_pass(
             summary.transitions.append(f"STATUS {order.id[:8]} ({order.order_id or 'local'}): {order.status} -> {new_status}")
         else:
             registry.update_order_status(order.id, order.status, now_ms)
+
+    # 5. Stray guard: adopt detached complementary legs and cancel hopeless resting strays
+    if enable_stray_guard:
+        try:
+            from core_brain.stray_guard import run_stray_guard
+            stray_res = run_stray_guard(
+                client,
+                registry,
+                live=live,
+                now=now_ms / 1000.0,
+                remediate_positions=False,
+            )
+            for pid in stray_res.get("adopted_pairs", []):
+                summary.strays_adopted += 1
+                summary.transitions.append(f"ADOPT_STRAY {pid}")
+            for c_act in stray_res.get("cancelled_orders", []):
+                if c_act.get("action") == "cancelled":
+                    summary.strays_cancelled += 1
+                    summary.transitions.append(f"CANCEL_STRAY {c_act.get('order_id')}")
+        except Exception as exc:
+            _log.debug("stray_guard in reconcile skipped or encountered error: %s", exc)
 
     return summary
 

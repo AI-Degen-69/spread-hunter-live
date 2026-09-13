@@ -5,6 +5,7 @@ legs into proper pairs, and cancel/remediate hopeless strays (Issue #205).
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
@@ -180,3 +181,46 @@ def classify_market_orders(
                 )
 
     return result
+
+
+def adopt_detached_legs(
+    registry: Any,
+    detached_pairs: list[DetachedPair],
+    live: bool = True,
+) -> list[str]:
+    """Adopt complementary detached legs under a shared pair_id in registry.
+
+    Returns list of adopted pair_ids.
+    """
+    adopted: list[str] = []
+    for dp in detached_pairs:
+        # Determine shared pair_id: pick an existing valid pair_id, or mint fresh
+        p1 = dp.leg1.pair_id
+        p2 = dp.leg2.pair_id
+        shared_pid: str
+        if p1 and p1.startswith("pair-"):
+            shared_pid = p1
+        elif p2 and p2.startswith("pair-"):
+            shared_pid = p2
+        elif p1:
+            shared_pid = p1
+        elif p2:
+            shared_pid = p2
+        else:
+            shared_pid = f"pair-{uuid.uuid4().hex[:12]}"
+
+        order_ids = [dp.leg1.id, dp.leg2.id]
+        if live:
+            registry.adopt_orders_into_pair(order_ids, shared_pid)
+        log.info(
+            "ADOPT_STRAY: welded %s (%.4f) and %s (%.4f) under %s (combined=%.4f)",
+            dp.leg1.id[:8],
+            dp.leg1.price,
+            dp.leg2.id[:8],
+            dp.leg2.price,
+            shared_pid,
+            dp.combined_cost,
+        )
+        adopted.append(shared_pid)
+    return adopted
+

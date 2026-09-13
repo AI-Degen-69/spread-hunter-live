@@ -1064,6 +1064,22 @@ class OrderRegistry:
                 )
             conn.commit()
 
+    def adopt_orders_into_pair(self, local_ids: list[str], pair_id: str) -> int:
+        """Update pair_id for the given order local_ids in orders table."""
+        if not local_ids or not pair_id:
+            return 0
+        placeholders = ",".join("?" for _ in local_ids)
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            cur = conn.execute(
+                f"UPDATE orders SET pair_id = ? WHERE id IN ({placeholders})",
+                [pair_id] + list(local_ids),
+            )
+            count = cur.rowcount
+            conn.commit()
+            return count
+
+
     def get_matched_notional(self, order_uuid: str) -> float:
         """SUM(size * price) over this order's fills."""
         with self._conn() as conn:

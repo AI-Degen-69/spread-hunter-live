@@ -132,3 +132,54 @@ def test_classify_viable_lone_order_not_hopeless():
     assert len(res.complementary_detached) == 0
     assert len(res.hopeless_strays) == 0
     assert len(res.viable_strays) == 1
+
+
+def test_adopt_detached_legs_idempotent(tmp_path):
+    """Adopting detached complementary legs welds them under one pair_id in registry."""
+    from core_brain.order_registry import OrderRegistry
+    from core_brain.single_buy_saver import load_pair
+    from core_brain.stray_guard import adopt_detached_legs
+
+    db_path = tmp_path / "orders.db"
+    reg = OrderRegistry(db_path=db_path)
+
+    cond = "0xcond_adopt"
+    tok_up = "tok_up"
+    tok_dn = "tok_dn"
+    o1 = make_order("o1", cond, tok_up, 0.70, size=5.0, pair_id="pair-stray-1")
+    o2 = make_order("o2", cond, tok_dn, 0.25, size=5.0, pair_id="pair-stray-2")
+    reg.create_order(o1)
+    reg.create_order(o2)
+
+    active = reg.get_active_orders()
+    res = classify_market_orders(active, books={}, max_pair_cost=0.99)
+    assert len(res.complementary_detached) == 1
+
+    # Adopt
+    adopted = adopt_detached_legs(reg, res.complementary_detached)
+    assert len(adopted) == 1
+    shared_pid = adopted[0]
+    assert shared_pid in ("pair-stray-1", "pair-stray-2")
+
+    # Verify both orders in registry now share the same pair_id
+    o1_fresh = reg.get_order("o1")
+    o2_fresh = reg.get_order("o2")
+    assert o1_fresh is not None and o2_fresh is not None
+    assert o1_fresh.pair_id == shared_pid
+    assert o2_fresh.pair_id == shared_pid
+
+    # Verify single_buy_saver.load_pair sees both legs
+    pair = load_pair(reg, shared_pid)
+    assert len(pair["legs"]) == 2
+    assert pair["condition_id"] == cond
+
+    # Re-classification must be idempotent (now registry_paired, 0 detached)
+    active_after = reg.get_active_orders()
+    res_after = classify_market_orders(active_after, books={}, max_pair_cost=0.99)
+    assert len(res_after.registry_paired) == 1
+    assert len(res_after.complementary_detached) == 0
+
+    # Re-adopting does nothing
+    adopted_again = adopt_detached_legs(reg, res_after.complementary_detached)
+    assert len(adopted_again) == 0
+

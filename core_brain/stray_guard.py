@@ -5,6 +5,7 @@ legs into proper pairs, and cancel/remediate hopeless strays (Issue #205).
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -223,4 +224,86 @@ def adopt_detached_legs(
         )
         adopted.append(shared_pid)
     return adopted
+
+
+def cancel_hopeless_orders(
+    client: Any,
+    registry: Any,
+    hopeless_strays: list[HopelessStray],
+    live: bool = True,
+    now: float | None = None,
+) -> list[dict[str, Any]]:
+    """Cancel hopeless resting orders that have no prospect of forming a profitable pair.
+
+    In dry-run (live=False), logs and returns would_cancel without mutating venue or registry.
+    """
+    now_ms = int((now if now is not None else time.time()) * 1000)
+    actions: list[dict[str, Any]] = []
+
+    for hs in hopeless_strays:
+        o = hs.order
+        if o.status not in ("open", "pending"):
+            continue
+
+        target_venue_id = o.order_id or o.id
+
+        if not live:
+            log.info(
+                "DRY RUN -- would cancel hopeless stray order %s (venue %s) on %s: %s",
+                o.id[:8],
+                o.order_id,
+                o.condition_id[:10],
+                hs.reason,
+            )
+            actions.append({
+                "action": "would_cancel",
+                "order_id": target_venue_id,
+                "local_id": o.id,
+                "reason": hs.reason,
+            })
+            continue
+
+        # LIVE cancellation
+        cancel_success = False
+        try:
+            from py_clob_client_v2.clob_types import OrderPayload
+            client.cancel_order(OrderPayload(orderID=target_venue_id))
+            cancel_success = True
+        except Exception:
+            try:
+                client.cancel_order(target_venue_id)
+                cancel_success = True
+            except Exception as exc:
+                log.warning("Failed to cancel hopeless order %s: %s", target_venue_id, exc)
+                actions.append({
+                    "action": "error",
+                    "order_id": target_venue_id,
+                    "local_id": o.id,
+                    "error": str(exc),
+                })
+                continue
+
+        if cancel_success:
+            registry.update_order_status(
+                o.id,
+                status="cancelled",
+                last_polled_ts=now_ms,
+                cancel_reason=f"hopeless_stray: {hs.reason}",
+            )
+            log.info(
+                "CANCEL_STRAY: cancelled order %s (venue %s) on %s: %s",
+                o.id[:8],
+                o.order_id,
+                o.condition_id[:10],
+                hs.reason,
+            )
+            actions.append({
+                "action": "cancelled",
+                "order_id": target_venue_id,
+                "local_id": o.id,
+                "reason": hs.reason,
+            })
+
+    return actions
+
 

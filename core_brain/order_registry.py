@@ -613,6 +613,8 @@ class OrderRecord:
     order_id: Optional[str] = None
     pair_id: Optional[str] = None
     max_pair_cost_at_post: Optional[float] = None
+    cancel_reason: Optional[str] = None
+    cancel_queue_ahead: Optional[float] = None
     run_id: Optional[str] = None
 
 
@@ -1651,6 +1653,12 @@ class OrderRegistry:
             max_pair_cost_at_post=(
                 float(row["max_pair_cost_at_post"])
                 if row["max_pair_cost_at_post"] is not None
+                else None
+            ),
+            cancel_reason=row["cancel_reason"] if "cancel_reason" in row.keys() else None,
+            cancel_queue_ahead=(
+                float(row["cancel_queue_ahead"])
+                if "cancel_queue_ahead" in row.keys() and row["cancel_queue_ahead"] is not None
                 else None
             ),
             run_id=row["run_id"] if "run_id" in row.keys() else None,

@@ -183,3 +183,57 @@ def test_adopt_detached_legs_idempotent(tmp_path):
     adopted_again = adopt_detached_legs(reg, res_after.complementary_detached)
     assert len(adopted_again) == 0
 
+
+class MockCancelClient:
+    def __init__(self):
+        self.cancelled_ids = []
+
+    def cancel_order(self, payload_or_id):
+        target = getattr(payload_or_id, "orderID", None) or payload_or_id
+        self.cancelled_ids.append(str(target))
+        return {"success": True, "canceled": [str(target)]}
+
+
+def test_cancel_hopeless_orders_dry_run_and_live(tmp_path):
+    """Hopeless orders are reported in dry-run, and cancelled on venue and registry in live mode."""
+    from core_brain.order_registry import OrderRegistry
+    from core_brain.stray_guard import cancel_hopeless_orders
+
+    db_path = tmp_path / "orders.db"
+    reg = OrderRegistry(db_path=db_path)
+
+    cond = "0xcond_hopeless"
+    tok_up = "tok_up"
+    tok_dn = "tok_dn"
+    o1 = make_order("o1", cond, tok_up, 0.78, order_id="v-o1", pair_id="pair-lone")
+    reg.create_order(o1)
+
+    books = {tok_dn: {"asks": [[0.25, 100.0]]}}  # 0.78 + 0.25 = 1.03 >= 0.99
+    res = classify_market_orders(
+        reg.get_active_orders(),
+        books=books,
+        max_pair_cost=0.99,
+        market_tokens={cond: (tok_up, tok_dn)},
+    )
+    assert len(res.hopeless_strays) == 1
+
+    mock_client = MockCancelClient()
+
+    # 1. Dry run: live=False
+    actions_dry = cancel_hopeless_orders(mock_client, reg, res.hopeless_strays, live=False)
+    assert len(actions_dry) == 1
+    assert actions_dry[0]["action"] == "would_cancel"
+    assert len(mock_client.cancelled_ids) == 0
+    assert reg.get_order("o1").status == "open"
+
+    # 2. Live run: live=True
+    actions_live = cancel_hopeless_orders(mock_client, reg, res.hopeless_strays, live=True)
+    assert len(actions_live) == 1
+    assert actions_live[0]["action"] == "cancelled"
+    assert mock_client.cancelled_ids == ["v-o1"]
+
+    o1_fresh = reg.get_order("o1")
+    assert o1_fresh.status == "cancelled"
+    assert "hopeless_stray" in (o1_fresh.cancel_reason or "")
+
+

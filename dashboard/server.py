@@ -618,7 +618,7 @@ def _start_stack_commands(sweep_interval_sec: float | None) -> list[list[str]]:
         ["-m", "scripts.filter_loop"],
         query,
         ["-m", "core_brain.trader_loop", "--live",
-         "--no-reconcile", "--no-sweep", "--interval", "5", "--max-markets", "1"],
+         "--no-reconcile", "--no-sweep", "--interval", "5"],
     ]
 
 

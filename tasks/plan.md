@@ -1,70 +1,40 @@
-# Implementation Plan: Issue #205 — Stray-Order Guard
+# Plan — Issue #194: Decide loop quotes 1 market while the filter graduates 3
 
-## Context
-Give the bot an ongoing stray-order guard: detect single-side (unhedged) orders and positions, adopt complementary detached legs into a proper pair when the combined cost is under the cap, and cancel strays that have no hope of becoming a profitable pair — so the account always trends toward merged pairs costing less than $1.00.
+## Scope: Small
+Single-surface defect fix in the dashboard's START flow. No trader code changes.
 
-- **Size Tier**: Standard (3 core files: `core_brain/stray_guard.py`, `core_brain/order_registry.py`, `core_brain/order_manager.py` + `tests/test_stray_guard.py`)
-- **Task Type**: Code (Safety, Risk & Order Lifecycle)
+## CONSTRAINTS.md (locked)
+- **Behavior change:** the dashboard must stop passing `--max-markets 1` to
+  `core_brain.trader_loop` so the Decide loop quotes every graduated market.
+- **No trader edits:** `core_brain/trader_loop.py` already defaults to "all markets"
+  and already rotates multiple markets safely. The cap lives only in the dashboard.
+- **Single source of truth:** `dashboard/server.py::_start_stack_commands()` builds
+  both the START button commands and the preflight preview. Remove the flag there.
+- **Display parity:** the `decide` entry in `SERVICE_DEFS` (`dashboard/static/app.js`)
+  is operator-facing display text; it must match the real command exactly.
+- **No other flags change:** keep `--live --no-reconcile --no-sweep --interval 5`.
+- **Docs:** `docs/agents/first-run.md` lines 105/149 reference `--max-markets N` as a
+  trader flag with default "all" — already correct; no edit needed (verified).
+- **Safety:** this widens live quoting to more markets. Dynamic Caps in
+  `core_brain/config.py` scale with account value and bound exposure regardless of
+  market count; opening the cap does not bypass any cap.
 
-## Task 1: Core Stray Classifier & Data Structures (`core_brain/stray_guard.py`) [x]
-- **Domain:** `[Backend/Logic]`
-- **Files:** `core_brain/stray_guard.py`, `tests/test_stray_guard.py`
-- **Helper Skill:** `test-driven-development`, `api-and-interface-design`
-- **Details:**
-  - Define `StrayClassification` enum / dataclass: `REGISTRY_PAIRED`, `COMPLEMENTARY_DETACHED`, `HOPELESS_STRAY`, `UNHEDGED_POSITION`.
-  - Implement `classify_market_orders(orders: list[OrderRecord], positions: dict[str, float], books: dict[str, dict], max_pair_cost: float) -> dict`.
-- **Verification:** Unit test `tests/test_stray_guard.py::test_classify_market_orders`
+## Tasks (TDD order)
+1. **Test first:** add `test_start_bot_decide_loop_has_no_market_cap` in
+   `tests/test_dashboard_server.py` asserting the `core_brain.trader_loop` command
+   from `start_bot` spawns contains no `--max-markets` flag. Confirm it fails on
+   current code.
+2. **Fix server:** remove the `"--max-markets", "1"` pair from the trader_loop entry
+   in `_start_stack_commands()` in `dashboard/server.py`.
+3. **Fix display:** remove `--max-markets 1` from the `decide` `cmd` string in
+   `SERVICE_DEFS` in `dashboard/static/app.js`.
+4. **Verify:** rerun the new test plus the existing dashboard/service-toggle suites,
+   then the full `python -m pytest -q`.
 
-## Task 2: Detached Leg Adoption Mechanism (`core_brain/stray_guard.py`, `core_brain/order_registry.py`) [x]
-- **Domain:** `[Backend/Logic]`
-- **Files:** `core_brain/stray_guard.py`, `core_brain/order_registry.py`, `tests/test_stray_guard.py`
-- **Helper Skill:** `test-driven-development`, `incremental-implementation`
-- **Details:**
-  - Add `adopt_orders_into_pair(order_ids: list[str], pair_id: str)` to `OrderRegistry` (updates `pair_id` atomically in SQLite).
-  - Implement `adopt_detached_legs(registry, detached_pairs, live=True)`.
-  - Ensure subsequent calls to `single_buy_saver.load_pair(pair_id)` return a valid 2-leg pair.
-- **Verification:** Unit test `tests/test_stray_guard.py::test_adopt_detached_legs_idempotent`
-
-## Task 3: Cancellation of Hopeless Resting Orders (`core_brain/stray_guard.py`) [x]
-- **Domain:** `[Backend/Logic]`
-- **Files:** `core_brain/stray_guard.py`, `tests/test_stray_guard.py`
-- **Helper Skill:** `test-driven-development`
-- **Details:**
-  - For orders classified as `HOPELESS_STRAY` (no partner leg, or opposite best ask + resting price >= `max_pair_cost`):
-    - When `live=True`: issue cancel via `client.cancel_order()`.
-    - When `live=False` (dry run / shadow): log `would_cancel`.
-  - Respect dynamic caps (`order_risk_pct`, `bankroll_ceiling_pct`).
-- **Verification:** Unit test `tests/test_stray_guard.py::test_cancel_hopeless_orders`
-
-## Task 4: Unhedged Position Remediation (`core_brain/stray_guard.py`) [x]
-- **Domain:** `[Backend/Logic]`
-- **Files:** `core_brain/stray_guard.py`, `tests/test_stray_guard.py`
-- **Helper Skill:** `test-driven-development`
-- **Details:**
-  - Evaluate held positions with no paired counter-order or partner inventory.
-  - Route through `exit_pair` / best bid taker exit when holding is unprofitable or unhedged.
-- **Verification:** Unit test `tests/test_stray_guard.py::test_remediate_stray_position`
-
-## Task 5: Integration & Order Manager CLI (`core_brain/order_manager.py`, `core_brain/order_registry.py`) [x]
-- **Domain:** `[Backend/CLI]`
-- **Files:** `core_brain/order_manager.py`, `core_brain/order_registry.py`, `tests/test_stray_guard.py`
-- **Helper Skill:** `incremental-implementation`
-- **Details:**
-  - Integrate `run_stray_guard()` into `reconcile_orders()` as an automated step.
-  - Expose CLI command `python -m core_brain.order_manager stray-guard [--no-live]`.
-  - Support structured logging for each action taken.
-- **Verification:** CLI test `tests/test_stray_guard.py::test_cli_stray_guard`
-
-## Task 6: Full Verification Gate [x]
-- **Domain:** `[Gate]`
-- **Helper Skill:** `test-driven-development`
-- **Details:** Run complete test suite silently (`python -m pytest -q`).
-- **Verification:** 2,017+ tests passed, 0 failures.
-
-## How to verify by hand (Operator)
-1. Run stray guard preview in dry-run mode:
-   `python -m core_brain.order_manager stray-guard --no-live`
-2. Run against a shadow or live database and observe the logged actions:
-   - Any detached complementary legs are adopted into a unified pair.
-   - Any hopeless lone orders are reported or cancelled.
-   - Idempotent: running it a second time reports 0 new actions needed.
+## How to verify (operator, hands-on)
+1. Start the dashboard: `python -m dashboard.server` → open `http://127.0.0.1:8799`.
+2. Look at the Decide service card's command preview — it should now read
+   `python -m core_brain.trader_loop --live --no-reconcile --no-sweep --interval 5`
+   with no `--max-markets 1` at the end.
+3. Hover START to see the preflight command preview — the trader line must match
+   the card exactly.

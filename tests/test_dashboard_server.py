@@ -959,6 +959,40 @@ def test_start_bot_spawns_screener_engine_and_fleet(monkeypatch, tmp_path):
     assert "--no-sweep" in fleet_cmd
 
 
+def test_start_bot_decide_loop_has_no_market_cap(monkeypatch, tmp_path):
+    """The Decide loop must quote every market the filter graduates.
+
+    The old `--max-markets 1` dashboard cap let one market through while the
+    filter graduated several; the trader's own default is already "all
+    markets", so the dashboard must not pass the flag at all (#194).
+    """
+    import subprocess
+
+    import dashboard.server as dash_mod
+
+    spawned = []
+
+    class _FakePopen:
+        def __init__(self, args, **kwargs):
+            spawned.append(args)
+            self.pid = 12345
+
+    monkeypatch.setattr(dash_mod, "LIVE_ROOT", tmp_path)
+    monkeypatch.setattr(dash_mod, "get_system_status", lambda: {"bot_state": "STOPPED"})
+    monkeypatch.setattr(dash_mod, "resolve_sweep_interval", lambda: None)
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+
+    result = dash_mod.start_bot()
+    assert result["ok"] is True
+
+    fleet_cmds = [" ".join(a) for a in spawned if "core_brain.trader_loop" in " ".join(a)]
+    assert fleet_cmds, spawned
+    for cmd in fleet_cmds:
+        assert "--max-markets" not in cmd, (
+            "dashboard must not cap the Decide loop's market rotation (#194): " + cmd
+        )
+
+
 def test_set_sweep_interval_persists_and_applies(monkeypatch, tmp_path):
     """The control writes LIVE_SWEEP_INTERVAL into .env and the status payload."""
     import os

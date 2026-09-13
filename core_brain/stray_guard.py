@@ -354,5 +354,180 @@ def remediate_stray_positions(
     return results
 
 
+def run_stray_guard(
+    client: Any,
+    registry: Any,
+    cfg: Any = None,
+    live: bool = True,
+    condition_ids: Optional[list[str]] = None,
+    now: Optional[float] = None,
+    venue_positions: Optional[dict[str, float]] = None,
+    remediate_positions: bool = True,
+) -> dict[str, Any]:
+    """Unified Stray-Order Guard execution pass.
+
+    1. Gathers active orders and unpaired filled positions.
+    2. Identifies complementary market tokens.
+    3. Fetches order books if client supports them.
+    4. Classifies orders (paired, detached, hopeless, viable, unhedged).
+    5. Adopts complementary detached legs into shared pairs (idempotent).
+    6. Cancels hopeless resting orders with no prospect of profitable completion.
+    7. Remediates remaining unhedged stray positions via single-buy exit.
+    """
+    if cfg is None:
+        try:
+            from core_brain.config import load as _load_cfg
+            cfg = _load_cfg()
+        except Exception:
+            cfg = None
+    max_pair_cost = float(getattr(cfg, "max_pair_cost", 0.99)) if cfg else 0.99
+
+    active_orders = registry.get_active_orders()
+    unpaired_filled = []
+    if hasattr(registry, "get_unpaired_filled_orders"):
+        try:
+            unpaired_filled = registry.get_unpaired_filled_orders()
+        except Exception as exc:
+            log.debug("Failed to get unpaired filled orders: %s", exc)
+
+    combined_map = {o.id: o for o in (active_orders + unpaired_filled)}
+    candidate_orders = list(combined_map.values())
+    if condition_ids:
+        candidate_orders = [o for o in candidate_orders if o.condition_id in condition_ids]
+
+    market_tokens: dict[str, tuple[str, str]] = {}
+    for cond in {o.condition_id for o in candidate_orders}:
+        toks = list({o.token_id for o in candidate_orders if o.condition_id == cond and o.token_id})
+        if len(toks) >= 2:
+            market_tokens[cond] = (toks[0], toks[1])
+        elif hasattr(registry, "_conn"):
+            try:
+                with registry._conn() as conn:
+                    rows = conn.execute(
+                        "SELECT DISTINCT token_id FROM quotes WHERE condition_id = ?",
+                        (cond,),
+                    ).fetchall()
+                    q_toks = list({r["token_id"] for r in rows if r["token_id"]})
+                    if len(q_toks) >= 2:
+                        market_tokens[cond] = (q_toks[0], q_toks[1])
+            except Exception:
+                pass
+
+    books: dict[str, dict] = {}
+    needed_tokens: set[str] = set()
+    for o in candidate_orders:
+        if o.token_id:
+            needed_tokens.add(o.token_id)
+    for (t1, t2) in market_tokens.values():
+        needed_tokens.add(t1)
+        needed_tokens.add(t2)
+
+    if hasattr(client, "get_order_book"):
+        for tok in needed_tokens:
+            try:
+                bk = client.get_order_book(tok)
+                if bk:
+                    books[tok] = bk
+            except Exception as exc:
+                log.debug("Failed to get order book for %s: %s", tok, exc)
+
+    classification = classify_market_orders(
+        candidate_orders,
+        books=books,
+        max_pair_cost=max_pair_cost,
+        market_tokens=market_tokens,
+    )
+
+    adopted_pairs = adopt_detached_legs(registry, classification.complementary_detached, live=live)
+
+    cancelled_orders = cancel_hopeless_orders(
+        client,
+        registry,
+        classification.hopeless_strays,
+        live=live,
+        now=now,
+    )
+
+    adopted_order_ids = set()
+    for dp in classification.complementary_detached:
+        adopted_order_ids.add(dp.leg1.id)
+        adopted_order_ids.add(dp.leg2.id)
+
+    remaining_strays = [
+        o for o in unpaired_filled
+        if o.id not in adopted_order_ids
+    ]
+
+    remediated_positions = []
+    if remediate_positions and remaining_strays:
+        remediated_positions = remediate_stray_positions(
+            client,
+            registry,
+            remaining_strays,
+            max_pair_cost=max_pair_cost,
+            live=live,
+            venue_positions=venue_positions,
+        )
+
+    return {
+        "classification": classification,
+        "adopted_pairs": adopted_pairs,
+        "cancelled_orders": cancelled_orders,
+        "remediated_positions": remediated_positions,
+        "unhedged_positions": remaining_strays,
+    }
+
+
+def format_stray_guard_summary(res: dict[str, Any], live: bool = True) -> str:
+    mode_str = "LIVE" if live else "DRY-RUN (--no-live)"
+    classification = res.get("classification")
+    adopted = res.get("adopted_pairs", [])
+    cancelled = res.get("cancelled_orders", [])
+    remediated = res.get("remediated_positions", [])
+    unhedged = res.get("unhedged_positions", [])
+
+    lines = [
+        f"=== STRAY ORDER GUARD [{mode_str}] ===",
+    ]
+    if classification:
+        lines.append("Classification:")
+        lines.append(f"  - Paired orders: {len(classification.registry_paired)}")
+        lines.append(f"  - Detached pairs: {len(classification.complementary_detached)}")
+        lines.append(f"  - Hopeless strays: {len(classification.hopeless_strays)}")
+        lines.append(f"  - Viable strays: {len(classification.viable_strays)}")
+        lines.append(f"  - Unhedged positions: {len(unhedged)}")
+
+    lines.append("Actions:")
+    if adopted:
+        lines.append(f"  - Adopted pairs ({len(adopted)}):")
+        for p in adopted:
+            lines.append(f"    * {p}")
+    else:
+        lines.append("  - Adopted pairs: 0")
+
+    if cancelled:
+        lines.append(f"  - Cancelled orders ({len(cancelled)}):")
+        for c in cancelled:
+            act = c.get("action")
+            oid = c.get("order_id") or c.get("local_id")
+            reason = c.get("reason", "")
+            lines.append(f"    * [{act}] {oid}: {reason}")
+    else:
+        lines.append("  - Cancelled orders: 0")
+
+    if remediated:
+        lines.append(f"  - Remediated positions ({len(remediated)}):")
+        for r in remediated:
+            act = r.get("action")
+            pid = r.get("pair_id")
+            lines.append(f"    * [{act}] {pid}")
+    else:
+        lines.append("  - Remediated positions: 0")
+
+    lines.append("=" * 35)
+    return "\n".join(lines)
+
+
+
 
 

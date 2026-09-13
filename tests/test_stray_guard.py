@@ -310,4 +310,171 @@ def test_remediate_stray_positions_dry_run_and_live(tmp_path):
     assert closes[0]["shares"] == 5.0
 
 
+def test_reconcile_integration(tmp_path):
+    """Reconcile pass runs stray guard step, adopting detached legs."""
+    from core_brain.order_registry import OrderRegistry, reconcile_orders
+
+    db_path = tmp_path / "orders.db"
+    reg = OrderRegistry(db_path=db_path)
+
+    cond = "0xcond_reconcile"
+    tok_up = "tok_up"
+    tok_dn = "tok_dn"
+
+    o_up = make_order("o_up", cond, tok_up, 0.48, pair_id=None, order_id="v_up")
+    o_dn = make_order("o_dn", cond, tok_dn, 0.48, pair_id=None, order_id="v_dn")
+    reg.create_order(o_up)
+    reg.create_order(o_dn)
+
+    class MockReconcileClient:
+        creds = object()
+        def get_open_orders(self):
+            return [
+                {"id": "v_up", "asset_id": tok_up, "price": 0.48, "size": 10.0, "side": "BUY"},
+                {"id": "v_dn", "asset_id": tok_dn, "price": 0.48, "size": 10.0, "side": "BUY"},
+            ]
+        def get_trades(self, **kwargs):
+            return []
+
+    client = MockReconcileClient()
+    summary = reconcile_orders(client, reg)
+    assert summary.strays_adopted == 1
+    assert any("ADOPT_STRAY" in t for t in summary.transitions)
+
+    # Verify both orders now share a pair_id
+    up_fresh = reg.get_order("o_up")
+    dn_fresh = reg.get_order("o_dn")
+    assert up_fresh.pair_id is not None
+    assert up_fresh.pair_id == dn_fresh.pair_id
+
+
+def test_run_stray_guard_end_to_end(tmp_path):
+    """Unified run_stray_guard handles adoption, cancellation, and position remediation in one pass."""
+    from core_brain.order_registry import OrderRegistry, FillRecord, QuoteRecord
+    from core_brain.stray_guard import run_stray_guard
+
+    db_path = tmp_path / "orders.db"
+    reg = OrderRegistry(db_path=db_path)
+
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+
+    # 1. Detached pair (UP + DOWN <= 0.99)
+    cond1 = "0xcond1"
+    tok1_up = "tok1_up"
+    tok1_dn = "tok1_dn"
+    o1 = make_order("o1", cond1, tok1_up, 0.45, order_id="v-o1", pair_id=None)
+    o2 = make_order("o2", cond1, tok1_dn, 0.45, order_id="v-o2", pair_id=None)
+    reg.create_order(o1)
+    reg.create_order(o2)
+
+    # 2. Hopeless stray order (UP @ 0.78, DOWN ask @ 0.25 -> 1.03 >= 0.99)
+    cond2 = "0xcond2"
+    tok2_up = "tok2_up"
+    tok2_dn = "tok2_dn"
+    o3 = make_order("o3", cond2, tok2_up, 0.78, order_id="v-o3", pair_id=None)
+    reg.create_order(o3)
+
+    # 3. Unpaired filled stray position (UP @ 0.60, filled 5.0)
+    cond3 = "0xcond3"
+    tok3_up = "tok3_up"
+    o4 = make_order("o4", cond3, tok3_up, 0.60, size=5.0, status="filled", pair_id=None)
+    reg.create_order(o4)
+    reg.record_fill(FillRecord(
+        trade_id="tr_stray_e2e",
+        order_uuid="o4",
+        size=5.0,
+        price=0.60,
+        venue_ts=now_ms,
+        recorded_ts=now_ms,
+    ))
+    reg.log_quote(QuoteRecord(
+        ts=now_s,
+        condition_id=cond3,
+        token_id=tok3_up,
+        side="UP",
+        price=0.60,
+        size=5.0,
+        local_id="o4",
+    ))
+
+    class MockE2EClient:
+        def __init__(self):
+            self.cancelled_ids = []
+            self.market_orders = []
+
+        def get_order_book(self, token_id):
+            if token_id == tok2_dn:
+                return {"asks": [{"price": "0.25", "size": "100.0"}], "bids": []}
+            if token_id == tok3_up:
+                return {"bids": [{"price": "0.58", "size": "100.0"}], "asks": []}
+            return {"bids": [], "asks": []}
+
+        def cancel_order(self, payload_or_id):
+            target = getattr(payload_or_id, "orderID", None) or payload_or_id
+            self.cancelled_ids.append(str(target))
+            return {"success": True, "canceled": [str(target)]}
+
+        def get_order(self, order_id):
+            return {"id": order_id, "status": "filled", "size_matched": 5.0}
+
+        def create_and_post_market_order(self, payload):
+            self.market_orders.append(payload)
+            return {"status": "matched", "takingAmount": "5.0", "size": "5.0"}
+
+    client = MockE2EClient()
+
+    res = run_stray_guard(client, reg, live=True)
+
+    # Detached pair adopted
+    assert len(res["adopted_pairs"]) == 1
+    shared_pid = res["adopted_pairs"][0]
+    assert reg.get_order("o1").pair_id == shared_pid
+    assert reg.get_order("o2").pair_id == shared_pid
+
+    # Hopeless order cancelled
+    assert len(res["cancelled_orders"]) == 1
+    assert res["cancelled_orders"][0]["action"] == "cancelled"
+    assert "v-o3" in client.cancelled_ids
+    assert reg.get_order("o3").status == "cancelled"
+
+    # Unpaired filled position remediated
+    assert len(res["remediated_positions"]) == 1
+    assert res["remediated_positions"][0]["action"] == "exited"
+    assert len(client.market_orders) == 1
+
+
+def test_cli_stray_guard(tmp_path, monkeypatch, capsys):
+    """CLI stray-guard command runs non-destructively in --no-live and prints summary."""
+    from core_brain.order_registry import OrderRegistry
+    from core_brain.order_manager import stray_guard_cmd
+
+    db_path = tmp_path / "orders.db"
+    reg = OrderRegistry(db_path=db_path)
+
+    cond = "0xcond_cli"
+    tok_up = "tok_up"
+    tok_dn = "tok_dn"
+    o1 = make_order("o1", cond, tok_up, 0.47, pair_id=None)
+    o2 = make_order("o2", cond, tok_dn, 0.47, pair_id=None)
+    reg.create_order(o1)
+    reg.create_order(o2)
+
+    class MockCliClient:
+        def get_order_book(self, token_id):
+            return {"bids": [], "asks": []}
+
+    monkeypatch.setattr("core_brain.order_manager.client", lambda: MockCliClient())
+
+    stray_guard_cmd(live=False, db_path=str(db_path))
+
+    captured = capsys.readouterr()
+    assert "=== STRAY ORDER GUARD [DRY-RUN (--no-live)] ===" in captured.out
+    assert "Adopted pairs (1):" in captured.out
+    # Non-destructive: DB not mutated in dry run
+    assert reg.get_order("o1").pair_id is None
+    assert reg.get_order("o2").pair_id is None
+
+
+
 

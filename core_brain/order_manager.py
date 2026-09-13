@@ -399,6 +399,20 @@ def pairs(db_path: str | Path | None = None) -> None:
               f"{pair['naked']:>9.2f}  {legs}")
 
 
+def stray_guard_cmd(live: bool = True, db_path: str | Path | None = None) -> None:
+    """Detect detached legs, adopt complementary pairs, cancel hopeless orders, exit unhedged positions."""
+    from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
+    from core_brain.config import load as load_cfg
+    from core_brain.stray_guard import run_stray_guard, format_stray_guard_summary
+
+    db = Path(db_path) if db_path else DEFAULT_DB_PATH
+    registry = OrderRegistry(db_path=db)
+    cl = client()
+    cfg = load_cfg()
+    res = run_stray_guard(cl, registry, cfg=cfg, live=live, remediate_positions=True)
+    print(format_stray_guard_summary(res, live=live))
+
+
 def quote(condition_id: str, price: float, size: float, live: bool,
           down_price: float | None = None,
           post_only: bool = True, tif: str = "GTC",
@@ -3329,6 +3343,11 @@ def main() -> None:
     asw.add_argument("--funder", default=None, help="Funder address (default: POLY_FUNDER)")
     asw.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
     asw.add_argument("-q", "--quiet", action="store_true", help="Suppress console output")
+    sg = sub.add_parser("stray-guard", help="Detect, adopt detached pairs, and cancel/exit stray orders.")
+    sg.add_argument("--db", default=None, help="Custom database path (default: data/orders.db)")
+    sg.add_argument("--live", action=argparse.BooleanOptionalAction,
+                    default=argparse.SUPPRESS,
+                    help="send to venue (default: True). --no-live works before or after the subcommand.")
     c = sub.add_parser("cancel-all")
     c.add_argument("--live", action=argparse.BooleanOptionalAction,
                default=argparse.SUPPRESS,
@@ -3417,6 +3436,8 @@ def main() -> None:
                           force=a.force)
     elif a.cmd == "decide":
         decide(a.target, all_graduated=a.all, db_path=a.db)
+    elif a.cmd == "stray-guard":
+        stray_guard_cmd(is_live, db_path=a.db)
     else:
         cancel_all(is_live)
 

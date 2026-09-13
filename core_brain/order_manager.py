@@ -401,7 +401,7 @@ def pairs(db_path: str | Path | None = None) -> None:
 
 def stray_guard_cmd(live: bool = True, db_path: str | Path | None = None) -> None:
     """Detect detached legs, adopt complementary pairs, cancel hopeless orders, exit unhedged positions."""
-    from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH
+    from core_brain.order_registry import OrderRegistry, DEFAULT_DB_PATH, ReconcileInProgress
     from core_brain.config import load as load_cfg
     from core_brain.stray_guard import run_stray_guard, format_stray_guard_summary
 
@@ -409,8 +409,14 @@ def stray_guard_cmd(live: bool = True, db_path: str | Path | None = None) -> Non
     registry = OrderRegistry(db_path=db)
     cl = client()
     cfg = load_cfg()
-    res = run_stray_guard(cl, registry, cfg=cfg, live=live, remediate_positions=True)
-    print(format_stray_guard_summary(res, live=live))
+    now_ms = int(time.time() * 1000)
+    try:
+        with registry.reconcile_lock(now_ms):
+            res = run_stray_guard(cl, registry, cfg=cfg, live=live, remediate_positions=True)
+            print(format_stray_guard_summary(res, live=live))
+    except ReconcileInProgress as exc:
+        print(f"STRAY-GUARD REFUSED: reconciliation pass in flight against {db}: {exc}", file=sys.stderr)
+        sys.exit(1)
 
 
 def quote(condition_id: str, price: float, size: float, live: bool,

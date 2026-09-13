@@ -148,12 +148,6 @@ def classify_market_orders(
             if tokens:
                 t1, t2 = tokens
                 opposing_token = t2 if o.token_id == t1 else t1
-            else:
-                # If market_tokens not given, check books for any token other than o.token_id
-                for b_tok in books:
-                    if b_tok != o.token_id:
-                        opposing_token = b_tok
-                        break
 
             opposing_book = books.get(opposing_token) if opposing_token else None
             ask = _best_ask_from_book(opposing_book)
@@ -242,7 +236,7 @@ def cancel_hopeless_orders(
 
     for hs in hopeless_strays:
         o = hs.order
-        if o.status not in ("open", "pending"):
+        if o.status not in ("open", "pending", "partial"):
             continue
 
         target_venue_id = o.order_id or o.id
@@ -331,6 +325,13 @@ def remediate_stray_positions(
         pair_id = order.pair_id
         if not pair_id:
             pair_id = f"pair-stray-{order.id[:8]}"
+            if not live:
+                results.append({
+                    "action": "would_exit",
+                    "pair_id": pair_id,
+                    "size": matched,
+                })
+                continue
             registry.adopt_orders_into_pair([order.id], pair_id)
 
         try:
@@ -397,21 +398,22 @@ def run_stray_guard(
 
     market_tokens: dict[str, tuple[str, str]] = {}
     for cond in {o.condition_id for o in candidate_orders}:
-        toks = list({o.token_id for o in candidate_orders if o.condition_id == cond and o.token_id})
-        if len(toks) >= 2:
-            market_tokens[cond] = (toks[0], toks[1])
-        elif hasattr(registry, "_conn"):
+        found_toks = set(o.token_id for o in candidate_orders if o.condition_id == cond and o.token_id)
+        if len(found_toks) < 2 and hasattr(registry, "_conn"):
             try:
                 with registry._conn() as conn:
                     rows = conn.execute(
                         "SELECT DISTINCT token_id FROM quotes WHERE condition_id = ?",
                         (cond,),
                     ).fetchall()
-                    q_toks = list({r["token_id"] for r in rows if r["token_id"]})
-                    if len(q_toks) >= 2:
-                        market_tokens[cond] = (q_toks[0], q_toks[1])
+                    for r in rows:
+                        if r["token_id"]:
+                            found_toks.add(r["token_id"])
             except Exception:
                 pass
+        if len(found_toks) >= 2:
+            t_list = list(found_toks)
+            market_tokens[cond] = (t_list[0], t_list[1])
 
     books: dict[str, dict] = {}
     needed_tokens: set[str] = set()
@@ -453,10 +455,20 @@ def run_stray_guard(
         adopted_order_ids.add(dp.leg1.id)
         adopted_order_ids.add(dp.leg2.id)
 
-    remaining_strays = [
-        o for o in unpaired_filled
+    remaining_strays_map = {
+        o.id: o for o in unpaired_filled
         if o.id not in adopted_order_ids
-    ]
+    }
+    for hs in classification.hopeless_strays:
+        if hs.order.id not in adopted_order_ids:
+            try:
+                matched = registry.get_size_matched(hs.order.id)
+            except Exception:
+                matched = 0.0
+            if matched > 1e-6 and hs.order.id not in remaining_strays_map:
+                remaining_strays_map[hs.order.id] = hs.order
+
+    remaining_strays = list(remaining_strays_map.values())
 
     remediated_positions = []
     if remediate_positions and remaining_strays:

@@ -1110,14 +1110,25 @@ class OrderRegistry:
             return [self._row_to_order(r) for r in rows]
 
     def get_unpaired_filled_orders(self) -> list[OrderRecord]:
-        """Return filled or partial orders that have no pair_id assigned."""
+        """Return filled or partial orders that have no pair_id assigned or whose pair lacks an opposing leg/fill."""
         with self._conn() as conn:
             rows = conn.execute(
                 """
-                SELECT * FROM orders
-                WHERE (pair_id IS NULL OR pair_id = '')
-                  AND status IN ('filled', 'partial')
-                ORDER BY posted_ts ASC
+                SELECT * FROM orders o
+                WHERE o.status IN ('filled', 'partial')
+                  AND (
+                    o.pair_id IS NULL OR o.pair_id = ''
+                    OR NOT EXISTS (
+                      SELECT 1 FROM orders o2
+                      WHERE o2.pair_id = o.pair_id
+                        AND o2.id != o.id
+                        AND (
+                          o2.status IN ('open', 'pending')
+                          OR EXISTS (SELECT 1 FROM fills f2 WHERE f2.order_uuid = o2.id)
+                        )
+                    )
+                  )
+                ORDER BY o.posted_ts ASC
                 """
             ).fetchall()
             return [self._row_to_order(r) for r in rows]
@@ -1714,6 +1725,7 @@ def reconcile_orders(
     orphan_window_ms: int = DEFAULT_ORPHAN_MATCH_WINDOW_MS,
     lookback_ms: Optional[int] = None,
     enable_stray_guard: bool = True,
+    live: bool = True,
 ) -> ReconcileSummary:
     """Reconcile registry state against venue open orders and trades."""
     now_ms = current_ts_ms if current_ts_ms is not None else int(time.time() * 1000)
@@ -1726,6 +1738,7 @@ def reconcile_orders(
             orphan_window_ms=orphan_window_ms,
             lookback_ms=lookback_ms,
             enable_stray_guard=enable_stray_guard,
+            live=live,
         )
 
 
@@ -1737,6 +1750,7 @@ def _reconcile_pass(
     orphan_window_ms: int,
     lookback_ms: Optional[int] = None,
     enable_stray_guard: bool = True,
+    live: bool = True,
 ) -> ReconcileSummary:
     """One reconcile pass. Callers must already hold the reconcile lock."""
     summary = ReconcileSummary(polled_ts=now_ms)
@@ -2022,7 +2036,7 @@ def _reconcile_pass(
             stray_res = run_stray_guard(
                 client,
                 registry,
-                live=True,
+                live=live,
                 now=now_ms / 1000.0,
                 remediate_positions=False,
             )

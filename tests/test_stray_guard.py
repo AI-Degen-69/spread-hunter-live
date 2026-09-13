@@ -295,6 +295,7 @@ def test_remediate_stray_positions_dry_run_and_live(tmp_path):
     assert res_dry[0]["action"] == "would_exit"
     assert res_dry[0]["size"] == 5.0
     assert len(client.market_orders) == 0
+    assert reg.get_order("o_stray").pair_id is None
 
     # 2. Live run
     res_live = remediate_stray_positions(client, reg, [o1], live=True)
@@ -374,6 +375,23 @@ def test_run_stray_guard_end_to_end(tmp_path):
     tok2_dn = "tok2_dn"
     o3 = make_order("o3", cond2, tok2_up, 0.78, order_id="v-o3", pair_id=None)
     reg.create_order(o3)
+    reg.log_quote(QuoteRecord(
+        ts=now_s,
+        condition_id=cond2,
+        token_id=tok2_up,
+        side="UP",
+        price=0.78,
+        size=100.0,
+        local_id="o3",
+    ))
+    reg.log_quote(QuoteRecord(
+        ts=now_s,
+        condition_id=cond2,
+        token_id=tok2_dn,
+        side="DOWN",
+        price=0.25,
+        size=100.0,
+    ))
 
     # 3. Unpaired filled stray position (UP @ 0.60, filled 5.0)
     cond3 = "0xcond3"
@@ -435,6 +453,7 @@ def test_run_stray_guard_end_to_end(tmp_path):
     # Hopeless order cancelled
     assert len(res["cancelled_orders"]) == 1
     assert res["cancelled_orders"][0]["action"] == "cancelled"
+    assert "0.25" in res["cancelled_orders"][0]["reason"]
     assert "v-o3" in client.cancelled_ids
     assert reg.get_order("o3").status == "cancelled"
 
@@ -474,6 +493,89 @@ def test_cli_stray_guard(tmp_path, monkeypatch, capsys):
     # Non-destructive: DB not mutated in dry run
     assert reg.get_order("o1").pair_id is None
     assert reg.get_order("o2").pair_id is None
+
+
+def test_hopeless_partial_order_cancelled_and_remediated(tmp_path):
+    """A hopeless partial order has its venue remainder cancelled and its fills remediated."""
+    from core_brain.order_registry import OrderRegistry, FillRecord, QuoteRecord
+    from core_brain.stray_guard import run_stray_guard
+
+    db_path = tmp_path / "orders.db"
+    reg = OrderRegistry(db_path=db_path)
+
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+
+    cond = "0xcond_partial"
+    tok_up = "tok_up"
+    tok_dn = "tok_dn"
+
+    # Order has size 10.0, but only 4.0 is filled; status is 'partial'
+    o_part = make_order("o_part", cond, tok_up, 0.75, size=10.0, status="partial", pair_id="pair-part", order_id="v-part")
+    reg.create_order(o_part)
+    reg.record_fill(FillRecord(
+        trade_id="tr_part",
+        order_uuid="o_part",
+        size=4.0,
+        price=0.75,
+        venue_ts=now_ms,
+        recorded_ts=now_ms,
+    ))
+    reg.log_quote(QuoteRecord(
+        ts=now_s,
+        condition_id=cond,
+        token_id=tok_up,
+        side="UP",
+        price=0.75,
+        size=10.0,
+        local_id="o_part",
+    ))
+    reg.log_quote(QuoteRecord(
+        ts=now_s,
+        condition_id=cond,
+        token_id=tok_dn,
+        side="DOWN",
+        price=0.30,
+        size=50.0,
+    ))
+
+    class MockPartialClient:
+        def __init__(self):
+            self.cancelled_ids = []
+            self.market_orders = []
+
+        def get_order_book(self, token_id):
+            if token_id == tok_dn:
+                return {"asks": [{"price": "0.30", "size": "50.0"}], "bids": []}
+            if token_id == tok_up:
+                return {"bids": [{"price": "0.70", "size": "50.0"}], "asks": []}
+            return {"bids": [], "asks": []}
+
+        def cancel_order(self, payload_or_id):
+            target = getattr(payload_or_id, "orderID", None) or payload_or_id
+            self.cancelled_ids.append(str(target))
+            return {"success": True, "canceled": [str(target)]}
+
+        def get_order(self, order_id):
+            return {"id": order_id, "status": "partial", "size_matched": 4.0}
+
+        def create_and_post_market_order(self, payload):
+            self.market_orders.append(payload)
+            return {"status": "matched", "takingAmount": "4.0", "size": "4.0"}
+
+    client = MockPartialClient()
+
+    res = run_stray_guard(client, reg, live=True)
+
+    # 1. Hopeless partial order cancelled on venue
+    assert len(res["cancelled_orders"]) == 1
+    assert "v-part" in client.cancelled_ids
+    assert reg.get_order("o_part").status == "cancelled"
+
+    # 2. Position remediated (fills sold/exited)
+    assert len(res["remediated_positions"]) == 1
+    assert res["remediated_positions"][0]["action"] == "exited"
+    assert len(client.market_orders) == 1
 
 
 

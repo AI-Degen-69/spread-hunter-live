@@ -1,47 +1,47 @@
-# SPEC: Issue #197
+# SPEC: Issue #205 — Stray-Order Guard
 
 ## Goal
+Give the bot an ongoing stray-order guard: detect single-side (unhedged) orders and positions, adopt complementary detached legs into a proper pair when the combined cost is under the cap, and cancel strays that have no hope of becoming a profitable pair — so the account always trends toward merged pairs costing less than $1.00.
 
-Add a 3-way realized PnL attribution split (`maker_merged`, `taker_completed`, `single_buy_exit`) across the statistical validation report, KPI payloads, and the dashboard UI, matching the hand-calculated 25/35/41 ratio on the shadow rehearsal benchmark.
+## Background & Problem
+Legs can lose their `pair_id` link (e.g. after restarts, venue desync, re-posts, or network glitches). When this happens:
+1. Complementary legs (UP at $0.73 and DOWN at $0.23 on the same market = $0.96 pair) sit in the registry with different or missing `pair_id`s. The bot fails to acknowledge them as a pair, refusing to merge them.
+2. Lone resting orders (single legs with no counter-leg) sit on the book indefinitely even when the market has drifted so far that completing a sub-$1.00 pair is impossible. They tie up bankroll and risk adverse fills.
+3. Unhedged stray positions (filled legs with no pair link) remain exposed rather than being exited or paired.
 
 ## Scope
 
 ### In Scope
-1. **Core KPI Calculation (`core_brain/kpi.py`)**:
-   - Helper to identify taker-completed pairs from orders table: any `(pair_id, token_id)` with >1 orders represents an original resting order replaced by a taker completion order.
-   - Helper `pnl_by_fill_path(closes, taker_pairs)` that classifies realized PnL into:
-     - `maker_merged`: closes with method in `MERGE_METHODS` whose resolved `pair_id` (from `tx_hash.split(":")[0]`) is NOT taker-completed.
-     - `taker_completed`: closes with method in `MERGE_METHODS` whose resolved `pair_id` IS taker-completed.
-     - `single_buy_exit`: closes with method in `("single_buy_exit", "naked_exit")`.
-   - Returns structured dict:
-     ```python
-     {
-         "total": float,
-         "by_path": {
-             "maker_merged": float,
-             "taker_completed": float,
-             "single_buy_exit": float,
-         },
-         "pct": {
-             "maker_merged": Optional[float],
-             "taker_completed": Optional[float],
-             "single_buy_exit": Optional[float],
-         },
-     }
-     ```
-   - Exposed in `trade_analytics["pnl_by_fill_path"]`, `run_profitability["pnl_by_fill_path"]`, and top-level KPI `pnl_by_fill_path`.
-
-2. **Validation Reports & Artifacts (`statistical_validation_run/artifacts.py`)**:
-   - Include `pnl_by_fill_path` in `stat_validation["pnl_by_fill_path"]` inside `write_artifacts()`.
-   - Update `render_report_md()` under `## Rescue & failure modes` to output the dollar and percentage breakdown for each of the 3 paths, with a clear disclaimer that this is a shadow-rehearsal estimate.
-
-3. **Dashboard UI (`dashboard/static/app.js`)**:
-   - Surface the 3-way breakdown clearly beside realized PnL in run profitability and analytics.
-
-4. **Testing (`tests/test_pnl_by_fill_path.py`)**:
-   - Seeded SQLite database asserting exact totals and percentages for the 25/35/41 split using `pytest.approx`.
-   - Edge cases: 0 closes (total 0.0, percentages None), only maker merges, only single-buy exits.
+1. **Detection & Classification (`core_brain/stray_guard.py`)**:
+   - Classify all active orders and open positions into:
+     - `registry_paired`: Healthy pair with both UP and DOWN legs under the same `pair_id`.
+     - `complementary_detached`: Two legs on the same `condition_id` (one UP, one DOWN) with mismatched or missing `pair_id`s whose combined cost <= `max_pair_cost`.
+     - `hopeless_stray`: A resting order with no complementary leg, or whose price + opposite best ask >= `max_pair_cost` (or `max_completable_pair_cost`).
+     - `unhedged_stray_position`: Held position without a paired leg.
+2. **Adoption Mechanism**:
+   - Link detached complementary legs under a unified `pair_id` in `orders` registry.
+   - Idempotent: Subsequent passes see them as `registry_paired` and take no action.
+   - Seamlessly managed by existing `single_buy_saver.auto_manage_pairs()` and `merge`.
+3. **Cancellation Mechanism**:
+   - Cancel hopeless resting strays on the venue.
+   - Respect dynamic risk caps (`order_risk_pct`, `naked_risk_pct`, `bankroll_ceiling_pct`).
+   - Dry-run (`--no-live` / shadow) logs `would_cancel` without touching the venue.
+4. **Position Remediation**:
+   - Exit or hedge unhedged stray positions via `single_buy_saver` / `exit_pair` primitives.
+5. **Operator Visibility & CLI**:
+   - Clear structured logging per action: `ADOPT_STRAY`, `CANCEL_STRAY`, `EXIT_STRAY`.
+   - CLI entrypoint: `python -m core_brain.order_manager stray-guard [--no-live]`.
+   - Integration into `reconcile_orders()` pass.
 
 ### Out of Scope
-- Modifying live order execution, fill models, or trading loops.
-- Altering markout calculation or adverse selection.
+- Dashboard UI changes (already implemented in #204 / commit `b028f68`).
+- Modifying market selection or quoting pricing formulas (`quotes.py`).
+- Adding new venue API endpoints.
+
+## Acceptance Criteria
+- [ ] Detached complementary legs on same condition with price <= `max_pair_cost` adopted into single `pair_id`.
+- [ ] Hopeless resting orders cancelled safely with logged rationale.
+- [ ] Stray positions exited via market bid to prevent unhedged settlement exposure.
+- [ ] Fully non-destructive in `--no-live` / dry-run mode.
+- [ ] Idempotent across repeated executions.
+- [ ] 100% green test suite on `python -m pytest -q`.

@@ -5,4 +5,4 @@
 - [x] Task 3: Cancellation of Hopeless Resting Orders (`core_brain/stray_guard.py`)
 - [x] Task 4: Unhedged Position Remediation (`core_brain/stray_guard.py`)
 - [x] Task 5: Integration & Order Manager CLI (`core_brain/order_manager.py`, `core_brain/order_registry.py`)
-- [ ] Task 6: Full Verification Gate (`python -m pytest -q`)
+- [x] Task 6: Full Verification Gate (`python -m pytest -q`)

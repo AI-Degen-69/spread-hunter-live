@@ -1,59 +1,70 @@
-# Implementation Plan: Issue #197
+# Implementation Plan: Issue #205 — Stray-Order Guard
 
 ## Context
-Report realized PnL attribution split by fill path:
-1. `maker_merged`: Pairs merged where both legs were placed as resting maker orders.
-2. `taker_completed`: Pairs merged where one leg was completed via a taker order (identified by >1 order under the same `(pair_id, token_id)`).
-3. `single_buy_exit`: Positions exited via single-buy / rescue liquidation (`single_buy_exit`, `naked_exit`).
+Give the bot an ongoing stray-order guard: detect single-side (unhedged) orders and positions, adopt complementary detached legs into a proper pair when the combined cost is under the cap, and cancel strays that have no hope of becoming a profitable pair — so the account always trends toward merged pairs costing less than $1.00.
 
-- **Size Tier**: Standard (~3 files: `core_brain/kpi.py`, `statistical_validation_run/artifacts.py`, `dashboard/static/app.js` + 1 new test file)
-- **Task Type**: Code + Analytics
+- **Size Tier**: Standard (3 core files: `core_brain/stray_guard.py`, `core_brain/order_registry.py`, `core_brain/order_manager.py` + `tests/test_stray_guard.py`)
+- **Task Type**: Code (Safety, Risk & Order Lifecycle)
 
-## Task 1: Core PnL attribution logic in `core_brain/kpi.py` [x]
-- **Files:** `core_brain/kpi.py`
-- **Change:**
-  - Implement helper `find_taker_completed_pairs(orders: list[dict] | None, reg: OrderRegistry | None = None) -> set[str]` that finds pair IDs having multiple order rows for any `(pair_id, token_id)`.
-  - Implement helper `pnl_by_fill_path(closes: list[dict], taker_pairs: set[str]) -> dict[str, Any]`.
-    - Buckets: `maker_merged`, `taker_completed`, `single_buy_exit`.
-    - `total`: sum of realized PnL.
-    - `pct`: dictionary mapping each path to its share of total PnL. If `total == 0.0` or no closes, `pct` values are `None`.
-  - Wire into `report()`:
-    - Compute `pnl_by_fill_path` and attach to top-level KPI `pnl_by_fill_path`, `trade_analytics["pnl_by_fill_path"]`, and `run_profitability["pnl_by_fill_path"]`.
-- **Acceptance:** Calling `kpi.report()` returns `pnl_by_fill_path` with correct totals and percentages across the 3 paths.
-- **Check:** `python -m pytest tests/test_account_kpi.py -q`
+## Task 1: Core Stray Classifier & Data Structures (`core_brain/stray_guard.py`) [x]
+- **Domain:** `[Backend/Logic]`
+- **Files:** `core_brain/stray_guard.py`, `tests/test_stray_guard.py`
+- **Helper Skill:** `test-driven-development`, `api-and-interface-design`
+- **Details:**
+  - Define `StrayClassification` enum / dataclass: `REGISTRY_PAIRED`, `COMPLEMENTARY_DETACHED`, `HOPELESS_STRAY`, `UNHEDGED_POSITION`.
+  - Implement `classify_market_orders(orders: list[OrderRecord], positions: dict[str, float], books: dict[str, dict], max_pair_cost: float) -> dict`.
+- **Verification:** Unit test `tests/test_stray_guard.py::test_classify_market_orders`
 
-## Task 2: Statistical Validation Report Artifacts in `statistical_validation_run/artifacts.py` [x]
-- **Files:** `statistical_validation_run/artifacts.py`
-- **Change:**
-  - Update `write_artifacts()` to record `pnl_by_fill_path` in `stat_validation["pnl_by_fill_path"]` directly from `kpi["pnl_by_fill_path"]`.
-  - Update `render_report_md()` in the `## Rescue & failure modes` section to output lines for Maker-merged, Taker-completed, and Single-buy exit PnL and percentage shares, noting it is a shadow rehearsal estimate.
-- **Acceptance:** Generated `report.json` contains `pnl_by_fill_path` in `stat_validation`, and `report.md` formats the 3-way split clearly.
-- **Check:** `python -m pytest tests/test_stat_validation_artifacts.py -q`
+## Task 2: Detached Leg Adoption Mechanism (`core_brain/stray_guard.py`, `core_brain/order_registry.py`) [x]
+- **Domain:** `[Backend/Logic]`
+- **Files:** `core_brain/stray_guard.py`, `core_brain/order_registry.py`, `tests/test_stray_guard.py`
+- **Helper Skill:** `test-driven-development`, `incremental-implementation`
+- **Details:**
+  - Add `adopt_orders_into_pair(order_ids: list[str], pair_id: str)` to `OrderRegistry` (updates `pair_id` atomically in SQLite).
+  - Implement `adopt_detached_legs(registry, detached_pairs, live=True)`.
+  - Ensure subsequent calls to `single_buy_saver.load_pair(pair_id)` return a valid 2-leg pair.
+- **Verification:** Unit test `tests/test_stray_guard.py::test_adopt_detached_legs_idempotent`
 
-## Task 3: Dashboard UI display in `dashboard/static/app.js` [x]
-- **Files:** `dashboard/static/app.js`
-- **Change:**
-  - In `renderRunProfitability(kpi)`: surface the 3-way PnL split in `detailsEl` or a subtitle (e.g. `maker $X (A%) · taker $Y (B%) · rescue $Z (C%)`).
-- **Acceptance:** Dashboard renders the attribution without crashing or disturbing existing UI elements.
-- **Check:** `python -m pytest tests/test_analytics_api.py -q`
+## Task 3: Cancellation of Hopeless Resting Orders (`core_brain/stray_guard.py`) [x]
+- **Domain:** `[Backend/Logic]`
+- **Files:** `core_brain/stray_guard.py`, `tests/test_stray_guard.py`
+- **Helper Skill:** `test-driven-development`
+- **Details:**
+  - For orders classified as `HOPELESS_STRAY` (no partner leg, or opposite best ask + resting price >= `max_pair_cost`):
+    - When `live=True`: issue cancel via `client.cancel_order()`.
+    - When `live=False` (dry run / shadow): log `would_cancel`.
+  - Respect dynamic caps (`order_risk_pct`, `bankroll_ceiling_pct`).
+- **Verification:** Unit test `tests/test_stray_guard.py::test_cancel_hopeless_orders`
 
-## Task 4: Dedicated Unit Tests in `tests/test_pnl_by_fill_path.py` [x]
-- **Files:** `tests/test_pnl_by_fill_path.py`
-- **Change:**
-  - Create test fixture with temporary SQLite DB and seeded data for maker-merged, taker-completed, and single-buy rescue.
-  - Verify that realized PnL values matching 25% maker / 35% taker / 41% single exit yield exact expected totals and percentages via `pytest.approx`.
-  - Test zero closes / empty store edge case returns None for percentages.
-- **Acceptance:** All tests pass cleanly.
-- **Check:** `python -m pytest tests/test_pnl_by_fill_path.py -q`
+## Task 4: Unhedged Position Remediation (`core_brain/stray_guard.py`) [x]
+- **Domain:** `[Backend/Logic]`
+- **Files:** `core_brain/stray_guard.py`, `tests/test_stray_guard.py`
+- **Helper Skill:** `test-driven-development`
+- **Details:**
+  - Evaluate held positions with no paired counter-order or partner inventory.
+  - Route through `exit_pair` / best bid taker exit when holding is unprofitable or unhedged.
+- **Verification:** Unit test `tests/test_stray_guard.py::test_remediate_stray_position`
 
-## Task 5: Full verification gate [x]
-- **Files:** None
-- **Change:** Run full test suite silently (`python -m pytest -q`) and verify 2,019+ tests pass.
-- **Acceptance:** 100% green test suite.
-- **Check:** `python -m pytest -q`
+## Task 5: Integration & Order Manager CLI (`core_brain/order_manager.py`, `core_brain/order_registry.py`) [x]
+- **Domain:** `[Backend/CLI]`
+- **Files:** `core_brain/order_manager.py`, `core_brain/order_registry.py`, `tests/test_stray_guard.py`
+- **Helper Skill:** `incremental-implementation`
+- **Details:**
+  - Integrate `run_stray_guard()` into `reconcile_orders()` as an automated step.
+  - Expose CLI command `python -m core_brain.order_manager stray-guard [--no-live]`.
+  - Support structured logging for each action taken.
+- **Verification:** CLI test `tests/test_stray_guard.py::test_cli_stray_guard`
+
+## Task 6: Full Verification Gate [x]
+- **Domain:** `[Gate]`
+- **Helper Skill:** `test-driven-development`
+- **Details:** Run complete test suite silently (`python -m pytest -q`).
+- **Verification:** 2,017+ tests passed, 0 failures.
 
 ## How to verify by hand (Operator)
-1. Run a shadow rehearsal or load an existing run database:
-   `python -m core_brain.kpi`
-2. Inspect the output payload or run `python -m statistical_validation_run.artifacts` to verify `pnl_by_fill_path` displays the 3-way attribution in the generated `report.md`.
-3. Open the dashboard at `http://127.0.0.1:8799` and observe the Run Profitability card / Analytics displaying the Maker / Taker / Rescue PnL split.
+1. Run stray guard preview in dry-run mode:
+   `python -m core_brain.order_manager stray-guard --no-live`
+2. Run against a shadow or live database and observe the logged actions:
+   - Any detached complementary legs are adopted into a unified pair.
+   - Any hopeless lone orders are reported or cancelled.
+   - Idempotent: running it a second time reports 0 new actions needed.

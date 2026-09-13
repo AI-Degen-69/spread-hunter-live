@@ -237,3 +237,77 @@ def test_cancel_hopeless_orders_dry_run_and_live(tmp_path):
     assert "hopeless_stray" in (o1_fresh.cancel_reason or "")
 
 
+class MockExitClient:
+    def __init__(self):
+        self.market_orders = []
+
+    def get_order_book(self, token_id):
+        return {"bids": [{"price": "0.58", "size": "100.0"}], "asks": []}
+
+    def get_order(self, order_id):
+        return {"id": order_id, "status": "filled", "size_matched": 5.0}
+
+    def create_and_post_market_order(self, payload):
+        self.market_orders.append(payload)
+        return {"status": "matched", "takingAmount": "5.0", "size": "5.0"}
+
+
+
+def test_remediate_stray_positions_dry_run_and_live(tmp_path):
+    """Unhedged stray positions without a pair are assigned a pair_id and exited."""
+    from core_brain.order_registry import OrderRegistry, FillRecord, QuoteRecord
+    from core_brain.stray_guard import remediate_stray_positions
+
+    db_path = tmp_path / "orders.db"
+    reg = OrderRegistry(db_path=db_path)
+
+    cond = "0xcond_pos"
+    tok_up = "tok_up"
+    now_s = time.time()
+    now_ms = int(now_s * 1000)
+
+    # Insert a filled stray order with no pair_id
+    o1 = make_order("o_stray", cond, tok_up, 0.60, size=5.0, status="filled", pair_id=None)
+    reg.create_order(o1)
+    reg.record_fill(FillRecord(
+        trade_id="tr_stray",
+        order_uuid="o_stray",
+        size=5.0,
+        price=0.60,
+        venue_ts=now_ms,
+        recorded_ts=now_ms,
+    ))
+    reg.log_quote(QuoteRecord(
+        ts=now_s,
+        condition_id=cond,
+        token_id=tok_up,
+        side="UP",
+        price=0.60,
+        size=5.0,
+        local_id="o_stray",
+    ))
+
+    client = MockExitClient()
+
+    # 1. Dry run
+    res_dry = remediate_stray_positions(client, reg, [o1], live=False)
+    assert len(res_dry) == 1
+    assert res_dry[0]["action"] == "would_exit"
+    assert res_dry[0]["size"] == 5.0
+    assert len(client.market_orders) == 0
+
+    # 2. Live run
+    res_live = remediate_stray_positions(client, reg, [o1], live=True)
+    assert len(res_live) == 1
+    assert "error" not in res_live[0], res_live[0].get("error")
+    assert res_live[0]["action"] == "exited"
+    assert len(client.market_orders) == 1
+
+    # Check that close was recorded
+    closes = reg.get_all_closes()
+    assert len(closes) == 1
+    assert closes[0]["condition_id"] == cond
+    assert closes[0]["shares"] == 5.0
+
+
+

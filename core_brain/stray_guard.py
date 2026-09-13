@@ -307,3 +307,52 @@ def cancel_hopeless_orders(
     return actions
 
 
+def remediate_stray_positions(
+    client: Any,
+    registry: Any,
+    stray_orders_or_positions: list[OrderRecord],
+    max_pair_cost: float = 0.99,
+    live: bool = True,
+    venue_positions: Optional[dict[str, float]] = None,
+) -> list[dict[str, Any]]:
+    """Remediate unhedged stray filled positions by routing them to exit.
+
+    In dry run (live=False), logs and returns would_exit.
+    In live run, assigns a pair_id if missing, then invokes exit_single_buy.
+    """
+    from core_brain.single_buy_saver import exit_single_buy
+
+    results: list[dict[str, Any]] = []
+    for order in stray_orders_or_positions:
+        matched = registry.get_size_matched(order.id)
+        if matched <= 1e-6:
+            continue
+
+        pair_id = order.pair_id
+        if not pair_id:
+            pair_id = f"pair-stray-{order.id[:8]}"
+            registry.adopt_orders_into_pair([order.id], pair_id)
+
+        try:
+            exit_res = exit_single_buy(
+                client,
+                registry,
+                pair_id,
+                max_pair_cost=max_pair_cost,
+                live=live,
+                venue_positions=venue_positions,
+            )
+            results.append(exit_res)
+        except Exception as exc:
+            log.warning("Failed to exit stray position for pair %s: %s", pair_id, exc)
+            results.append({
+                "action": "error",
+                "pair_id": pair_id,
+                "error": str(exc),
+            })
+
+    return results
+
+
+
+
